@@ -70,14 +70,25 @@ JSON fields:
 - "themes": list of themes mentioned
 - "negations": list of genres the user does NOT want (from ALLOWED list)
 - "reference_films": list of film titles mentioned
+- "country_exclusions": list of countries the user does NOT want (e.g. "США", "Россия", "Франция" -- use the country name as commonly written in Russian, not a genre)
+- "max_age_rating": if the user wants something suitable for a specific age or younger (e.g. "для детей" -> 6, "детям можно" -> 12), the maximum age rating as a number, else null
+- "min_release_year": if the user wants recent/newer films (e.g. "поновее", "после 2015", "современный") a minimum release year as a number, else null
 
 Example:
 User: "хочу что-то смешное, но не ужасы"
-{{"genres": ["Комедии"], "mood": "happy", "themes": [], "negations": ["Ужасы"], "reference_films": []}}
+{{"genres": ["Комедии"], "mood": "happy", "themes": [], "negations": ["Ужасы"], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
 
 Example:
 User: "триллер как Молчание ягнят"
-{{"genres": ["Триллеры"], "mood": "excited", "themes": [], "negations": [], "reference_films": ["Молчание ягнят"]}}
+{{"genres": ["Триллеры"], "mood": "excited", "themes": [], "negations": [], "reference_films": ["Молчание ягнят"], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+
+Example:
+User: "детектив, но не американский, и чтобы поновее"
+{{"genres": ["Детективы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": ["США"], "max_age_rating": null, "min_release_year": 2015}}
+
+Example:
+User: "мультфильм для детей"
+{{"genres": ["Мультфильмы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": 6, "min_release_year": null}}
 
 Now parse this query:
 User: "{query}"
@@ -100,6 +111,24 @@ def _build_movies_context(movies: list[dict]) -> str:
     )
 
 
+def _coerce_float(value) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_int(value) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_intent(parsed: dict) -> dict:
     return {
         "genres": _normalize_genres(parsed.get("genres", [])),
@@ -107,6 +136,11 @@ def _extract_intent(parsed: dict) -> dict:
         "themes": parsed.get("themes", []),
         "negations": _normalize_genres(parsed.get("negations", [])),
         "reference_films": parsed.get("reference_films", []),
+        "country_exclusions": [
+            c for c in parsed.get("country_exclusions", []) if isinstance(c, str) and c.strip()
+        ],
+        "max_age_rating": _coerce_float(parsed.get("max_age_rating")),
+        "min_release_year": _coerce_int(parsed.get("min_release_year")),
     }
 
 
@@ -379,4 +413,7 @@ def _fallback_intent(_query: str) -> dict:
         "themes": [],
         "negations": [],
         "reference_films": [],
+        "country_exclusions": [],
+        "max_age_rating": None,
+        "min_release_year": None,
     }

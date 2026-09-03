@@ -75,6 +75,16 @@ failed, an `error` event precedes `done`.
 | `themes` | string[] | `["семья"]` |
 | `negations` | string[] | `["Ужасы"]` |
 | `reference_films` | string[] | `["Один дома"]` |
+| `country_exclusions` | string[] | `["США"]` |
+| `max_age_rating` | float\|null | `12.0` |
+| `min_release_year` | int\|null | `2015` |
+
+`negations` and `country_exclusions` are enforced as SQL `WHERE`/`exclude`
+filters in candidate generation, not scoring weights — a movie violating
+either never enters the candidate set, regardless of semantic score.
+Same for `max_age_rating` and `min_release_year`. Movies with a null
+`age_rating` or `release_date` are never excluded by these filters (treated
+as "unknown, don't filter" rather than "fails the constraint").
 
 **Error responses** (JSON, not SSE):
 

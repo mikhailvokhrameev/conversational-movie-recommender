@@ -69,11 +69,17 @@ class TestExtractIntent:
             "themes": ["семья"],
             "negations": ["Ужасы"],
             "reference_films": ["Один дома"],
+            "country_exclusions": ["США"],
+            "max_age_rating": 12,
+            "min_release_year": 2015,
         }
         result = _extract_intent(parsed)
         assert result["mood"] == "happy"
         assert result["themes"] == ["семья"]
         assert result["reference_films"] == ["Один дома"]
+        assert result["country_exclusions"] == ["США"]
+        assert result["max_age_rating"] == 12.0
+        assert result["min_release_year"] == 2015
 
     def test_missing_fields_default_to_empty(self):
         result = _extract_intent({})
@@ -82,6 +88,20 @@ class TestExtractIntent:
         assert result["themes"] == []
         assert result["negations"] == []
         assert result["reference_films"] == []
+        assert result["country_exclusions"] == []
+        assert result["max_age_rating"] is None
+        assert result["min_release_year"] is None
+
+    def test_invalid_hard_constraint_types_are_dropped(self):
+        parsed = {
+            "country_exclusions": ["США", 42, None, ""],
+            "max_age_rating": "not-a-number",
+            "min_release_year": "also-not-a-number",
+        }
+        result = _extract_intent(parsed)
+        assert result["country_exclusions"] == ["США"]
+        assert result["max_age_rating"] is None
+        assert result["min_release_year"] is None
 
 
 class TestFallbackIntent:
@@ -92,3 +112,6 @@ class TestFallbackIntent:
         assert result["themes"] == []
         assert result["negations"] == []
         assert result["reference_films"] == []
+        assert result["country_exclusions"] == []
+        assert result["max_age_rating"] is None
+        assert result["min_release_year"] is None

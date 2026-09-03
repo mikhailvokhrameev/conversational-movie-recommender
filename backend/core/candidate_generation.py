@@ -1,8 +1,9 @@
 """Candidate generation via pgvector approximate nearest neighbor search.
 
 Retrieves the top-N most semantically similar movies from the catalog using
-HNSW cosine distance, then applies hard filters (negation, content type)
-before passing candidates to the hybrid reranker.
+HNSW cosine distance, then applies hard filters (genre negation, country
+exclusion, max age rating, min release year, content type) before passing
+candidates to the hybrid reranker.
 
 Pipeline position:
   query embedding ──> ANN search (pgvector HNSW) ──> hard filters ──> candidates
@@ -10,6 +11,7 @@ Pipeline position:
 
 import logging
 
+from django.db.models import Q
 from pgvector.django import CosineDistance
 
 from movies.models import Movie
@@ -27,16 +29,37 @@ def generate_candidates(
     """Retrieve candidate movies via ANN search with hard filters.
 
     1. pgvector HNSW cosine search for top candidates
-    2. Hard filter: exclude movies matching negated genres
+    2. Hard filters: exclude movies matching negated genres, excluded
+       countries, above the requested age rating, or older than the
+       requested release year
     3. Optional: filter by content_type if specified in intent
+
+    These are true SQL WHERE-clause exclusions, not scoring weights --
+    a movie violating a hard constraint never reaches the candidate set,
+    regardless of how well it scores semantically.
     """
     queryset = Movie.objects.filter(embedding__isnull=False)
 
     if intent:
         negations = intent.get("negations", [])
-        if negations:
-            for neg_genre in negations:
-                queryset = queryset.exclude(genres__contains=[neg_genre])
+        for neg_genre in negations:
+            queryset = queryset.exclude(genres__contains=[neg_genre])
+
+        country_exclusions = intent.get("country_exclusions", [])
+        for excluded_country in country_exclusions:
+            queryset = queryset.exclude(country__contains=[excluded_country])
+
+        max_age_rating = intent.get("max_age_rating")
+        if max_age_rating is not None:
+            queryset = queryset.filter(
+                Q(age_rating__lte=max_age_rating) | Q(age_rating__isnull=True)
+            )
+
+        min_release_year = intent.get("min_release_year")
+        if min_release_year is not None:
+            queryset = queryset.filter(
+                Q(release_date__year__gte=min_release_year) | Q(release_date__isnull=True)
+            )
 
         content_type = intent.get("content_type")
         if content_type:

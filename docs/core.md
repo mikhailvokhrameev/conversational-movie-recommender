@@ -19,8 +19,12 @@ User query (Russian natural language)
   v
 candidate_generation.generate_candidates(query_vec, intent)
   |   1. pgvector HNSW cosine search ──> top-100 by semantic similarity
-  |   2. HARD FILTER: exclude movies matching negated genres
-  |   3. Optional: filter by content_type, country from intent
+  |   2. HARD FILTERS (SQL WHERE, not scoring signals):
+  |        - exclude movies matching negated genres
+  |        - exclude movies matching excluded countries
+  |        - exclude movies above max_age_rating (nulls pass through)
+  |        - exclude movies older than min_release_year (nulls pass through)
+  |   3. Optional: filter by content_type from intent
   v
 scoring.hybrid_score() per candidate
   |   semantic:  cosine_sim(query_vec, movie_vec)  * 0.4
@@ -60,7 +64,11 @@ Calls the Ollama container's HTTP API (`/api/chat`) for three tasks:
 
 **Intent parsing** (`parse_intent`): Sends the user query with a structured prompt
 requesting JSON output. Ollama's `format: "json"` mode forces valid JSON.
-Extracts genres, mood, themes, negations, and reference films.
+Extracts genres, mood, themes, negations, reference films, country exclusions,
+max age rating, and min release year. The latter three are hard constraints
+(country_exclusions, max_age_rating, min_release_year) -- they get applied as
+SQL filters in `candidate_generation.py`, not as scoring weights, so a movie
+violating one is excluded outright rather than merely ranked lower.
 On failure (timeout, malformed JSON, Ollama down), falls back to `_fallback_intent()`
 which returns an empty intent. Semantic search via embeddings still works without
 parsed intent -- it just loses metadata filtering.
@@ -83,9 +91,12 @@ Retrieves the top-N semantically similar movies via pgvector HNSW index,
 then applies hard filters before passing candidates to the reranker.
 
 1. **ANN search**: `CosineDistance` ordering on the embedding column, limit=100
-2. **Negation filter**: `exclude(genres__contains=negated_genre)` for each
-   negated genre from intent. This is a hard filter, not a scoring signal.
-3. **Optional filters**: content_type, country from intent
+2. **Hard filters** (all SQL `WHERE`/`exclude`, not scoring signals):
+   - `exclude(genres__contains=negated_genre)` for each negated genre
+   - `exclude(country__contains=excluded_country)` for each excluded country
+   - `filter(age_rating__lte=max_age_rating)` (movies with no rating pass through)
+   - `filter(release_date__year__gte=min_release_year)` (movies with no date pass through)
+3. **Optional filter**: content_type from intent
 
 Returns a list of movie dicts with all metadata + embedding for downstream scoring.
 
