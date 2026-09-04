@@ -5,6 +5,9 @@ import httpx
 import pytest
 
 from core.ollama_client import (
+    _ThinkStreamFilter,
+    _parse_json_response,
+    _strip_think,
     aclassify_message,
     aparse_intent,
     _extract_intent,
@@ -115,3 +118,66 @@ class TestFallbackIntent:
         assert result["country_exclusions"] == []
         assert result["max_age_rating"] is None
         assert result["min_release_year"] is None
+
+
+class TestStripThink:
+    """Hybrid reasoning models prefix answers with a <think> span. JSON-mode
+    responses must survive one arriving despite the think=false flag."""
+
+    def test_clean_json_untouched(self):
+        assert _strip_think('{"a": 1}') == '{"a": 1}'
+
+    def test_removes_leading_think_span(self):
+        assert _strip_think('<think>hmm</think>{"a": 1}') == '{"a": 1}'
+
+    def test_removes_multiple_spans(self):
+        assert _strip_think('<think>x</think>{"a": 1}<think>y</think>') == '{"a": 1}'
+
+    def test_unterminated_span_drops_remainder(self):
+        """Ran out of tokens mid-reasoning: there is no answer to salvage."""
+        assert _strip_think('<think>reasoning{"a": 1}') == ""
+
+    def test_parse_json_response_tolerates_preamble(self):
+        assert _parse_json_response('<think>hmm</think>\n{"category": "follow_up"}') == {
+            "category": "follow_up"
+        }
+
+
+class TestThinkStreamFilter:
+    """Reasoning tokens must never reach the user-visible SSE stream, even
+    when a tag is split across chunk boundaries."""
+
+    def _run(self, chunks):
+        f = _ThinkStreamFilter()
+        return "".join(f.feed(c) for c in chunks) + f.flush()
+
+    def test_passes_through_plain_text(self):
+        assert self._run(["Привет ", "мир"]) == "Привет мир"
+
+    def test_removes_span_within_one_chunk(self):
+        assert self._run(["<think>ага</think>Ответ"]) == "Ответ"
+
+    def test_removes_span_split_across_chunks(self):
+        assert self._run(["<thi", "nk>rea", "soning</thi", "nk>Ответ"]) == "Ответ"
+
+    def test_removes_span_arriving_one_character_at_a_time(self):
+        assert self._run(list("<think>hmm</think>OK")) == "OK"
+
+    def test_keeps_text_on_both_sides_of_a_span(self):
+        assert self._run(["До <think>x</think> после"]) == "До  после"
+
+    def test_unterminated_span_emits_nothing(self):
+        assert self._run(["<think>still reasoning"]) == ""
+
+    def test_lone_angle_bracket_is_not_a_tag(self):
+        assert self._run(["a < b"]) == "a < b"
+
+    def test_partial_tag_that_is_not_a_tag_is_released(self):
+        """'<th' is held back until 'anks' proves it was never a tag."""
+        assert self._run(["<th", "anks"]) == "<thanks"
+
+    def test_handles_two_spans(self):
+        assert self._run(["<think>a</think>X<think>b</think>Y"]) == "XY"
+
+    def test_empty_stream(self):
+        assert self._run([]) == ""

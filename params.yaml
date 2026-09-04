@@ -31,6 +31,20 @@ llm:
   model: hf.co/RefalMachine/RuadaptQwen3-8B-Hybrid-GGUF:Q4_K_M
   base_url: http://ollama:11434
 
+  # RuadaptQwen3-8B-Hybrid is a HYBRID REASONING model: left to itself it emits
+  # a <think>...</think> block before its answer. That is actively harmful
+  # here. Intent parsing and classification run in JSON mode and expect a bare
+  # object, and the reasoning pass costs seconds per call on top of three
+  # already-sequential LLM calls per turn.
+  #
+  # Setting this false sends "think": false to Ollama, which suppresses the
+  # reasoning pass on models that support the flag. ollama_client also strips
+  # any <think> block defensively before parsing JSON, so an Ollama build that
+  # ignores the flag degrades to "slower" rather than "broken".
+  #
+  # Set true only to experiment with reasoning quality on the explanation step.
+  thinking: false
+
   timeout_seconds:
     classify: 30
     intent: 60

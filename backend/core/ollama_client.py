@@ -7,11 +7,17 @@ Falls back to empty intent if Ollama is unavailable (semantic search still works
 
 Provides both sync and async variants for use in sync management commands
 and async Django views respectively.
+
+Hybrid reasoning models (RuadaptQwen3-8B-Hybrid, the configured default) emit
+a <think>...</think> span before their answer unless told not to. Every call
+here sends Ollama's "think" flag from params.yaml, and both the JSON and the
+streaming paths strip any reasoning span that arrives anyway -- so an Ollama
+build that ignores the flag costs latency rather than producing broken JSON
+or leaking reasoning into the user-visible stream.
 """
 
 import json
 import logging
-import os
 from typing import Generator
 
 import httpx
@@ -23,7 +29,6 @@ from core.embedding_service import cosine_similarity, encode_texts
 logger = logging.getLogger(__name__)
 
 _genre_embeddings = None
-GENRE_MATCH_THRESHOLD = float(os.environ.get("GENRE_MATCH_THRESHOLD", "0.5"))
 
 CATALOG_GENRES = [
     "Аниме", "Артхаус", "Биографии", "Блоги", "Боевики", "Вестерны",
@@ -104,6 +109,89 @@ Movies:
 Write a brief, natural response in Russian recommending these movies with personalized explanations."""
 
 
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def _strip_think(text: str) -> str:
+    """Remove complete <think>...</think> spans from a finished response.
+
+    An unterminated opening tag means the model was still reasoning when it
+    ran out of tokens; everything from it on is dropped.
+    """
+    while True:
+        start = text.find(_THINK_OPEN)
+        if start == -1:
+            return text
+        end = text.find(_THINK_CLOSE, start)
+        if end == -1:
+            return text[:start]
+        text = text[:start] + text[end + len(_THINK_CLOSE):]
+
+
+def _parse_json_response(content: str) -> dict:
+    """Parse an Ollama JSON-mode response, tolerating a reasoning preamble."""
+    return json.loads(_strip_think(content).strip())
+
+
+class _ThinkStreamFilter:
+    """Drops <think> spans from a token stream, across chunk boundaries.
+
+    Tags can be split between chunks, so a tail that could still turn into an
+    opening tag is held back rather than emitted.
+    """
+
+    def __init__(self):
+        self._pending = ""
+        self._in_think = False
+
+    def feed(self, chunk: str) -> str:
+        self._pending += chunk
+        out = []
+
+        while self._pending:
+            if self._in_think:
+                end = self._pending.find(_THINK_CLOSE)
+                if end == -1:
+                    # Keep only enough to recognise a split closing tag.
+                    self._pending = self._pending[-(len(_THINK_CLOSE) - 1):]
+                    break
+                self._pending = self._pending[end + len(_THINK_CLOSE):]
+                self._in_think = False
+                continue
+
+            start = self._pending.find(_THINK_OPEN)
+            if start != -1:
+                out.append(self._pending[:start])
+                self._pending = self._pending[start + len(_THINK_OPEN):]
+                self._in_think = True
+                continue
+
+            # No tag present. Emit everything except a tail that might be the
+            # beginning of one.
+            hold = 0
+            for size in range(min(len(_THINK_OPEN) - 1, len(self._pending)), 0, -1):
+                if _THINK_OPEN.startswith(self._pending[-size:]):
+                    hold = size
+                    break
+            if hold:
+                out.append(self._pending[:-hold])
+                self._pending = self._pending[-hold:]
+            else:
+                out.append(self._pending)
+                self._pending = ""
+            break
+
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Emit anything held back once the stream ends."""
+        if self._in_think:
+            return ""
+        remainder, self._pending = self._pending, ""
+        return remainder
+
+
 def _build_movies_context(movies: list[dict]) -> str:
     return "\n".join(
         f"- {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:200]}"
@@ -154,6 +242,7 @@ def _intent_payload(query: str) -> dict:
         ],
         "format": "json",
         "stream": False,
+        "think": settings.OLLAMA_THINKING,
     }
 
 
@@ -169,6 +258,7 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
             },
         ],
         "stream": stream,
+        "think": settings.OLLAMA_THINKING,
     }
 
 
@@ -181,6 +271,7 @@ def _chat_sync(messages: list[dict], json_mode: bool = False, timeout: float = 6
         "model": settings.OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
+        "think": settings.OLLAMA_THINKING,
     }
     if json_mode:
         payload["format"] = "json"
@@ -202,9 +293,9 @@ def parse_intent(query: str) -> dict:
         content = _chat_sync(
             _intent_payload(query)["messages"],
             json_mode=True,
-            timeout=60.0,
+            timeout=settings.OLLAMA_TIMEOUTS["intent"],
         )
-        return _extract_intent(json.loads(content))
+        return _extract_intent(_parse_json_response(content))
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Intent parsing failed, using fallback: {e}")
         return _fallback_intent(query)
@@ -215,7 +306,7 @@ def generate_explanation(query: str, movies: list[dict]) -> str:
     try:
         return _chat_sync(
             _explanation_payload(query, movies)["messages"],
-            timeout=120.0,
+            timeout=settings.OLLAMA_TIMEOUTS["explanation"],
         )
     except (httpx.HTTPError, KeyError) as e:
         logger.warning(f"Explanation generation failed: {e}")
@@ -229,14 +320,20 @@ def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, N
             "POST",
             f"{settings.OLLAMA_BASE_URL}/api/chat",
             json=_explanation_payload(query, movies, stream=True),
-            timeout=120.0,
+            timeout=settings.OLLAMA_TIMEOUTS["explanation"],
         ) as response:
+            think_filter = _ThinkStreamFilter()
             for line in response.iter_lines():
                 if line:
                     data = json.loads(line)
                     content = data.get("message", {}).get("content", "")
                     if content:
-                        yield content
+                        visible = think_filter.feed(content)
+                        if visible:
+                            yield visible
+            tail = think_filter.flush()
+            if tail:
+                yield tail
     except (httpx.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"Explanation streaming failed: {e}")
 
@@ -259,10 +356,10 @@ async def aparse_intent(query: str) -> dict:
             response = await client.post(
                 f"{settings.OLLAMA_BASE_URL}/api/chat",
                 json=_intent_payload(query),
-                timeout=60.0,
+                timeout=settings.OLLAMA_TIMEOUTS["intent"],
             )
             response.raise_for_status()
-            parsed = json.loads(response.json()["message"]["content"])
+            parsed = _parse_json_response(response.json()["message"]["content"])
             return _extract_intent(parsed)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Async intent parsing failed, using fallback: {e}")
@@ -281,11 +378,12 @@ async def aclassify_message(message: str) -> str:
                     "messages": [{"role": "user", "content": CLASSIFY_PROMPT.format(message=message)}],
                     "format": "json",
                     "stream": False,
+                    "think": settings.OLLAMA_THINKING,
                 },
-                timeout=30.0,
+                timeout=settings.OLLAMA_TIMEOUTS["classify"],
             )
             response.raise_for_status()
-            parsed = json.loads(response.json()["message"]["content"])
+            parsed = _parse_json_response(response.json()["message"]["content"])
             category = parsed.get("category", "new_search")
             return category if category in valid else "new_search"
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
@@ -308,16 +406,23 @@ async def astream_conversational(message: str, context: str = ""):
                     "model": settings.OLLAMA_MODEL,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": True,
+                    "think": settings.OLLAMA_THINKING,
                 },
-                timeout=120.0,
+                timeout=settings.OLLAMA_TIMEOUTS["explanation"],
             ) as response:
                 response.raise_for_status()
+                think_filter = _ThinkStreamFilter()
                 async for line in response.aiter_lines():
                     if line:
                         data = json.loads(line)
                         content = data.get("message", {}).get("content", "")
                         if content:
-                            yield content
+                            visible = think_filter.feed(content)
+                            if visible:
+                                yield visible
+                tail = think_filter.flush()
+                if tail:
+                    yield tail
     except (httpx.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"Conversational streaming failed: {e}")
 
@@ -330,15 +435,21 @@ async def astream_explanation(query: str, movies: list[dict]):
                 "POST",
                 f"{settings.OLLAMA_BASE_URL}/api/chat",
                 json=_explanation_payload(query, movies, stream=True),
-                timeout=120.0,
+                timeout=settings.OLLAMA_TIMEOUTS["explanation"],
             ) as response:
                 response.raise_for_status()
+                think_filter = _ThinkStreamFilter()
                 async for line in response.aiter_lines():
                     if line:
                         data = json.loads(line)
                         content = data.get("message", {}).get("content", "")
                         if content:
-                            yield content
+                            visible = think_filter.feed(content)
+                            if visible:
+                                yield visible
+                tail = think_filter.flush()
+                if tail:
+                    yield tail
     except (httpx.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"Async explanation streaming failed: {e}")
 
@@ -390,7 +501,7 @@ def _normalize_genres(raw_genres: list) -> list[str]:
                 best_score = sim
                 best_genre = CATALOG_GENRES[i]
 
-        if best_genre and best_score >= GENRE_MATCH_THRESHOLD:
+        if best_genre and best_score >= settings.GENRE_MATCH_THRESHOLD:
             if best_genre not in normalized:
                 normalized.append(best_genre)
             logger.debug(f"Genre normalized: '{raw}' -> '{best_genre}' (sim={best_score:.3f})")
