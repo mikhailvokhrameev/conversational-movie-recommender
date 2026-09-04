@@ -1,7 +1,8 @@
 import pytest
 
+from django.conf import settings
+
 from core.candidate_generation import (
-    RRF_K,
     _lexical_terms,
     _rrf_fuse,
     generate_candidates,
@@ -162,7 +163,7 @@ class TestRRFFuse:
 
     def test_score_matches_rrf_formula(self):
         fused = dict(_rrf_fuse({"semantic": [7]}, weights={"semantic": 1.0}))
-        assert fused[7] == pytest.approx(1.0 / (RRF_K + 1))
+        assert fused[7] == pytest.approx(1.0 / (settings.RRF_K + 1))
 
     def test_empty_channels(self):
         assert _rrf_fuse({"semantic": [], "lexical": []}) == []

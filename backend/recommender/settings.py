@@ -1,7 +1,34 @@
 import os
 from pathlib import Path
 
+import yaml
+
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+
+def _load_params() -> dict:
+    """Load params.yaml, the single source of truth for model and tuning values.
+
+    Searched in the container location first (mounted at /app/params.yaml),
+    then the repo root for running outside Docker. PARAMS_PATH overrides both;
+    it is deployment wiring, not a tuning knob.
+    """
+    candidates = [Path(os.environ["PARAMS_PATH"])] if os.environ.get("PARAMS_PATH") else [
+        BASE_DIR / "params.yaml",
+        BASE_DIR.parent / "params.yaml",
+    ]
+    for path in candidates:
+        if path.is_file():
+            with open(path) as handle:
+                return yaml.safe_load(handle)
+    raise FileNotFoundError(
+        "params.yaml not found in: "
+        + ", ".join(str(c) for c in candidates)
+        + ". It holds every model and tuning parameter and is required."
+    )
+
+
+PARAMS = _load_params()
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-insecure-key-do-not-use-in-prod")
 DEBUG = os.environ.get("DEBUG", "0") == "1"
@@ -89,17 +116,44 @@ REST_FRAMEWORK = {
     ],
 }
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
-EMBEDDING_MODEL = os.environ.get(
-    "EMBEDDING_MODEL", "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-)
+# --- Values below come from params.yaml. Do not add os.environ fallbacks: the
+# --- point of that file is that it is the only place these can be changed.
 
-SCORE_WEIGHTS = {
-    "semantic": float(os.environ.get("SCORE_WEIGHT_SEMANTIC", "0.4")),
-    "metadata": float(os.environ.get("SCORE_WEIGHT_METADATA", "0.3")),
-    "session": float(os.environ.get("SCORE_WEIGHT_SESSION", "0.3")),
-}
+_llm = PARAMS["llm"]
+OLLAMA_BASE_URL = _llm["base_url"]
+OLLAMA_MODEL = _llm["model"]
+OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
+OLLAMA_THINKING = _llm["thinking"]
+
+_embedding = PARAMS["embedding"]
+EMBEDDING_MODEL = _embedding["model"]
+EMBEDDING_DIMENSIONS = _embedding["dimensions"]
+
+_retrieval = PARAMS["retrieval"]
+CANDIDATE_COUNT = _retrieval["candidate_count"]
+RRF_K = _retrieval["rrf_k"]
+RRF_WEIGHTS = _retrieval["rrf_weights"]
+LEXICAL_SEARCH_CONFIG = _retrieval["lexical"]["text_search_config"]
+LEXICAL_MIN_TERM_LENGTH = _retrieval["lexical"]["min_term_length"]
+LEXICAL_MAX_TERMS = _retrieval["lexical"]["max_terms"]
+
+_scoring = PARAMS["scoring"]
+SCORE_WEIGHTS = _scoring["weights"]
+NEUTRAL_SCORE = _scoring["neutral_score"]
+
+_diversification = PARAMS["diversification"]
+TOP_N = _diversification["top_n"]
+MMR_LAMBDA = _diversification["lambda"]
+
+_session = PARAMS["session"]
+SESSION_ALPHA = _session["alpha"]
+SESSION_TTL_HOURS = _session["ttl_hours"]
+
+GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
+
+_catalog = PARAMS["catalog"]
+IMPORT_BATCH_SIZE = _catalog["import_batch_size"]
+EMBEDDING_BATCH_SIZE = _catalog["embedding_batch_size"]
 
 CATALOG_PARQUET_PATH = os.environ.get(
     "CATALOG_PARQUET_PATH", str(BASE_DIR / "catalog_okko.parquet")

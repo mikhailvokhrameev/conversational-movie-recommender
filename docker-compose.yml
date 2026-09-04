@@ -1,3 +1,17 @@
+# Model and tuning values are NOT set here. They live in params.yaml, which is
+# mounted read-only into the containers that need it. Environment variables in
+# this file are limited to secrets and deployment wiring.
+#
+# GPU: the ollama service reserves an NVIDIA device. That is deliberate rather
+# than optional -- params.yaml is tuned for an 8B model plus a large reranker,
+# and on CPU that combination is not interactively usable. If the driver is
+# missing, Compose fails here with a clear error, which beats silently falling
+# back to CPU and looking merely broken.
+#
+# Running without an NVIDIA GPU means changing params.yaml too (a smaller
+# llm.model, reranking disabled) -- see docs/infrastructure.md, "Smaller
+# machines". Delete the deploy block below when you do.
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -17,12 +31,6 @@ services:
 
   ollama:
     build: ./ollama
-    environment:
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
-    volumes:
-      - ollama_data:/root/.ollama
-    ports:
-      - "11434:11434"
     deploy:
       resources:
         reservations:
@@ -30,6 +38,12 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+    volumes:
+      - ollama_data:/root/.ollama
+      # The entrypoint reads llm.model from here to decide what to pull.
+      - ./params.yaml:/params.yaml:ro
+    ports:
+      - "11434:11434"
     healthcheck:
       test: ["CMD-SHELL", "ollama --version && exit 0 || exit 1"]
       interval: 10s
@@ -41,22 +55,15 @@ services:
     build: ./backend
     environment:
       DATABASE_URL: postgres://recommender:${DB_PASSWORD:-changeme}@db:5432/recommender
-      OLLAMA_BASE_URL: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5:7b}
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-sentence-transformers/paraphrase-multilingual-mpnet-base-v2}
       DJANGO_SETTINGS_MODULE: recommender.settings
       SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-key-do-not-use-in-prod}
       DEBUG: ${DEBUG:-0}
       ALLOWED_HOSTS: localhost,127.0.0.1,backend
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
-      SCORE_WEIGHT_SEMANTIC: ${SCORE_WEIGHT_SEMANTIC:-0.4}
-      SCORE_WEIGHT_METADATA: ${SCORE_WEIGHT_METADATA:-0.3}
-      SCORE_WEIGHT_SESSION: ${SCORE_WEIGHT_SESSION:-0.3}
-      SESSION_ALPHA: ${SESSION_ALPHA:-0.7}
-      GENRE_MATCH_THRESHOLD: ${GENRE_MATCH_THRESHOLD:-0.5}
     volumes:
       - ./catalog_okko.parquet:/app/catalog_okko.parquet:ro
       - ./data:/app/data:ro
+      - ./params.yaml:/app/params.yaml:ro
       - model_cache:/root/.cache
     ports:
       - "8000:8000"

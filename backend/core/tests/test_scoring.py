@@ -1,10 +1,11 @@
 import pytest
 
+from django.conf import settings
+
 from core.scoring import (
-    NEUTRAL_SCORE,
     _metadata_score,
-    _normalize,
     _semantic_score,
+    normalize_scores,
     mmr_diversify,
     score_candidates,
 )
@@ -33,16 +34,16 @@ class TestSemanticScore:
 
 class TestNormalize:
     def test_maps_spread_to_unit_range(self):
-        assert _normalize([0.5, 0.75, 1.0]) == pytest.approx([0.0, 0.5, 1.0])
+        assert normalize_scores([0.5, 0.75, 1.0]) == pytest.approx([0.0, 0.5, 1.0])
 
     def test_constant_signal_collapses_to_neutral(self):
-        assert _normalize([0.6, 0.6, 0.6]) == [NEUTRAL_SCORE] * 3
+        assert normalize_scores([0.6, 0.6, 0.6]) == [settings.NEUTRAL_SCORE] * 3
 
     def test_empty_input(self):
-        assert _normalize([]) == []
+        assert normalize_scores([]) == []
 
     def test_single_value_is_neutral(self):
-        assert _normalize([0.42]) == [NEUTRAL_SCORE]
+        assert normalize_scores([0.42]) == [settings.NEUTRAL_SCORE]
 
 
 class TestScoreCandidates:
@@ -95,7 +96,7 @@ class TestScoreCandidates:
         result = score_candidates(
             candidates, [1.0, 0.0, 0.0], {"genres": []}, session_vector=None, weights=WEIGHTS
         )
-        assert all(r["session"] == NEUTRAL_SCORE for r in result)
+        assert all(r["session"] == settings.NEUTRAL_SCORE for r in result)
         assert result[0]["total"] > result[1]["total"]
 
     def test_metadata_no_longer_dominates_semantic(self):

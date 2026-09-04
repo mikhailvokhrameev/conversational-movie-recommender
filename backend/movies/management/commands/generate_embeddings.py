@@ -17,12 +17,12 @@ class Command(BaseCommand):
         parser.add_argument(
             "--batch-size",
             type=int,
-            default=64,
+            default=None,
             help="Number of descriptions to embed per batch (default: 64)",
         )
 
     def handle(self, *args, **options):
-        batch_size = options["batch_size"]
+        batch_size = options["batch_size"] or settings.EMBEDDING_BATCH_SIZE
 
         movies = list(
             Movie.objects.filter(embedding__isnull=True)

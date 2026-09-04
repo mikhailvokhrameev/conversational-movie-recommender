@@ -4,9 +4,7 @@ from core.embedding_service import cosine_similarity
 
 SIGNALS = ("semantic", "metadata", "session")
 
-# 0.5 keeps displayed scores in a natural mid-range and matches _metadata_score's "no information" convention
-NEUTRAL_SCORE = 0.5
-
+# scoring.neutral_score and diversification.* come from params.yaml.
 # Avoiding division by a near-zero range
 _MIN_SPREAD = 1e-9
 
@@ -40,7 +38,7 @@ def score_candidates(
             for c in candidates
         ],
     }
-    normalized = {signal: _normalize(values) for signal, values in raw.items()}
+    normalized = {signal: normalize_scores(values) for signal, values in raw.items()}
 
     scored = []
     for i, candidate in enumerate(candidates):
@@ -58,8 +56,8 @@ def score_candidates(
 
 def mmr_diversify(
     scored_candidates: list[dict],
-    top_n: int = 5,
-    lambda_param: float = 0.7,
+    top_n: int | None = None,
+    lambda_param: float | None = None,
 ) -> list[dict]:
     """Select top-N diverse results via Maximal Marginal Relevance.
 
@@ -72,6 +70,11 @@ def mmr_diversify(
     there is no golden-set evaluation yet to measure whether the change
     helps. Revisit once retrieval metrics exist.
     """
+    top_n = top_n if top_n is not None else settings.TOP_N
+    lambda_param = (
+        lambda_param if lambda_param is not None else settings.MMR_LAMBDA
+    )
+
     if len(scored_candidates) <= top_n:
         return scored_candidates
 
@@ -113,7 +116,7 @@ def mmr_diversify(
     return selected
 
 
-def _normalize(values: list[float]) -> list[float]:
+def normalize_scores(values: list[float]) -> list[float]:
     """Min-max normalize a signal's values to [0, 1] across the candidate set.
 
     A signal where every candidate scores the same carries no ranking
@@ -126,7 +129,7 @@ def _normalize(values: list[float]) -> list[float]:
     low, high = min(values), max(values)
     spread = high - low
     if spread < _MIN_SPREAD:
-        return [NEUTRAL_SCORE] * len(values)
+        return [settings.NEUTRAL_SCORE] * len(values)
 
     return [(value - low) / spread for value in values]
 

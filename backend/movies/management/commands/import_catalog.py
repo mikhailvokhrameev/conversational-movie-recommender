@@ -22,13 +22,13 @@ class Command(BaseCommand):
         parser.add_argument(
             "--batch-size",
             type=int,
-            default=500,
-            help="Number of movies to insert per batch (default: 500)",
+            default=None,
+            help="Movies per insert batch (default: catalog.import_batch_size)",
         )
 
     def handle(self, *args, **options):
         skip_existing = options["skip_existing"]
-        batch_size = options["batch_size"]
+        batch_size = options["batch_size"] or settings.IMPORT_BATCH_SIZE
         parquet_path = settings.CATALOG_PARQUET_PATH
 
         self.stdout.write(f"Reading catalog from {parquet_path}...")

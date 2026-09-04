@@ -1,0 +1,117 @@
+# Single source of truth for every model and tuning parameter.
+#
+# Nothing here is overridable by environment variables. Change a value in this
+# file and it takes effect everywhere -- Django settings, the core pipeline,
+# management commands, and the Ollama container's model pull. Environment
+# variables are reserved for secrets and deployment wiring (SECRET_KEY,
+# DB_PASSWORD, DEBUG, ALLOWED_HOSTS), which must not live in a committed file.
+#
+# ---------------------------------------------------------------------------
+# HARDWARE PROFILE: a discrete NVIDIA GPU with ~11GB of VRAM. docker-compose.yml
+# reserves the card for Ollama, so plain `docker compose up --build` is enough.
+#
+# VRAM budget with everything resident:
+#
+#   RuadaptQwen3-8B-Hybrid, Q4_K_M      ~5.0 GB
+#   bge-reranker-v2-m3, fp16             ~1.1 GB
+#   mpnet embedder, fp32                 ~1.1 GB
+#   CUDA context + activations           ~1.0 GB
+#                                        --------
+#                                        ~8.2 GB of 11 GB
+#
+# This profile does NOT fit an 8GB Apple Silicon machine, and Docker Desktop
+# on macOS cannot reach the Apple GPU at all. For that machine the working
+# settings were llm.model qwen2.5:3b and reranking.enabled false, with Ollama
+# run natively on the host for Metal. See docs/infrastructure.md.
+# ---------------------------------------------------------------------------
+
+llm:
+  # Russian-adapted Qwen3 8B. Pulled straight from HuggingFace by the ollama
+  # entrypoint; the tag after the colon selects the GGUF quantization.
+  model: hf.co/RefalMachine/RuadaptQwen3-8B-Hybrid-GGUF:Q4_K_M
+  base_url: http://ollama:11434
+
+  # RuadaptQwen3-8B-Hybrid is a HYBRID REASONING model: left to itself it emits
+  # a <think>...</think> block before its answer. That is actively harmful
+  # here. Intent parsing and classification run in JSON mode and expect a bare
+  # object, and the reasoning pass costs seconds per call on top of three
+  # already-sequential LLM calls per turn.
+  #
+  # Setting this false sends "think": false to Ollama, which suppresses the
+  # reasoning pass on models that support the flag. ollama_client also strips
+  # any <think> block defensively before parsing JSON, so an Ollama build that
+  # ignores the flag degrades to "slower" rather than "broken".
+  #
+  # Set true only to experiment with reasoning quality on the explanation step.
+  thinking: false
+
+  timeout_seconds:
+    classify: 30
+    intent: 60
+    explanation: 120
+
+embedding:
+  # 768-dim mpnet (~278M parameters, ~1.1GB). Upgrading this is a tracked TODO
+  # -- BGE-M3 or multilingual-e5-large would likely measure better, but that
+  # is a change to make against the golden-set evaluation, not blind.
+  #
+  # CHANGING EITHER VALUE IS NOT FREE. `dimensions` is baked into the
+  # Movie.embedding and ChatSession.preference_vector columns, so a change
+  # needs a schema migration AND a full re-run of
+  # `manage.py generate_embeddings` over the catalog. Existing vectors are
+  # not convertible between models or dimensions.
+  model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
+  dimensions: 768
+
+retrieval:
+  # Candidates pulled from each channel before fusion.
+  candidate_count: 100
+
+  # Reciprocal Rank Fusion across the semantic and lexical channels. k=60 is
+  # the value from the original paper. Semantic outweighs lexical because it
+  # carries signal for every query, while lexical only fires when the user
+  # names something -- so lexical loses ties rather than being suppressed.
+  rrf_k: 60
+  rrf_weights:
+    semantic: 1.0
+    lexical: 0.7
+
+  lexical:
+    # Postgres text search configuration. 'russian' gives snowball stemming,
+    # which is what lets "Место встречи" match "Место встречи изменить нельзя".
+    text_search_config: russian
+    # Shorter tokens are almost all prepositions and particles.
+    min_term_length: 3
+    # Ceiling on tsquery size for a long rambling message.
+    max_terms: 12
+
+scoring:
+  # Applied to signals that have been min-max normalized across the candidate
+  # set, so these weights describe actual influence. Should sum to 1.0.
+  weights:
+    semantic: 0.4
+    metadata: 0.3
+    session: 0.3
+  # Value given to a signal that is identical across every candidate and so
+  # carries no ranking information.
+  neutral_score: 0.5
+
+diversification:
+  # Results returned to the user.
+  top_n: 5
+  # MMR relevance/diversity tradeoff. 1.0 is pure relevance, 0.0 pure novelty.
+  lambda: 0.7
+
+session:
+  # EMA weight on the newest query when updating the preference vector.
+  alpha: 0.7
+  ttl_hours: 24
+
+intent:
+  # Minimum cosine similarity for mapping an LLM-produced genre name onto a
+  # catalog genre.
+  genre_match_threshold: 0.5
+
+catalog:
+  import_batch_size: 500
+  embedding_batch_size: 64

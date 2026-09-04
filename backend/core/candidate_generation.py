@@ -34,6 +34,7 @@ import operator
 import re
 from functools import reduce
 
+from django.conf import settings
 from django.contrib.postgres.search import SearchQuery, SearchRank
 from django.db.models import F, Q
 from pgvector.django import CosineDistance
@@ -42,25 +43,9 @@ from movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CANDIDATE_COUNT = 100
-
-# RRF's rank-smoothing constant. 60 is the value from the original paper and
-# the de facto default; it keeps any single channel's top hit from dominating
-# the fused ordering outright.
-RRF_K = 60
-
-# Semantic outranks lexical because it is meaningful for every query, while
-# lexical only carries signal when the user names something. Lexical is not
-# scored below its own merit here -- it just loses ties.
-RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7}
-
-# Tokens shorter than this are dropped from the lexical query: they are almost
-# all prepositions and particles, and they broaden the OR-match for nothing.
-_MIN_TERM_LENGTH = 3
-
-# Cap on lexical query terms, so a long rambling message cannot build a
-# pathologically large tsquery.
-_MAX_TERMS = 12
+# Every tuning value here comes from params.yaml via settings: retrieval.*
+# (candidate_count, rrf_k, rrf_weights, lexical.*). Resolved at call time
+# rather than import time so overriding settings in tests works.
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -68,7 +53,7 @@ _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 def generate_candidates(
     query_embedding: list[float],
     intent: dict | None = None,
-    limit: int = DEFAULT_CANDIDATE_COUNT,
+    limit: int | None = None,
     query_text: str = "",
 ) -> list[dict]:
     """Retrieve candidates via hard-filtered semantic + lexical search.
@@ -89,6 +74,8 @@ def generate_candidates(
     semantic-only retrieval, which is the behaviour that predates the
     lexical channel.
     """
+    limit = limit if limit is not None else settings.CANDIDATE_COUNT
+
     base_queryset = _apply_hard_filters(
         Movie.objects.filter(embedding__isnull=False), intent
     )
@@ -166,9 +153,9 @@ def _lexical_terms(query_text: str) -> list[str]:
     terms = [
         term
         for term in _WORD_RE.findall(query_text.lower())
-        if len(term) >= _MIN_TERM_LENGTH
+        if len(term) >= settings.LEXICAL_MIN_TERM_LENGTH
     ]
-    return terms[:_MAX_TERMS]
+    return terms[: settings.LEXICAL_MAX_TERMS]
 
 
 def _lexical_ranked_ids(base_queryset, query_text: str, limit: int) -> list[int]:
@@ -184,7 +171,11 @@ def _lexical_ranked_ids(base_queryset, query_text: str, limit: int) -> list[int]
         return []
 
     search_query = reduce(
-        operator.or_, (SearchQuery(term, config="russian") for term in terms)
+        operator.or_,
+        (
+            SearchQuery(term, config=settings.LEXICAL_SEARCH_CONFIG)
+            for term in terms
+        ),
     )
 
     return list(
@@ -197,7 +188,7 @@ def _lexical_ranked_ids(base_queryset, query_text: str, limit: int) -> list[int]
 
 def _rrf_fuse(
     channels: dict[str, list[int]],
-    k: int = RRF_K,
+    k: int | None = None,
     weights: dict[str, float] | None = None,
 ) -> list[tuple[int, float]]:
     """Fuse per-channel rankings into one ordering by Reciprocal Rank Fusion.
@@ -205,7 +196,8 @@ def _rrf_fuse(
     `channels` maps a channel name to its ranked movie ids, best first.
     Returns (movie_id, fused_score) pairs, highest score first.
     """
-    channel_weights = weights or RRF_WEIGHTS
+    k = k if k is not None else settings.RRF_K
+    channel_weights = weights or settings.RRF_WEIGHTS
     scores: dict[int, float] = {}
 
     for channel, ranked_ids in channels.items():

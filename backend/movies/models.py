@@ -1,6 +1,7 @@
 import secrets
 import uuid
 
+from django.conf import settings
 from django.contrib.postgres.indexes import GinIndex
 from django.contrib.postgres.search import SearchVectorField
 from django.db import models
@@ -24,7 +25,9 @@ class Movie(models.Model):
     release_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True, default="")
     url = models.URLField(max_length=500, unique=True)
-    embedding = VectorField(dimensions=768, null=True, blank=True)
+    embedding = VectorField(
+        dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
+    )
 
     # Lexical retrieval channel: title/director/actors as a weighted tsvector.
     # Populated by movies.search_index.refresh_search_vectors(), not on save --
@@ -54,7 +57,9 @@ class Movie(models.Model):
 class ChatSession(models.Model):
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     session_token = models.CharField(max_length=64, default=generate_token, db_index=True)
-    preference_vector = VectorField(dimensions=768, null=True, blank=True)
+    preference_vector = VectorField(
+        dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
+    )
     preferences = models.JSONField(default=dict)
     history = models.JSONField(default=list)
     turn_count = models.IntegerField(default=0)
@@ -67,7 +72,9 @@ class ChatSession(models.Model):
         ]
 
     def is_expired(self):
-        return timezone.now() - self.created_at > timezone.timedelta(hours=24)
+        return timezone.now() - self.created_at > timezone.timedelta(
+            hours=settings.SESSION_TTL_HOURS
+        )
 
     def __str__(self):
         return f"Session {self.session_id} (turn {self.turn_count})"

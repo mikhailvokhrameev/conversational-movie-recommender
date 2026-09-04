@@ -9,7 +9,7 @@ The system runs as 4 Docker services via `docker compose up`:
 │                     docker compose                        │
 ├────────────┬────────────┬───────────────┬────────────────┤
 │  frontend  │  backend   │    ollama     │      db        │
-│  (React)   │  (Django)  │  (qwen2.5:7b) │ (PostgreSQL 16)│
+│  (React)   │  (Django)  │ (params.yaml) │ (PostgreSQL 16)│
 │  :3000     │  :8000     │  :11434       │  :5433         │
 │            │            │               │                │
 │  Vite dev  │  uvicorn   │  auto-pulls   │  pgvector ext  │
@@ -34,10 +34,13 @@ The system runs as 4 Docker services via `docker compose up`:
 
 - **Image**: custom, built from `ollama/Dockerfile`
 - **Port**: 11434 (Ollama default)
-- **Auto-pull**: custom `entrypoint.sh` starts Ollama server, waits for readiness,
-  pulls the configured model (`OLLAMA_MODEL`, default `qwen2.5:7b`) if not cached
-- **Model cache**: persisted in `ollama_data` Docker volume (~4GB for qwen2.5:7b)
-- **GPU**: uses NVIDIA GPU if available via Docker `deploy.resources.reservations`
+- **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
+  readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
+  not cached
+- **Model cache**: persisted in `ollama_data` Docker volume (~1.9GB for the
+  default qwen2.5:3b)
+- **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
+  Profiles for running without one
 - **Health check**: `ollama --version`
 - **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on entrypoint for Windows compatibility
 
@@ -56,24 +59,100 @@ The system runs as 4 Docker services via `docker compose up`:
 
 Not yet implemented. Will serve on port 3000.
 
-## Environment Variables
+## Configuration
 
-All configuration via environment variables, with defaults in `docker-compose.yml`:
+### params.yaml (all model and tuning values)
+
+`params.yaml` at the repo root is the single source of truth for every model
+name and tuning parameter. It is mounted read-only into the backend
+(`/app/params.yaml`) and the ollama container (`/params.yaml`, whose entrypoint
+reads `llm.model` from it to decide what to pull). Nothing in it is
+overridable by an environment variable -- change the file and restart.
+
+| Section | Covers |
+|---------|--------|
+| `llm` | Ollama model, base URL, per-call timeouts |
+| `embedding` | Embedding model and vector dimensions |
+| `retrieval` | Candidate count, RRF constants, lexical search settings |
+| `scoring` | Signal weights, neutral score |
+| `diversification` | MMR top_n and lambda |
+| `reranking` | Cross-encoder model, enable flag, top_k, blend weight |
+| `session` | EMA alpha, session TTL |
+| `intent` | Genre-match threshold |
+| `catalog` | Import and embedding batch sizes |
+
+Changing `embedding.model` or `embedding.dimensions` additionally requires a
+schema migration and a full re-run of `generate_embeddings` -- existing vectors
+are not convertible.
+
+### Environment variables (secrets and wiring only)
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PASSWORD` | `changeme` | PostgreSQL password |
-| `SECRET_KEY` | `change-in-production` | Django secret key |
+| `SECRET_KEY` | insecure dev default | Django secret key |
 | `DEBUG` | `0` | Django debug mode |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model for intent parsing and explanations |
-| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | Embedding model name |
-| `SCORE_WEIGHT_SEMANTIC` | `0.4` | Semantic similarity weight in hybrid scoring |
-| `SCORE_WEIGHT_METADATA` | `0.3` | Metadata match weight |
-| `SCORE_WEIGHT_SESSION` | `0.3` | Session preference weight |
-| `SESSION_ALPHA` | `0.7` | EMA decay factor for session preference vector |
-| `GENRE_MATCH_THRESHOLD` | `0.5` | Cosine similarity threshold for genre normalization |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed hosts |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,...` | Comma-separated CORS origins |
+| `DATABASE_URL` | compose-provided | Postgres connection string |
+| `PARAMS_PATH` | auto-discovered | Override the params.yaml location |
 
-Copy `.env.example` to `.env` and customize before first run.
+Copy `.env.example` to `.env` and set a real `SECRET_KEY` before first run.
+
+## Hardware Profiles
+
+The committed `params.yaml` targets a discrete NVIDIA GPU with ~11GB of VRAM,
+and `docker-compose.yml` reserves the card for Ollama, so the normal command is
+all you need:
+
+```bash
+docker compose up --build
+```
+
+If the NVIDIA driver is missing, Compose fails at startup with a device-driver
+error. That is intentional: this profile on CPU is not interactively usable, so
+failing loudly beats silently degrading.
+
+VRAM with everything resident:
+
+```
+RuadaptQwen3-8B-Hybrid, Q4_K_M   ~5.0 GB
+bge-reranker-v2-m3, fp16         ~1.1 GB
+mpnet embedder, fp32             ~1.1 GB
+CUDA context + activations       ~1.0 GB
+                                 --------
+                                 ~8.2 GB of 11 GB
+```
+
+### Smaller machines
+
+The committed profile does **not** fit an 8GB Apple Silicon Mac, and Docker
+Desktop on macOS cannot reach the Apple GPU at all (there is no Metal
+passthrough into its Linux VM). Requesting the `nvidia` driver also fails
+there, so the `deploy:` block under the `ollama` service has to go.
+
+Alongside that, change `params.yaml`:
+
+| Key | Value | Why |
+|-----|-------|-----|
+| `llm.model` | `qwen2.5:3b` | ~1.9GB; an 8B model does not fit beside Docker |
+| `reranking.enabled` | `false` | bge-v2-m3 on CPU costs ~15s per request |
+
+and run Ollama natively on the host for Metal acceleration, which also keeps
+the model out of the Docker VM's memory budget:
+
+```bash
+brew install ollama
+ollama serve             # in its own terminal
+ollama pull qwen2.5:3b
+```
+
+Then set `llm.base_url` to `http://host.docker.internal:11434` and start only
+the remaining services:
+
+```bash
+docker compose up db backend frontend
+```
 
 ## Management Commands
 
@@ -81,8 +160,8 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 
 | Command | Purpose |
 |---------|---------|
-| `import_catalog --skip-existing` | Load catalog_okko.parquet into PostgreSQL (idempotent) |
-| `generate_embeddings --batch-size 64` | Embed all movie descriptions via sentence-transformers |
+| `import_catalog --skip-existing` | Load catalog_okko.parquet into PostgreSQL (idempotent), then rebuild search vectors |
+| `generate_embeddings` | Embed all movie descriptions (batch size from params.yaml) |
 | `evaluate_scoring` | Run offline evaluation with genre-based metrics |
 | `evaluate_scoring --llm-judge` | Run evaluation with LLM graded relevance (slow) |
 | `evaluate_scoring --sweep` | Grid search over scoring weight space |
@@ -97,12 +176,12 @@ docker compose up backend
 
 # This automatically:
 # 1. Starts PostgreSQL, waits for health check
-# 2. Starts Ollama, pulls qwen2.5:7b model (~4GB, first time only)
+# 2. Starts Ollama, pulls the model named in params.yaml (first time only)
 # 3. Starts backend: runs migrations, imports 18K movies from parquet
 # 4. Starts uvicorn on port 8000
 
 # Generate embeddings (separate step, ~5 min on GPU)
-docker compose exec backend python manage.py generate_embeddings --batch-size 64
+docker compose exec backend python manage.py generate_embeddings
 
 # Verify everything works
 docker compose exec backend python manage.py shell -c "

@@ -194,7 +194,8 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   generate_candidates(embedding, intent)     ← hard filters + exact cosine search
   score_candidates(candidates, ...)          ← semantic + metadata + session,
                                                each normalized across the set
-  mmr_diversify(scored, top_n=5)             ← diversity reranking
+  rerank_candidates(query, scored)           ← cross-encoder, off by default
+  mmr_diversify(scored, top_n=5)             ← diversity selection
                  |
   _save_session()                            ← atomic update with SELECT FOR UPDATE
                  |
@@ -205,10 +206,12 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
 
 ## Session Lifecycle
 
-Sessions auto-expire after 24 hours (`ChatSession.is_expired()`). On each turn:
+Sessions auto-expire after `session.ttl_hours` (default 24) via
+`ChatSession.is_expired()`. On each turn:
 
-1. The 768-dim preference vector is updated via exponential moving average
-   (alpha=0.7, configurable via `SESSION_ALPHA` env var).
+1. The preference vector (`embedding.dimensions` wide) is updated via an
+   exponential moving average
+   (alpha from `session.alpha` in params.yaml, default 0.7).
 2. Explicit preferences (liked genres, disliked genres, themes, reference films)
    are accumulated from the parsed intent.
 3. The conversation history is appended with the query and recommended movie titles.
@@ -222,18 +225,36 @@ session, a new session is created and its UUID returned in the first SSE event.
 
 ## Configuration
 
-All settings are in `backend/recommender/settings.py`, overridable via environment variables:
+Every model name and tuning value lives in `params.yaml` at the repo root,
+which `backend/recommender/settings.py` loads at startup. It is the only place
+these can be changed -- no environment variable overrides them.
 
-| Env var | Default | Effect |
-|---------|---------|--------|
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Model for intent parsing and explanations |
-| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | Embedding model |
-| `SCORE_WEIGHT_SEMANTIC` | `0.4` | Weight for cosine similarity score |
-| `SCORE_WEIGHT_METADATA` | `0.3` | Weight for genre overlap score |
-| `SCORE_WEIGHT_SESSION` | `0.3` | Weight for session preference score |
-| `SESSION_ALPHA` | `0.7` | EMA alpha for preference vector updates |
-| `GENRE_MATCH_THRESHOLD` | `0.5` | Min cosine similarity for genre normalization |
+| params.yaml path | Default | Effect |
+|------------------|---------|--------|
+| `llm.base_url` | `http://ollama:11434` | Ollama server URL |
+| `llm.model` | RuadaptQwen3-8B-Hybrid (Q4_K_M) | Model for classification, intent parsing, explanations |
+| `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
+| `llm.timeout_seconds.*` | 30 / 60 / 120 | Per-call timeouts (classify / intent / explanation) |
+| `embedding.model` | multilingual mpnet | Embedding model |
+| `embedding.dimensions` | `768` | Vector width (changing needs a migration + re-embed) |
+| `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
+| `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
+| `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
+| `scoring.weights.*` | 0.4 / 0.3 / 0.3 | Signal weights (semantic / metadata / session) |
+| `diversification.top_n` | `5` | Results returned |
+| `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
+| `reranking.enabled` | `true` | Cross-encoder reranking on/off |
+| `reranking.model` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |
+| `reranking.device` | `auto` | `auto` / `cuda` / `cpu` (see ML.md before pinning) |
+| `reranking.top_k` | `20` | Candidates sent to the cross-encoder |
+| `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
+| `session.alpha` | `0.7` | EMA alpha for preference vector updates |
+| `session.ttl_hours` | `24` | Session expiry |
+| `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
+
+Environment variables are reserved for secrets and deployment wiring
+(`SECRET_KEY`, `DB_PASSWORD`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`,
+`DATABASE_URL`). See [Infrastructure](infrastructure.md#configuration).
 
 ## Threading Model
 
