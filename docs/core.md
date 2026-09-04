@@ -18,15 +18,16 @@ User query (Russian natural language)
   |
   v
 candidate_generation.generate_candidates(query_vec, intent)
-  |   1. pgvector HNSW cosine search ──> top-100 by semantic similarity
-  |   2. HARD FILTERS (SQL WHERE, not scoring signals):
+  |   1. HARD FILTERS (SQL WHERE, not scoring signals):
   |        - exclude movies matching negated genres
   |        - exclude movies matching excluded countries
   |        - exclude movies above max_age_rating (nulls pass through)
   |        - exclude movies older than min_release_year (nulls pass through)
-  |   3. Optional: filter by content_type from intent
+  |   2. Optional: filter by content_type from intent
+  |   3. Order survivors by exact cosine distance, take top-100
   v
-scoring.hybrid_score() per candidate
+scoring.score_candidates() over the whole candidate set
+  |   min-max normalize each signal across the set, then:
   |   semantic:  cosine_sim(query_vec, movie_vec)  * 0.4
   |   metadata:  genre_overlap(intent, movie)      * 0.3
   |   session:   cosine_sim(session_vec, movie_vec) * 0.3
@@ -85,18 +86,20 @@ for progressive frontend display.
 | `stream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `is_available()` | `GET /` | 5s | Returns `False` |
 
-### `candidate_generation.py` -- ANN Search + Hard Filters
+### `candidate_generation.py` -- Hard Filters + Exact Vector Search
 
-Retrieves the top-N semantically similar movies via pgvector HNSW index,
-then applies hard filters before passing candidates to the reranker.
+Applies hard filters, then retrieves the top-N semantically similar movies
+via exact pgvector cosine search (no ANN index -- see ML.md) before passing
+candidates to the reranker.
 
-1. **ANN search**: `CosineDistance` ordering on the embedding column, limit=100
-2. **Hard filters** (all SQL `WHERE`/`exclude`, not scoring signals):
+1. **Hard filters** (all SQL `WHERE`/`exclude`, not scoring signals):
    - `exclude(genres__contains=negated_genre)` for each negated genre
    - `exclude(country__contains=excluded_country)` for each excluded country
    - `filter(age_rating__lte=max_age_rating)` (movies with no rating pass through)
    - `filter(release_date__year__gte=min_release_year)` (movies with no date pass through)
-3. **Optional filter**: content_type from intent
+2. **Optional filter**: content_type from intent
+3. **Exact vector search**: `CosineDistance` ordering on the embedding column,
+   limit=100. No ANN index -- see ML.md for the measurements behind that choice.
 
 Returns a list of movie dicts with all metadata + embedding for downstream scoring.
 
@@ -110,6 +113,18 @@ Returns a list of movie dicts with all metadata + embedding for downstream scori
   movie genres. Direct matching only, no indirect mood-to-genre lookup.
 - **Session (0.3)**: Cosine similarity between the session preference vector and the
   movie embedding. Zero on the first turn (no session vector yet).
+
+Signals are min-max normalized across the candidate set before the weighted
+sum, so the declared weights actually hold. Raw signals have very different
+spreads (semantic cosines cluster in a narrow band; genre overlap spans the
+full 0-1 range), and a signal's real influence is `weight * spread`. Without
+normalization metadata's 0.3 outranked semantic's 0.4. A signal identical
+across every candidate carries no ranking information and collapses to a
+neutral 0.5. Pre-normalization values are kept per candidate under
+`raw_scores` for debugging and evaluation.
+
+Scoring is set-level (`score_candidates`) rather than per-movie, because
+normalization needs the full candidate pool to know each signal's range.
 
 Weights are configurable via `SCORE_WEIGHT_*` environment variables. Must sum to 1.0.
 Evaluated via `manage.py evaluate_scoring` and documented in `docs/ML.md`.

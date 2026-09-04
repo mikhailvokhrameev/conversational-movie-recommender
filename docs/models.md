@@ -24,7 +24,7 @@ Represents a movie, series, or multi-episode film from the Okko catalog.
 
 **Indexes**:
 - B-tree on `serial_name` (Django `db_index=True`)
-- HNSW on `embedding` with cosine distance (`m=16, ef_construction=64`)
+- No ANN index on `embedding` -- exact cosine search (see ML.md for why)
 - Unique constraint on `url`
 
 **Data source**: `catalog_okko.parquet` (18,130 items). Loaded via

@@ -191,8 +191,9 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   │   (Ollama LLM, ~2s)            │  (sentence-transformers, ~0.3s)
   └──────────────┬──────────────────┘
                  v
-  generate_candidates(embedding, intent)     ← pgvector HNSW ANN search
-  hybrid_score() per candidate               ← semantic + metadata + session
+  generate_candidates(embedding, intent)     ← hard filters + exact cosine search
+  score_candidates(candidates, ...)          ← semantic + metadata + session,
+                                               each normalized across the set
   mmr_diversify(scored, top_n=5)             ← diversity reranking
                  |
   _save_session()                            ← atomic update with SELECT FOR UPDATE

@@ -13,7 +13,7 @@ The system runs as 4 Docker services via `docker compose up`:
 │  :3000     │  :8000     │  :11434       │  :5433         │
 │            │            │               │                │
 │  Vite dev  │  uvicorn   │  auto-pulls   │  pgvector ext  │
-│  server    │  ASGI      │  model on     │  HNSW index    │
+│  server    │  ASGI      │  model on     │  exact vector  │
 │            │            │  first start  │                │
 │  proxies   │  sentence- │               │  catalog +     │
 │  /api/*    │  transformers│              │  sessions      │

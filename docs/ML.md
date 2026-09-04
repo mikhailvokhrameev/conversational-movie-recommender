@@ -62,10 +62,25 @@ that silently produces wrong results.
 
 ## Candidate Generation
 
-**Choice**: pgvector HNSW index with cosine distance, top-100 candidates
+**Choice**: exact pgvector cosine search, no ANN index, top-100 candidates
 
-**Why HNSW over IVFFlat**: At 18K items, memory overhead is negligible.
-HNSW provides better recall without requiring a training step.
+**Why no index at all**: The original question was framed as "HNSW or
+IVFFlat", which skipped the prior question of whether approximate search is
+warranted. At 18,130 items it is not. A brute-force top-100 over 18,130 x 768
+float32 vectors measures ~1.2 ms in numpy; in Postgres, with row overhead, a
+sequential scan lands in the tens of milliseconds. The same request spends
+roughly 2 seconds in the Ollama intent call, so the index was optimising
+under 2% of request latency in exchange for giving up exact recall.
+
+**Why it actively hurt**: hard constraints (negations, country exclusions,
+age rating, release year) are applied as WHERE clauses before the vector
+ordering. An HNSW scan walks its graph and post-filters, so selective
+filters can leave far fewer than the requested 100 candidates. Exact search
+applies the filters first and then ranks whatever genuinely qualifies.
+
+**When to revisit**: if the catalog grows by roughly an order of magnitude
+(~200K+ items), measure again and reintroduce an index if the scan shows up
+in the latency budget.
 
 **Negation as hard filter**: User negations ("не хочу ужасы") are applied
 as hard filters in candidate generation, not as scoring signals. A user

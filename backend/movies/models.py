@@ -3,7 +3,7 @@ import uuid
 
 from django.db import models
 from django.utils import timezone
-from pgvector.django import VectorField, HnswIndex
+from pgvector.django import VectorField
 
 
 def generate_token():
@@ -24,16 +24,13 @@ class Movie(models.Model):
     url = models.URLField(max_length=500, unique=True)
     embedding = VectorField(dimensions=768, null=True, blank=True)
 
-    class Meta:
-        indexes = [
-            HnswIndex(
-                name="movie_embedding_hnsw",
-                fields=["embedding"],
-                m=16,
-                ef_construction=64,
-                opclasses=["vector_cosine_ops"],
-            ),
-        ]
+    # No ANN index on `embedding` by design. At ~18K rows an exact cosine scan
+    # costs on the order of tens of milliseconds, against an ~2s Ollama intent
+    # call in the same request -- so HNSW bought under 2% of request latency
+    # while giving up exact recall. It also degrades under the hard filters in
+    # candidate_generation: a filtered HNSW scan post-filters its candidate
+    # list and can return far fewer rows than the requested limit. Revisit if
+    # the catalog grows by an order of magnitude.
 
     def __str__(self):
         return self.serial_name

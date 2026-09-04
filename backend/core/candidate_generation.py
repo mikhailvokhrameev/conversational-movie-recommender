@@ -1,12 +1,15 @@
-"""Candidate generation via pgvector approximate nearest neighbor search.
+"""Candidate generation via exact pgvector nearest neighbor search.
 
-Retrieves the top-N most semantically similar movies from the catalog using
-HNSW cosine distance, then applies hard filters (genre negation, country
-exclusion, max age rating, min release year, content type) before passing
-candidates to the hybrid reranker.
+Applies hard filters (genre negation, country exclusion, max age rating,
+min release year, content type) as SQL WHERE clauses, then orders the
+surviving rows by exact cosine distance and takes the top-N.
+
+Exact rather than approximate: see the note on Movie.embedding in models.py.
+Filters run before the ordering, so they constrain the true nearest-neighbor
+set rather than post-filtering an approximate one.
 
 Pipeline position:
-  query embedding ──> ANN search (pgvector HNSW) ──> hard filters ──> candidates
+  query embedding ──> hard filters ──> exact cosine top-N ──> candidates
 """
 
 import logging
@@ -26,15 +29,15 @@ def generate_candidates(
     intent: dict | None = None,
     limit: int = DEFAULT_CANDIDATE_COUNT,
 ) -> list[dict]:
-    """Retrieve candidate movies via ANN search with hard filters.
+    """Retrieve candidate movies via exact cosine search with hard filters.
 
-    1. pgvector HNSW cosine search for top candidates
-    2. Hard filters: exclude movies matching negated genres, excluded
+    1. Hard filters: exclude movies matching negated genres, excluded
        countries, above the requested age rating, or older than the
        requested release year
-    3. Optional: filter by content_type if specified in intent
+    2. Optional: filter by content_type if specified in intent
+    3. Order the surviving rows by exact cosine distance, take `limit`
 
-    These are true SQL WHERE-clause exclusions, not scoring weights --
+    The filters are true SQL WHERE-clause exclusions, not scoring weights --
     a movie violating a hard constraint never reaches the candidate set,
     regardless of how well it scores semantically.
     """
