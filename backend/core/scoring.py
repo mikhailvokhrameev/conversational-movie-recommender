@@ -1,51 +1,59 @@
-"""Multi-signal hybrid scoring with MMR diversification.
-
-Scoring pipeline:
-  candidates ──> hybrid_score() per movie ──> mmr_diversify() ──> top-N
-
-Three scoring signals, weighted sum:
-  - semantic (0.4): cosine similarity between query and movie embeddings
-  - metadata (0.3): genre overlap between LLM-extracted intent and movie genres
-  - session  (0.3): cosine similarity between session preference vector and movie
-
-Cosine similarity is mapped from [-1, 1] to [0, 1] via (sim + 1) / 2.
-Weights are configurable via SCORE_WEIGHT_* environment variables.
-
-MMR (Maximal Marginal Relevance, Carbonell & Goldstein 1998) ensures the
-top-N results are diverse: each subsequent pick maximizes
-  lambda * score - (1 - lambda) * max_similarity_to_selected
-"""
-
 from django.conf import settings
 
 from core.embedding_service import cosine_similarity
 
+SIGNALS = ("semantic", "metadata", "session")
 
-def hybrid_score(
-    movie: dict,
+# 0.5 keeps displayed scores in a natural mid-range and matches _metadata_score's "no information" convention
+NEUTRAL_SCORE = 0.5
+
+# Avoiding division by a near-zero range
+_MIN_SPREAD = 1e-9
+
+
+def score_candidates(
+    candidates: list[dict],
     query_embedding: list[float],
     intent: dict,
     session_vector: list[float] | None = None,
     weights: dict | None = None,
-) -> dict:
+) -> list[dict]:
+    """Score every candidate, normalizing each signal across the whole set.
+
+    Scoring is set-level rather than per-movie because normalization needs
+    the full candidate pool to know each signal's actual range.
+
+    Returns new dicts (candidates are not mutated), each carrying the
+    normalized per-signal scores, the weighted `total`, and the pre-
+    normalization values under `raw_scores` for debugging and evaluation.
+    """
+    if not candidates:
+        return []
+
     w = weights or settings.SCORE_WEIGHTS
 
-    semantic = _semantic_score(movie, query_embedding)
-    metadata = _metadata_score(movie, intent)
-    session = _session_score(movie, session_vector) if session_vector else 0.0
-
-    total = (
-        semantic * w["semantic"]
-        + metadata * w["metadata"]
-        + session * w["session"]
-    )
-
-    return {
-        "total": total,
-        "semantic": semantic,
-        "metadata": metadata,
-        "session": session,
+    raw = {
+        "semantic": [_semantic_score(c, query_embedding) for c in candidates],
+        "metadata": [_metadata_score(c, intent) for c in candidates],
+        "session": [
+            _session_score(c, session_vector) if session_vector else 0.0
+            for c in candidates
+        ],
     }
+    normalized = {signal: _normalize(values) for signal, values in raw.items()}
+
+    scored = []
+    for i, candidate in enumerate(candidates):
+        signal_scores = {signal: normalized[signal][i] for signal in SIGNALS}
+        scored.append(
+            {
+                **candidate,
+                **signal_scores,
+                "total": sum(signal_scores[s] * w[s] for s in SIGNALS),
+                "raw_scores": {signal: raw[signal][i] for signal in SIGNALS},
+            }
+        )
+    return scored
 
 
 def mmr_diversify(
@@ -57,6 +65,12 @@ def mmr_diversify(
 
     Each candidate dict must have 'total' (relevance score) and
     'embedding' (for pairwise similarity computation).
+
+    Note: `max_sim` here is a raw cosine in [-1, 1] while `relevance` is in
+    [0, 1], so the diversity penalty is on a different scale than relevance.
+    Left as-is deliberately: correcting it changes ranking behaviour, and
+    there is no golden-set evaluation yet to measure whether the change
+    helps. Revisit once retrieval metrics exist.
     """
     if len(scored_candidates) <= top_n:
         return scored_candidates
@@ -97,6 +111,24 @@ def mmr_diversify(
             break
 
     return selected
+
+
+def _normalize(values: list[float]) -> list[float]:
+    """Min-max normalize a signal's values to [0, 1] across the candidate set.
+
+    A signal where every candidate scores the same carries no ranking
+    information, so it collapses to NEUTRAL_SCORE instead of being stretched
+    across the full range by numerical noise.
+    """
+    if not values:
+        return []
+
+    low, high = min(values), max(values)
+    spread = high - low
+    if spread < _MIN_SPREAD:
+        return [NEUTRAL_SCORE] * len(values)
+
+    return [(value - low) / spread for value in values]
 
 
 def _embedding_similarity(vec: list[float], movie: dict) -> float:

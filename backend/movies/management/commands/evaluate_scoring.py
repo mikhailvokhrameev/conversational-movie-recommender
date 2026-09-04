@@ -22,7 +22,7 @@ from core.evaluation import (
     evaluate_query,
     llm_relevance_score,
 )
-from core.scoring import hybrid_score, mmr_diversify
+from core.scoring import mmr_diversify, score_candidates
 from movies.models import Movie
 
 logger = logging.getLogger(__name__)
@@ -109,11 +109,7 @@ class Command(BaseCommand):
         intent = self._build_intent(test_case)
         candidates = generate_candidates(query_embedding, intent)
 
-        scored = []
-        for movie in candidates:
-            scores = hybrid_score(movie, query_embedding, intent, weights=weights)
-            scored.append({**movie, **scores})
-
+        scored = score_candidates(candidates, query_embedding, intent, weights=weights)
         scored.sort(key=lambda x: x["total"], reverse=True)
         diversified = mmr_diversify(scored, top_n=k)
 

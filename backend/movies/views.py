@@ -17,7 +17,7 @@ from core.ollama_client import (
     aclassify_message, aparse_intent,
     astream_conversational, astream_explanation,
 )
-from core.scoring import hybrid_score, mmr_diversify
+from core.scoring import mmr_diversify, score_candidates
 from core.session_manager import track_explicit_preferences, update_preference_vector
 from .models import ChatSession, Movie
 
@@ -94,11 +94,7 @@ def _append_history(session: ChatSession, role: str, content: str):
 @sync_to_async(thread_sensitive=False)
 def _generate_and_score(query_embedding, intent, session_vector):
     candidates = generate_candidates(query_embedding, intent)
-    scored = []
-    for c in candidates:
-        scores = hybrid_score(c, query_embedding, intent, session_vector)
-        c.update(scores)
-        scored.append(c)
+    scored = score_candidates(candidates, query_embedding, intent, session_vector)
     return mmr_diversify(scored, top_n=TOP_N)
 
 
