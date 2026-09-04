@@ -38,11 +38,21 @@ This captures title, genre signal, and semantic content in one vector.
 
 ## LLM (Ollama)
 
-**Choice**: `qwen2.5:7b` via standalone Ollama container
+**Choice**: Ollama running `RefalMachine/RuadaptQwen3-8B-Hybrid-GGUF` (Q4_K_M),
+set by `llm.model` in `params.yaml`
 
-**Why**: Runs locally (no API costs), supports Russian, handles JSON mode
-for structured output. The 7B size fits in 8GB VRAM and runs acceptably
-on CPU (~10-20s per generation).
+**Why**: Runs locally (no API costs) and is explicitly adapted for Russian,
+which matters for a Russian-language catalog where the generic Qwen tokenizer
+spends more tokens per word. ~5GB at Q4_K_M, which fits the 11GB card
+alongside the reranker and embedder (~8.2GB total).
+
+**Reasoning mode is disabled** (`llm.thinking: false`). This is a hybrid
+reasoning model: left alone it emits a `<think>...</think>` span before every
+answer. That breaks JSON-mode intent parsing and adds seconds to each of the
+three sequential LLM calls per turn. The flag is sent to Ollama on every
+request, and `ollama_client` additionally strips reasoning spans from both
+parsed JSON and the streamed output, so an Ollama build that ignores the flag
+degrades to slower rather than broken.
 
 **Two roles**:
 1. **Intent parsing**: extracts genres, mood, themes, negations, reference
@@ -53,7 +63,7 @@ on CPU (~10-20s per generation).
 **Genre normalization**: The LLM often returns genre names in wrong form
 (e.g., "комедия" instead of "Комедии"). An embedding-based normalizer
 maps LLM output to exact catalog genre names by cosine similarity.
-Configurable threshold via `GENRE_MATCH_THRESHOLD` env var (default 0.5).
+Threshold is `intent.genre_match_threshold` in `params.yaml` (default 0.5).
 
 **Fallback**: When Ollama is unavailable, `parse_intent` returns empty intent.
 Semantic search via embeddings still works without parsed intent -- it just
@@ -126,11 +136,12 @@ meaningful, so discarding magnitude would lose real information.
 every query; lexical only when the user names something. The weighting means
 lexical loses ties rather than being suppressed.
 
-**Known limitation**: fusion decides which candidates enter the pool, but
-final ordering still comes from the three-signal scorer, which has no lexical
-term. A movie retrieved purely on an exact title match can therefore enter
-the pool and then rank low. The cross-encoder reranker is the intended fix,
-since it judges query-document relevance directly.
+**Interaction with reranking**: fusion decides which candidates enter the
+pool, not the final order -- the three-signal scorer has no lexical term, so
+a movie retrieved purely on an exact title match would enter the pool and
+then rank low. The cross-encoder reranker closes that gap: it reads the query
+and the movie text together, so a literal title match scores highly on
+relevance regardless of what the embeddings thought.
 
 ## Hybrid Scoring
 
@@ -172,9 +183,56 @@ impact on LLM-judged relevance (3.55-3.60 out of 5.0). Semantic similarity
 dominates regardless of weight allocation. This suggests the embedding quality
 is the bottleneck, not the scoring formula.
 
-**Configurable**: All weights are configurable via environment variables
-(`SCORE_WEIGHT_SEMANTIC`, `SCORE_WEIGHT_METADATA`, `SCORE_WEIGHT_SESSION`).
-Must sum to 1.0.
+**Configurable**: weights live in `params.yaml` under `scoring.weights` and
+must sum to 1.0. That file is the only place they can be changed.
+
+## Cross-Encoder Reranking
+
+**Choice**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 20 scored
+candidates, blended 50/50 with the scorer total.
+
+**Why rerank at all**: the scorer is a bi-encoder comparison -- query vector
+against movie vector, each computed without ever seeing the other. A
+cross-encoder reads both together in one forward pass, which is a strictly
+richer view and typically improves ordering more than any weight tuning on
+the existing signals. It is also what makes the lexical channel pay off:
+an exact title match scores highly on direct relevance even when the
+embeddings disagreed.
+
+**Model and device are one decision**: bge-reranker-v2-m3 is an
+XLM-RoBERTa-large backbone at ~302M body parameters, about 155 GFLOPs per pair
+at 256 tokens. Twenty candidates is ~3.1 TFLOPs -- roughly 0.15s on this GPU
+and roughly 15s on CPU. The same model is either comfortably interactive or
+completely unusable depending on where it runs, so `reranking.device: auto`
+(cuda when present) is not an optimisation here, it is what makes the choice
+viable at all.
+
+On a machine without a usable GPU, do not simply move this model to CPU.
+Either switch `reranking.model` to a small multilingual cross-encoder such as
+`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (~21M body parameters, ~14x less
+compute), or set `reranking.enabled: false`.
+
+**VRAM**: ~1.1GB at fp16, on top of ~5GB for the LLM and ~1.1GB for the
+embedder -- about 8.2GB of the 11GB card.
+
+**Why blend rather than replace**: the cross-encoder judges query-document
+relevance and knows nothing about session preference or extracted genre
+intent. Replacing the scorer total would discard personalization entirely.
+Both sides are min-max normalized across the slice before blending, so
+`reranking.weight` means what it says.
+
+**Why only 20**: every candidate is a model forward pass, so `reranking.top_k`
+is the primary latency dial. Twenty is comfortably more than the five results
+returned, while keeping the added latency near a second on CPU.
+
+**Fail-safe**: a model that fails to load, or a prediction that raises, logs
+and returns candidates in scorer order. A failed download must not break
+recommendations, and the failure is cached so it is not retried per request.
+
+**Not yet measured**: whether reranking improves results here is unverified.
+It is a well-established technique and the reasoning is sound, but the
+golden-set evaluation is the thing that would actually prove it. Treat
+`reranking.weight` and `reranking.top_k` as untuned defaults until then.
 
 ## MMR Diversification
 
@@ -201,7 +259,7 @@ of redundancy: same director, same sub-genre, same narrative structure.
 **Formula**: `new_vec = alpha * query_vec + (1 - alpha) * current_vec`,
 then L2-normalized.
 
-**alpha = 0.7** (configurable via `SESSION_ALPHA`): Recent queries contribute
+**alpha = 0.7** (`session.alpha` in params.yaml): Recent queries contribute
 70% of the signal. After 5 turns, the first query's weight decays to ~0.8%.
 
 **Why EMA over simple averaging**: Simple averaging gives equal weight to all

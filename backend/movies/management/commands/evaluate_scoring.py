@@ -22,6 +22,7 @@ from core.evaluation import (
     evaluate_query,
     llm_relevance_score,
 )
+from core.reranking import rerank_candidates
 from core.scoring import mmr_diversify, score_candidates
 from movies.models import Movie
 
@@ -111,7 +112,8 @@ class Command(BaseCommand):
 
         scored = score_candidates(candidates, query_embedding, intent, weights=weights)
         scored.sort(key=lambda x: x["total"], reverse=True)
-        diversified = mmr_diversify(scored, top_n=k)
+        reranked = rerank_candidates(query, scored)
+        diversified = mmr_diversify(reranked, top_n=k)
 
         recommended_titles = [m["serial_name"] for m in diversified]
         recommended_embeddings = [

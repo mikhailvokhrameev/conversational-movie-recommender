@@ -31,20 +31,6 @@ llm:
   model: hf.co/RefalMachine/RuadaptQwen3-8B-Hybrid-GGUF:Q4_K_M
   base_url: http://ollama:11434
 
-  # RuadaptQwen3-8B-Hybrid is a HYBRID REASONING model: left to itself it emits
-  # a <think>...</think> block before its answer. That is actively harmful
-  # here. Intent parsing and classification run in JSON mode and expect a bare
-  # object, and the reasoning pass costs seconds per call on top of three
-  # already-sequential LLM calls per turn.
-  #
-  # Setting this false sends "think": false to Ollama, which suppresses the
-  # reasoning pass on models that support the flag. ollama_client also strips
-  # any <think> block defensively before parsing JSON, so an Ollama build that
-  # ignores the flag degrades to "slower" rather than "broken".
-  #
-  # Set true only to experiment with reasoning quality on the explanation step.
-  thinking: false
-
   timeout_seconds:
     classify: 30
     intent: 60
@@ -101,6 +87,24 @@ diversification:
   top_n: 5
   # MMR relevance/diversity tradeoff. 1.0 is pure relevance, 0.0 pure novelty.
   lambda: 0.7
+
+reranking:
+  enabled: true
+  # bge-reranker-v2-m3: multilingual, XLM-RoBERTa-large backbone (~568M params,
+  # ~302M in the body). Roughly 155 GFLOPs per pair at 256 tokens, so 20 pairs
+  # is ~3.1 TFLOPs -- about 0.15s on this GPU versus ~15s on CPU. It is only
+  # viable *because* device below puts it on the card.
+  model: BAAI/bge-reranker-v2-m3
+  # auto lets sentence-transformers pick (cuda > mps > cpu). Pin to "cpu" to
+  # free ~1.1GB of VRAM, but only with a small reranker -- this model on CPU
+  # makes every request take tens of seconds.
+  device: auto
+  # Every candidate here is a model forward pass: the main latency dial.
+  top_k: 20
+  # Share of the final score taken from the cross-encoder; the rest stays with
+  # the three-signal scorer, which carries session and genre intent.
+  weight: 0.5
+  max_length: 256
 
 session:
   # EMA weight on the newest query when updating the preference vector.

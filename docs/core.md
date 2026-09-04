@@ -35,6 +35,9 @@ scoring.score_candidates() over the whole candidate set
   |   metadata:  genre_overlap(intent, movie)      * 0.3
   |   session:   cosine_sim(session_vec, movie_vec) * 0.3
   v
+reranking.rerank_candidates(query, scored)   [optional, CPU cross-encoder]
+  |   top-20 by score -> (query, movie) pairs -> blended 50/50 with scorer
+  v
 scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
   |   Greedy MMR: balance relevance vs diversity
   v
@@ -137,7 +140,7 @@ neutral 0.5. Pre-normalization values are kept per candidate under
 Scoring is set-level (`score_candidates`) rather than per-movie, because
 normalization needs the full candidate pool to know each signal's range.
 
-Weights are configurable via `SCORE_WEIGHT_*` environment variables. Must sum to 1.0.
+Weights live in `params.yaml` under `scoring.weights`. Must sum to 1.0.
 Evaluated via `manage.py evaluate_scoring` and documented in `docs/ML.md`.
 
 **MMR diversification** (Carbonell & Goldstein, 1998):
@@ -146,6 +149,42 @@ pick is the highest-scored candidate. Each subsequent pick maximizes:
 `lambda * relevance_score - (1 - lambda) * max_similarity_to_already_selected`.
 Default lambda=0.7 (relevance-biased). This prevents returning 5 movies by
 the same director or in the same sub-genre.
+
+### `reranking.py` -- Cross-Encoder Reranking
+
+The scorer compares a query *embedding* to a movie *embedding* -- two vectors
+produced independently that never see each other. A cross-encoder reads the
+query and the movie text together in a single forward pass and scores their
+relevance directly, which is what lets it catch relationships a bi-encoder
+structurally cannot. The cost is that nothing can be precomputed: every
+(query, movie) pair is a model call.
+
+So it runs on a short slice. The top `reranking.top_k` (default 20) candidates by
+scorer total are paired with the query, scored, and blended:
+
+    total = reranking.weight * rerank_norm + (1 - reranking.weight) * scorer_norm
+
+Both sides are min-max normalized across the slice first, for the same reason
+the scorer normalizes its own signals -- otherwise the weight would not mean
+what it says. Blending rather than replacing keeps the session and genre
+signal, which the cross-encoder knows nothing about.
+
+The call returns only the reranked slice. Candidates below the cut ranked
+below 20 items and cannot reach a top-5 result, and keeping them would mix
+two incompatible `total` scales in one list.
+
+**Model and device are one decision.** `bge-reranker-v2-m3` (the default) is
+an XLM-RoBERTa-large backbone: ~302M body parameters, ~155 GFLOPs per pair at
+256 tokens, so 20 candidates is ~3.1 TFLOPs. That is ~0.15s on a discrete GPU
+and ~15s on CPU. `reranking.device: auto` picks cuda when present, which is
+what makes this model viable; without a GPU, switch `reranking.model` to a
+small cross-encoder or set `reranking.enabled: false` rather than just moving
+this one to CPU.
+
+**Fail-safe**: a model that will not load or a prediction that raises logs and
+returns the candidates in scorer order. Reranking is a quality improvement,
+never a correctness dependency, so it cannot break a request. Disable
+entirely with `reranking.enabled: false` in params.yaml.
 
 ### `session_manager.py` -- Preference Learning
 

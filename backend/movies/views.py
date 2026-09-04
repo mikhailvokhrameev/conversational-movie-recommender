@@ -5,6 +5,7 @@ import secrets
 from datetime import datetime
 
 from asgiref.sync import sync_to_async
+from django.conf import settings
 from django.db import transaction
 from django.http import JsonResponse, StreamingHttpResponse
 from django.views import View
@@ -17,13 +18,12 @@ from core.ollama_client import (
     aclassify_message, aparse_intent,
     astream_conversational, astream_explanation,
 )
+from core.reranking import rerank_candidates
 from core.scoring import mmr_diversify, score_candidates
 from core.session_manager import track_explicit_preferences, update_preference_vector
 from .models import ChatSession, Movie
 
 logger = logging.getLogger(__name__)
-
-TOP_N = 5
 
 
 class HealthView(APIView):
@@ -95,7 +95,8 @@ def _append_history(session: ChatSession, role: str, content: str):
 def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
     candidates = generate_candidates(query_embedding, intent, query_text=query_text)
     scored = score_candidates(candidates, query_embedding, intent, session_vector)
-    return mmr_diversify(scored, top_n=TOP_N)
+    reranked = rerank_candidates(query_text, scored)
+    return mmr_diversify(reranked, top_n=settings.TOP_N)
 
 
 def _last_movies_context(session: ChatSession) -> str:
