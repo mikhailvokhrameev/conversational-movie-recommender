@@ -17,14 +17,17 @@ User query (Russian natural language)
   └──[PARALLEL]──> embedding_service.encode_query()  ──> 768-dim query vector
   |
   v
-candidate_generation.generate_candidates(query_vec, intent)
+candidate_generation.generate_candidates(query_vec, intent, query_text)
   |   1. HARD FILTERS (SQL WHERE, not scoring signals):
   |        - exclude movies matching negated genres
   |        - exclude movies matching excluded countries
   |        - exclude movies above max_age_rating (nulls pass through)
   |        - exclude movies older than min_release_year (nulls pass through)
   |   2. Optional: filter by content_type from intent
-  |   3. Order survivors by exact cosine distance, take top-100
+  |   3. TWO RETRIEVAL CHANNELS over the survivors:
+  |        semantic -- exact cosine distance, top-100
+  |        lexical  -- Postgres full-text over title/director/actors, top-100
+  |   4. Fuse the two rankings via RRF -> top-100 candidates
   v
 scoring.score_candidates() over the whole candidate set
   |   min-max normalize each signal across the set, then:
@@ -86,7 +89,7 @@ for progressive frontend display.
 | `stream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `is_available()` | `GET /` | 5s | Returns `False` |
 
-### `candidate_generation.py` -- Hard Filters + Exact Vector Search
+### `candidate_generation.py` -- Hard Filters + Hybrid Retrieval
 
 Applies hard filters, then retrieves the top-N semantically similar movies
 via exact pgvector cosine search (no ANN index -- see ML.md) before passing
@@ -98,8 +101,16 @@ candidates to the reranker.
    - `filter(age_rating__lte=max_age_rating)` (movies with no rating pass through)
    - `filter(release_date__year__gte=min_release_year)` (movies with no date pass through)
 2. **Optional filter**: content_type from intent
-3. **Exact vector search**: `CosineDistance` ordering on the embedding column,
+3. **Semantic channel**: `CosineDistance` ordering on the embedding column,
    limit=100. No ANN index -- see ML.md for the measurements behind that choice.
+4. **Lexical channel**: full-text match against `search_vector` (title weight A,
+   director and actors weight B), ranked by `ts_rank`, limit=100. Query terms are
+   OR-ed, since a conversational sentence would match nothing under AND.
+   Skipped entirely when the message yields no usable terms.
+5. **RRF fusion**: `weight / (60 + rank)` summed per movie across channels.
+   Rank-based because a cosine distance and a `ts_rank` are not comparable
+   quantities. Semantic is weighted 1.0 and lexical 0.7, so lexical only loses
+   ties. Fusion decides pool membership; `scoring.py` re-ranks the pool.
 
 Returns a list of movie dicts with all metadata + embedding for downstream scoring.
 

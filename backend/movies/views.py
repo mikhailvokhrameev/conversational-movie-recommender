@@ -92,8 +92,8 @@ def _append_history(session: ChatSession, role: str, content: str):
 
 
 @sync_to_async(thread_sensitive=False)
-def _generate_and_score(query_embedding, intent, session_vector):
-    candidates = generate_candidates(query_embedding, intent)
+def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
+    candidates = generate_candidates(query_embedding, intent, query_text=query_text)
     scored = score_candidates(candidates, query_embedding, intent, session_vector)
     return mmr_diversify(scored, top_n=TOP_N)
 
@@ -141,7 +141,7 @@ class ChatView(View):
                 sync_to_async(encode_query)(message),
             )
             session_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
-            top_movies = await _generate_and_score(query_embedding, intent, session_vector)
+            top_movies = await _generate_and_score(query_embedding, intent, session_vector, query_text=message)
             serialized = [_serialize_movie(m) for m in top_movies]
             await _save_session(session, message, intent, query_embedding, top_movies)
         except Exception:
@@ -200,7 +200,7 @@ class ChatView(View):
                 sync_to_async(encode_query)(message),
             )
             session_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
-            top_movies = await _generate_and_score(query_embedding, intent, session_vector)
+            top_movies = await _generate_and_score(query_embedding, intent, session_vector, query_text=message)
             serialized = [_serialize_movie(m) for m in top_movies]
             await _save_session(session, message, intent, query_embedding, top_movies)
         except Exception:

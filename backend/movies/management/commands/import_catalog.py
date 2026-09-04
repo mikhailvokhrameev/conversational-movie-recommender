@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.management.base import BaseCommand
 
 from movies.models import Movie
+from movies.search_index import refresh_search_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,12 @@ class Command(BaseCommand):
             Movie.objects.bulk_create(batch, ignore_conflicts=True)
             created += len(batch)
             self.stdout.write(f"  Imported {created}/{len(movies)}...")
+
+        # bulk_create bypasses any per-row vector computation, so the lexical
+        # index is rebuilt here in one UPDATE.
+        self.stdout.write("Building full-text search vectors...")
+        indexed = refresh_search_vectors(only_missing=skip_existing)
+        self.stdout.write(f"  Indexed {indexed} movies")
 
         total = Movie.objects.count()
         self.stdout.write(

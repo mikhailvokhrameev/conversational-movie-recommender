@@ -1,6 +1,8 @@
 import secrets
 import uuid
 
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.utils import timezone
 from pgvector.django import VectorField
@@ -24,6 +26,11 @@ class Movie(models.Model):
     url = models.URLField(max_length=500, unique=True)
     embedding = VectorField(dimensions=768, null=True, blank=True)
 
+    # Lexical retrieval channel: title/director/actors as a weighted tsvector.
+    # Populated by movies.search_index.refresh_search_vectors(), not on save --
+    # the catalog is bulk-imported, so it is rebuilt in one UPDATE afterwards.
+    search_vector = SearchVectorField(null=True, blank=True)
+
     # No ANN index on `embedding` by design. At ~18K rows an exact cosine scan
     # costs on the order of tens of milliseconds, against an ~2s Ollama intent
     # call in the same request -- so HNSW bought under 2% of request latency
@@ -31,6 +38,14 @@ class Movie(models.Model):
     # candidate_generation: a filtered HNSW scan post-filters its candidate
     # list and can return far fewer rows than the requested limit. Revisit if
     # the catalog grows by an order of magnitude.
+    #
+    # The GIN index below is a different case: full-text matching without an
+    # index means computing tsvectors for every row on every query, which is
+    # real text processing rather than a cheap dot product.
+    class Meta:
+        indexes = [
+            GinIndex(fields=["search_vector"], name="movie_search_vector_gin"),
+        ]
 
     def __str__(self):
         return self.serial_name

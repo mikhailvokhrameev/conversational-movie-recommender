@@ -107,7 +107,7 @@ class Command(BaseCommand):
 
         query_embedding = encode_query(query)
         intent = self._build_intent(test_case)
-        candidates = generate_candidates(query_embedding, intent)
+        candidates = generate_candidates(query_embedding, intent, query_text=query)
 
         scored = score_candidates(candidates, query_embedding, intent, weights=weights)
         scored.sort(key=lambda x: x["total"], reverse=True)

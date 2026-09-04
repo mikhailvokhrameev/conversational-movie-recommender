@@ -21,10 +21,16 @@ Represents a movie, series, or multi-episode film from the Okko catalog.
 | `description` | TextField | blank | Russian-language synopsis (avg 590 chars) |
 | `url` | URLField(500) | unique | Okko catalog URL |
 | `embedding` | VectorField(768) | nullable | Pre-computed description embedding |
+| `search_vector` | SearchVectorField | nullable, GIN | Full-text vector over title (A), director/actors (B) |
 
 **Indexes**:
 - B-tree on `serial_name` (Django `db_index=True`)
 - No ANN index on `embedding` -- exact cosine search (see ML.md for why)
+- GIN on `search_vector` (`movie_search_vector_gin`) for full-text matching
+
+`search_vector` is not maintained on save. The catalog is bulk-imported, so
+`movies.search_index.refresh_search_vectors()` rebuilds it in a single UPDATE
+after import; `import_catalog` calls it automatically.
 - Unique constraint on `url`
 
 **Data source**: `catalog_okko.parquet` (18,130 items). Loaded via

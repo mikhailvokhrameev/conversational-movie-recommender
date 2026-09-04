@@ -88,9 +88,54 @@ saying "not horror" means zero tolerance. Making it a scoring signal
 (metadata=0.0) still allows horror movies through via high semantic similarity.
 Hard filtering eliminates the leakage entirely.
 
+## Lexical Retrieval Channel
+
+**Choice**: Postgres `tsvector` over title/director/actors, fused with the
+semantic channel by Reciprocal Rank Fusion.
+
+**Why a second channel**: embeddings encode meaning, not identity. A query
+naming a specific film ("что-то как Место встречи изменить нельзя") or actor
+("фильмы с Хабенским") can miss the exact record entirely, because nothing in
+the vector space privileges the literal name. Full-text search matches names
+and understands nothing, which is the complementary failure mode. Neither
+channel subsumes the other.
+
+**What is indexed**: `serial_name` at weight A, `director` and `actors` at
+weight B. `description` is deliberately excluded -- it is long free text that
+would dominate the index by token count and match on ordinary vocabulary, and
+it is exactly what the semantic channel already handles. Keeping it out
+preserves the split: lexical finds names, semantic finds meaning.
+
+**Text search config**: `russian` (snowball stemmer + stopwords). Russian is
+heavily inflected, so stemming is what lets a query for "Место встречи" match
+the catalogued "Место встречи изменить нельзя".
+
+**OR, not AND**: query terms are OR-ed. The input is a conversational
+sentence, so requiring every term to match would return nothing; `ts_rank`
+then sorts by how much of the query landed and in which weight class.
+
+**Why RRF instead of a weighted score**: a cosine distance and a `ts_rank`
+are not comparable quantities, and normalizing them against each other would
+be inventing a relationship that does not exist. RRF fuses by *rank*
+(`weight / (60 + rank)`), which is scale-free by construction. Note the
+contrast with hybrid scoring below, which uses min-max normalization instead:
+there, all three signals rank the same pool and their magnitudes are
+meaningful, so discarding magnitude would lose real information.
+
+**Channel weights**: semantic 1.0, lexical 0.7. Semantic carries signal for
+every query; lexical only when the user names something. The weighting means
+lexical loses ties rather than being suppressed.
+
+**Known limitation**: fusion decides which candidates enter the pool, but
+final ordering still comes from the three-signal scorer, which has no lexical
+term. A movie retrieved purely on an exact title match can therefore enter
+the pool and then rank low. The cross-encoder reranker is the intended fix,
+since it judges query-document relevance directly.
+
 ## Hybrid Scoring
 
-Three signals combined via weighted sum:
+Three signals combined via weighted sum, each min-max normalized across the
+candidate set first:
 
 | Signal | Default Weight | What it measures |
 |--------|---------------|------------------|
@@ -101,6 +146,26 @@ Three signals combined via weighted sum:
 **Cosine similarity mapping**: Raw cosine similarity ranges [-1, 1].
 Mapped to [0, 1] via `(sim + 1) / 2` so negative similarity contributes 0,
 not negative weight.
+
+**Why normalize before summing**: the raw signals have very different spreads.
+Semantic and session cosines cluster in a narrow band (roughly 0.50-0.80 in
+practice), while genre overlap spans the full 0-1 range and moves in large
+discrete jumps. A signal's real influence on the ranking is `weight * spread`,
+not weight alone, so un-normalized the metadata signal at 0.3 outranked the
+semantic signal at 0.4 -- the declared weights did not describe the actual
+behaviour. Min-max normalizing each signal across the candidate pool makes
+every signal span the same range, so influence equals the weight as written.
+
+A signal identical across every candidate carries no ranking information and
+collapses to a neutral 0.5 rather than being stretched across the full range
+by numerical noise. Pre-normalization values are retained per candidate under
+`raw_scores` for debugging and evaluation.
+
+This is deliberately a different technique from the RRF used to fuse the two
+retrieval channels above. Retrieval fuses incomparable scores across
+independent systems, where only rank is trustworthy. Scoring ranks one shared
+pool with three commensurable signals, where magnitude is real information
+worth keeping.
 
 **Weight tuning**: Grid search across 6 weight configurations showed minimal
 impact on LLM-judged relevance (3.55-3.60 out of 5.0). Semantic similarity
