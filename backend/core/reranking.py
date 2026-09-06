@@ -50,9 +50,6 @@ _load_lock = threading.Lock()
 # than overlap, and on GPU they also stack VRAM for no throughput gain.
 _predict_lock = threading.Lock()
 
-# Characters of description passed to the cross-encoder. The model truncates
-# to its own max_length anyway; this keeps tokenizer work bounded.
-_DESCRIPTION_CHARS = 400
 
 
 def get_model():
@@ -108,8 +105,11 @@ def rerank_candidates(
     scorer normalizes its own signals: without it the blend weight would not
     mean what it says.
 
-    Returns candidates unchanged if reranking is disabled, unavailable, or
-    there is nothing to do.
+    Returns the full candidate pool if reranking is disabled or there is
+    nothing to do (fewer than 2 candidates); if the model is unavailable or
+    prediction fails, returns the full pool re-sorted by scorer `total` --
+    untruncated in both cases, so a reranker failure costs relevance, not
+    candidates the caller would otherwise have had for diversification.
     """
     if not settings.RERANKER_ENABLED or not query or not candidates:
         return candidates
@@ -158,6 +158,6 @@ def _movie_text(movie: dict) -> str:
     parts = [
         movie.get("serial_name") or "",
         ", ".join(movie.get("genres") or []),
-        (movie.get("description") or "")[:_DESCRIPTION_CHARS],
+        (movie.get("description") or "")[:settings.RERANK_DESCRIPTION_CHARS],
     ]
     return ". ".join(part for part in parts if part)

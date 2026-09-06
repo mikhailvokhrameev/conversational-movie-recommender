@@ -129,6 +129,9 @@ reranking:
   # the three-signal scorer, which carries session and genre intent.
   weight: 0.5
   max_length: 256
+  # Characters of description passed to the cross-encoder. The model truncates
+  # to its own max_length anyway; this keeps tokenizer work bounded.
+  description_chars: 400
 
 session:
   # EMA weight on the newest query when updating the preference vector.

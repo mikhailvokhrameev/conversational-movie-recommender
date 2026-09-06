@@ -160,6 +160,16 @@ class TestFailSafe:
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [1, 2]
 
+    def test_unavailable_model_does_not_truncate_pool_larger_than_top_k(self, settings):
+        """Fail-safe intentionally returns the full pool, not the top_k slice --
+        per the module docstring, a reranker failure must not cost the caller
+        candidates it would otherwise have had for downstream diversification."""
+        settings.RERANK_TOP_K = 2
+        candidates = [_candidate(i, 1.0 - i / 10) for i in range(5)]
+        with patch.object(reranking, "get_model", return_value=None):
+            result = rerank_candidates("запрос", candidates)
+        assert len(result) == 5
+
     def test_predict_failure_falls_back_to_scorer_order(self, settings):
         model = MagicMock()
         model.predict.side_effect = RuntimeError("inference exploded")

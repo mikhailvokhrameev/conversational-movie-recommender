@@ -152,6 +152,7 @@ RERANKER_DEVICE = _reranking["device"]
 RERANK_TOP_K = _reranking["top_k"]
 RERANK_WEIGHT = _reranking["weight"]
 RERANK_MAX_LENGTH = _reranking["max_length"]
+RERANK_DESCRIPTION_CHARS = _reranking["description_chars"]
 
 _session = PARAMS["session"]
 SESSION_ALPHA = _session["alpha"]

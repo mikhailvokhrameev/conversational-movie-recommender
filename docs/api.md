@@ -249,6 +249,7 @@ these can be changed -- no environment variable overrides them.
 | `reranking.device` | `auto` | `auto` / `cuda` / `cpu` (see ML.md before pinning) |
 | `reranking.top_k` | `20` | Candidates sent to the cross-encoder |
 | `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
+| `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.ttl_hours` | `24` | Session expiry |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
