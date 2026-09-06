@@ -264,13 +264,23 @@ then L2-normalized.
 **alpha = 0.7** (`session.alpha` in params.yaml): Recent queries contribute
 70% of the signal. After 5 turns, the first query's weight decays to ~0.8%.
 
+**alpha_refinement = 0.92** (`session.alpha_refinement`): used instead of
+`alpha` on turns classified `refinement` ("а повеселее?", "не ужасы"). Hard
+filters (negations, exclusions) already drop disallowed genres from the
+candidate pool outright, but the EMA vector still feeds the `session`
+scoring signal on whatever survives those filters -- at alpha=0.7, 30% of a
+strongly-aligned prior-turn direction could still bias that signal back
+toward what the user just corrected away from. The higher alpha makes an
+explicit refinement dominate the vector instead of blending.
+
 **Why EMA over simple averaging**: Simple averaging gives equal weight to all
 turns. An early exploratory query permanently dilutes the signal from a later
 specific query. EMA makes recent queries dominate.
 
 **Explicit preferences**: Alongside the implicit vector, the session tracks
 liked genres, disliked genres, themes, and reference films extracted from
-parsed intent.
+parsed intent. Not currently read back into scoring or filtering -- exposed
+read-only via `GET /api/sessions/<id>/`.
 
 ## Evaluation Framework
 

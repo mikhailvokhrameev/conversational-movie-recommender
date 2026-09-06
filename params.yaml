@@ -136,6 +136,14 @@ reranking:
 session:
   # EMA weight on the newest query when updating the preference vector.
   alpha: 0.7
+  # EMA weight used instead of `alpha` on turns classified as `refinement`
+  # ("а повеселее?", "не ужасы"). Explicit corrections should dominate the
+  # session vector, not get diluted 70/30 by whatever the user asked for
+  # one turn ago -- hard filters (negations, exclusions) already drop
+  # disallowed genres outright, but the EMA vector still feeds the
+  # `session` scoring signal, so a low alpha here let a stale direction
+  # bias ranking among the movies that survive the filters.
+  alpha_refinement: 0.92
   ttl_hours: 24
 
 intent:

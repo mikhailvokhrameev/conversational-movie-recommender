@@ -192,7 +192,10 @@ Tracks per-session preferences across conversation turns using two mechanisms:
 
 **Preference vector (implicit)**: Exponential moving average of query embeddings.
 `new = alpha * query_vec + (1 - alpha) * current_vec`, then L2-normalized.
-With `alpha=0.7`, the most recent query contributes 70% of the signal.
+With `alpha=0.7`, the most recent query contributes 70% of the signal. Turns
+classified `refinement` use `alpha_refinement=0.92` instead, so an explicit
+correction dominates the vector rather than blending with the turn before it
+(see Design Decisions).
 
 **Explicit preferences**: Accumulates liked genres, disliked genres, themes, and
 reference films extracted from parsed intent.
@@ -231,6 +234,18 @@ weight. The mapping `(sim + 1) / 2` gives: -1 to 0, 0 to 0.5, 1 to 1.0.
 **Why EMA over simple averaging**: Simple averaging gives equal weight to all turns.
 An early exploratory query permanently dilutes the signal from a later specific
 query. EMA with alpha=0.7 makes recent queries dominate.
+
+**Why refinement turns use a higher alpha**: Negated genres are already excluded
+via hard filters in `candidate_generation.py`, but the EMA vector still feeds the
+`session` scoring signal over whatever survives those filters. At the default
+alpha=0.7, 30% of a strongly-aligned prior-turn direction could still bias that
+signal back toward what the user just moved away from ("не ужасы, а повеселее"
+still nudging ranking toward horror-adjacent moods). Raising alpha to 0.92 on
+`refinement` turns makes the new query dominate the vector instead of blending,
+without discarding session history entirely (see `session.alpha_refinement` in
+params.yaml). The candidate pool itself is unaffected -- `generate_candidates`
+builds it fresh each turn from the current query embedding and current-turn
+hard filters, not from session state, so this only changes ranking, not retrieval.
 
 **Why the fallback returns empty intent instead of keyword parsing**: An earlier
 version used Russian keyword stem matching as a fallback. It had two bugs:

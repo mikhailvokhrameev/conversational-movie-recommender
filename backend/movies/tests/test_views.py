@@ -2,9 +2,11 @@ import json
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
+from django.conf import settings
 from django.test import AsyncRequestFactory
 
-from movies.views import ChatView, SessionHistoryView, _serialize_movie
+from core.session_manager import update_preference_vector
+from movies.views import ChatView, SessionHistoryView, _save_session, _serialize_movie
 
 
 class TestSerializeMovie:
@@ -88,6 +90,31 @@ class TestChatViewValidation:
         view = ChatView.as_view()
         response = await view(request)
         assert response.status_code == 400
+
+
+@pytest.mark.django_db
+class TestSaveSession:
+    @pytest.mark.asyncio
+    async def test_refinement_uses_higher_alpha_than_new_search(self):
+        from movies.models import ChatSession
+
+        existing_vector = [0.1] * 768
+        new_embedding = [0.9] + [0.0] * 767
+
+        session_new_search = await ChatSession.objects.acreate(preference_vector=existing_vector)
+        await _save_session(session_new_search, "q", {}, new_embedding, [], category="new_search")
+        await session_new_search.arefresh_from_db()
+
+        session_refinement = await ChatSession.objects.acreate(preference_vector=existing_vector)
+        await _save_session(session_refinement, "q", {}, new_embedding, [], category="refinement")
+        await session_refinement.arefresh_from_db()
+
+        expected_new_search = update_preference_vector(existing_vector, new_embedding, alpha=settings.SESSION_ALPHA)
+        expected_refinement = update_preference_vector(existing_vector, new_embedding, alpha=settings.SESSION_ALPHA_REFINEMENT)
+
+        assert list(session_new_search.preference_vector) == pytest.approx(expected_new_search)
+        assert list(session_refinement.preference_vector) == pytest.approx(expected_refinement)
+        assert list(session_new_search.preference_vector) != pytest.approx(list(session_refinement.preference_vector))
 
 
 @pytest.mark.django_db

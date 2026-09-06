@@ -156,6 +156,7 @@ RERANK_DESCRIPTION_CHARS = _reranking["description_chars"]
 
 _session = PARAMS["session"]
 SESSION_ALPHA = _session["alpha"]
+SESSION_ALPHA_REFINEMENT = _session["alpha_refinement"]
 SESSION_TTL_HOURS = _session["ttl_hours"]
 
 GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]

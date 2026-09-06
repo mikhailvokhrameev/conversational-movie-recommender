@@ -212,7 +212,9 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
 
 1. The preference vector (`embedding.dimensions` wide) is updated via an
    exponential moving average
-   (alpha from `session.alpha` in params.yaml, default 0.7).
+   (alpha from `session.alpha` in params.yaml, default 0.7; turns classified
+   `refinement` use the higher `session.alpha_refinement`, default 0.92, so
+   an explicit correction dominates the vector instead of blending).
 2. Explicit preferences (liked genres, disliked genres, themes, reference films)
    are accumulated from the parsed intent.
 3. The conversation history is appended with the query and recommended movie titles.
@@ -251,6 +253,7 @@ these can be changed -- no environment variable overrides them.
 | `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
+| `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
 
