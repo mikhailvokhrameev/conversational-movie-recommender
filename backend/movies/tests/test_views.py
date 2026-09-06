@@ -111,7 +111,7 @@ class TestSessionHistoryView:
         factory = AsyncRequestFactory()
         request = factory.get(
             f"/api/sessions/{session.session_id}/",
-            HTTP_X_SESSION_TOKEN="wrong-token",
+            headers={"x-session-token": "wrong-token"},
         )
         view = SessionHistoryView.as_view()
         response = await view(request, session_id=session.session_id)
@@ -125,7 +125,7 @@ class TestSessionHistoryView:
         factory = AsyncRequestFactory()
         request = factory.get(
             f"/api/sessions/{session.session_id}/",
-            HTTP_X_SESSION_TOKEN=session.session_token,
+            headers={"x-session-token": session.session_token},
         )
         view = SessionHistoryView.as_view()
         response = await view(request, session_id=session.session_id)
@@ -139,7 +139,7 @@ class TestSessionHistoryView:
         factory = AsyncRequestFactory()
         request = factory.get(
             f"/api/sessions/{uuid.uuid4()}/",
-            HTTP_X_SESSION_TOKEN="any",
+            headers={"x-session-token": "any"},
         )
         view = SessionHistoryView.as_view()
         response = await view(request, session_id=uuid.uuid4())

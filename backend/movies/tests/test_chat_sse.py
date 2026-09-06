@@ -1,10 +1,11 @@
+import inspect
 import json
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 from django.test import AsyncRequestFactory
 
-from movies.views import ChatView
+from movies.views import ChatView, _generate_and_score
 
 
 def _mock_classifier(category):
@@ -24,7 +25,7 @@ def _mock_encode(embedding=None):
 
 
 def _mock_generate_and_score(movies=None):
-    async def _gen(emb, intent, vec):
+    async def _gen(query_embedding, intent, session_vector, query_text=""):
         return movies or [
             {
                 "id": 1, "serial_name": "Test Film", "genres": ["Драмы"],
@@ -41,6 +42,22 @@ def _mock_generate_and_score(movies=None):
 async def _empty_stream(*args, **kwargs):
     return
     yield
+
+
+class TestMockContracts:
+    """The SSE tests patch out _generate_and_score. ChatView catches every
+    exception from the pipeline and turns it into a 500, so a mock whose
+    signature has drifted from the real function shows up as an opaque
+    `assert 500 == 200` rather than a TypeError. Pin the signature here so
+    drift fails with a message that names the problem."""
+
+    def test_generate_and_score_mock_matches_real_signature(self):
+        real = inspect.signature(_generate_and_score)
+        mock = inspect.signature(_mock_generate_and_score())
+        assert list(mock.parameters) == list(real.parameters), (
+            "_mock_generate_and_score is out of sync with movies.views."
+            "_generate_and_score — update the mock to match the real signature"
+        )
 
 
 @pytest.mark.django_db
