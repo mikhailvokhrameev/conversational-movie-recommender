@@ -5,19 +5,16 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from django.test import AsyncRequestFactory
 
+from core.ollama_client import MessageIntent
 from movies.views import ChatView, _generate_and_score
 
 
-def _mock_classifier(category):
+def _mock_classify_and_parse(category, semantic_query="", **filters):
+    intent = MessageIntent(category=category, semantic_query=semantic_query, **filters)
+
     async def _classify(msg):
-        return category
+        return intent
     return _classify
-
-
-def _mock_intent(intent=None):
-    async def _parse(msg):
-        return intent or {"genres": [], "mood": "", "themes": [], "negations": [], "reference_films": []}
-    return _parse
 
 
 def _mock_encode(embedding=None):
@@ -26,7 +23,7 @@ def _mock_encode(embedding=None):
 
 def _mock_generate_and_score(movies=None):
     async def _gen(query_embedding, intent, session_vector, query_text=""):
-        return movies or [
+        result = movies or [
             {
                 "id": 1, "serial_name": "Test Film", "genres": ["Драмы"],
                 "content_type": "Фильм", "country": ["Россия"], "actors": [],
@@ -36,6 +33,7 @@ def _mock_generate_and_score(movies=None):
                 "metadata": 0.3, "session": 0.15,
             }
         ]
+        return result, result
     return _gen
 
 
@@ -71,8 +69,7 @@ class TestChatSSENewSearch:
             content_type="application/json",
         )
 
-        with patch("movies.views.aclassify_message", _mock_classifier("new_search")), \
-             patch("movies.views.aparse_intent", _mock_intent()), \
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
              patch("movies.views.encode_query", return_value=[0.1] * 768), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
@@ -93,6 +90,29 @@ class TestChatSSENewSearch:
             assert "event: done" in text
             assert "Test Film" in text
 
+    @pytest.mark.asyncio
+    async def test_embeds_semantic_query_not_raw_message(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "ну хочу такую весёлую комедию пожалуйста"}),
+            content_type="application/json",
+        )
+        encode_mock = MagicMock(return_value=[0.1] * 768)
+
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="весёлая комедия")), \
+             patch("movies.views.encode_query", encode_mock), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score()), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views.astream_explanation", _empty_stream):
+
+            view = ChatView.as_view()
+            response = await view(request)
+            async for _ in response.streaming_content:
+                pass
+
+            encode_mock.assert_called_once_with("весёлая комедия")
+
 
 @pytest.mark.django_db
 class TestChatSSEConversational:
@@ -105,7 +125,7 @@ class TestChatSSEConversational:
             content_type="application/json",
         )
 
-        with patch("movies.views.aclassify_message", _mock_classifier("follow_up")), \
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("follow_up", semantic_query="расскажи подробнее")), \
              patch("movies.views._append_history", AsyncMock()), \
              patch("movies.views.astream_conversational", _empty_stream):
 
@@ -131,7 +151,7 @@ class TestChatSSEConversational:
             content_type="application/json",
         )
 
-        with patch("movies.views.aclassify_message", _mock_classifier("general_chat")), \
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("general_chat", semantic_query="привет")), \
              patch("movies.views._append_history", AsyncMock()), \
              patch("movies.views.astream_conversational", _empty_stream):
 
@@ -159,8 +179,7 @@ class TestChatSSERefinement:
             content_type="application/json",
         )
 
-        with patch("movies.views.aclassify_message", _mock_classifier("refinement")), \
-             patch("movies.views.aparse_intent", _mock_intent()), \
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("refinement", semantic_query="а повеселее?")), \
              patch("movies.views.encode_query", return_value=[0.1] * 768), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \

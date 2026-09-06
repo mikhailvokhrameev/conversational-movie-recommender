@@ -37,9 +37,10 @@ llm:
 
   # RuadaptQwen3-8B-Hybrid is a HYBRID REASONING model: left to itself it emits
   # a <think>...</think> block before its answer. That is actively harmful
-  # here. Intent parsing and classification run in JSON mode and expect a bare
-  # object, and the reasoning pass costs seconds per call on top of three
-  # already-sequential LLM calls per turn.
+  # here. Classification, intent parsing, and explanation run in JSON mode
+  # (the first two share one call) and expect a bare object, and the
+  # reasoning pass costs seconds per call on top of already-sequential LLM
+  # calls per turn.
   #
   # Setting this false sends "think": false to Ollama, which suppresses the
   # reasoning pass on models that support the flag. ollama_client also strips
@@ -50,7 +51,9 @@ llm:
   thinking: false
 
   timeout_seconds:
-    classify: 30
+    # Combined classify+intent call used by the live chat view (aclassify_and_parse).
+    classify_parse: 45
+    # Intent-only call used by the sync path (management commands, evaluation).
     intent: 60
     explanation: 120
 

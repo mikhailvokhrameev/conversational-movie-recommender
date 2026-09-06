@@ -1,7 +1,7 @@
-import asyncio
 import json
 import logging
 import secrets
+import time
 from datetime import datetime
 
 from asgiref.sync import sync_to_async
@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 from core.candidate_generation import generate_candidates
 from core.embedding_service import encode_query
 from core.ollama_client import (
-    aclassify_message, aparse_intent,
+    aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation,
 )
 from core.reranking import rerank_candidates
@@ -93,10 +93,22 @@ def _append_history(session: ChatSession, role: str, content: str):
 
 @sync_to_async(thread_sensitive=False)
 def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
+    """Returns (top_movies, candidate_pool): candidate_pool is the full reranked
+    pool before the top-n cut, kept around cheaply for the hallucination check
+    in astream_explanation's caller -- no extra retrieval work, no DB round trip."""
     candidates = generate_candidates(query_embedding, intent, query_text=query_text)
     scored = score_candidates(candidates, query_embedding, intent, session_vector)
     reranked = rerank_candidates(query_text, scored)
-    return mmr_diversify(reranked, top_n=settings.TOP_N)
+    top_movies = mmr_diversify(reranked, top_n=settings.TOP_N)
+    return top_movies, reranked
+
+
+def _log_turn_latency(category, **stage_ms):
+    logger.info(
+        "turn_latency category=%s %s",
+        category,
+        " ".join(f"{stage}={ms:.1f}ms" for stage, ms in stage_ms.items() if ms is not None),
+    )
 
 
 def _last_movies_context(session: ChatSession) -> str:
@@ -123,28 +135,35 @@ class ChatView(View):
         try:
             session_id = body.get("session_id")
             session = await _get_or_create_session(session_id)
-            category = await aclassify_message(message)
+            t0 = time.perf_counter()
+            intent = await aclassify_and_parse(message)
+            classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
             logger.exception("ChatView classification error")
             return JsonResponse({"error": "internal error"}, status=500)
 
-        if category in ("follow_up", "general_chat"):
-            return await self._handle_conversational(session, message, category)
-        elif category == "refinement":
-            return await self._handle_refinement(session, message)
+        if intent.category in ("follow_up", "general_chat"):
+            return await self._handle_conversational(session, message, intent.category, classify_parse_ms)
+        elif intent.category == "refinement":
+            return await self._handle_refinement(session, message, intent, classify_parse_ms)
         else:
-            return await self._handle_new_search(session, message)
+            return await self._handle_new_search(session, message, intent, classify_parse_ms)
 
-    async def _handle_new_search(self, session, message):
+    async def _handle_new_search(self, session, message, intent, classify_parse_ms):
         try:
-            intent, query_embedding = await asyncio.gather(
-                aparse_intent(message),
-                sync_to_async(encode_query)(message),
-            )
+            t_embed = time.perf_counter()
+            query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
+            embed_ms = (time.perf_counter() - t_embed) * 1000
+
+            intent_dict = intent.model_dump(exclude={"category", "semantic_query"})
             session_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
-            top_movies = await _generate_and_score(query_embedding, intent, session_vector, query_text=message)
+
+            t_score = time.perf_counter()
+            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, session_vector, query_text=message)
+            score_ms = (time.perf_counter() - t_score) * 1000
+
             serialized = [_serialize_movie(m) for m in top_movies]
-            await _save_session(session, message, intent, query_embedding, top_movies)
+            await _save_session(session, message, intent_dict, query_embedding, top_movies)
         except Exception:
             logger.exception("ChatView new_search error")
             return JsonResponse({"error": "internal error"}, status=500)
@@ -153,20 +172,34 @@ class ChatView(View):
             {"serial_name": m["serial_name"], "genres": m["genres"], "description": m["description"]}
             for m in top_movies
         ]
+        top_titles = [m["serial_name"] for m in top_movies]
+        candidate_titles = [m["serial_name"] for m in candidate_pool]
 
         async def event_stream():
             yield _sse_event("movies", {
                 "session_id": str(session.session_id),
                 "session_token": session.session_token,
                 "movies": serialized,
-                "intent": intent,
+                "intent": intent_dict,
             })
             has_tokens = False
+            explanation_parts = []
+            t_explain = time.perf_counter()
             async for token in astream_explanation(message, movies_for_llm):
                 has_tokens = True
+                explanation_parts.append(token)
                 yield _sse_event("token", {"text": token})
+            explain_ms = (time.perf_counter() - t_explain) * 1000
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
+
+            suspicious = check_explanation_titles("".join(explanation_parts), top_titles, candidate_titles)
+            if suspicious:
+                logger.warning(f"Explanation may reference non-recommended titles {suspicious} for query={message!r}")
+            _log_turn_latency(
+                intent.category, classify_parse_ms=classify_parse_ms,
+                embed_ms=embed_ms, score_ms=score_ms, explain_ms=explain_ms,
+            )
             yield _sse_event("done", {})
 
         return StreamingHttpResponse(
@@ -175,7 +208,7 @@ class ChatView(View):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def _handle_conversational(self, session, message, category):
+    async def _handle_conversational(self, session, message, category, classify_parse_ms):
         context = ""
         if category == "follow_up":
             context = _last_movies_context(session)
@@ -184,8 +217,11 @@ class ChatView(View):
 
         async def event_stream():
             yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
+            t_explain = time.perf_counter()
             async for token in astream_conversational(message, context):
                 yield _sse_event("token", {"text": token})
+            explain_ms = (time.perf_counter() - t_explain) * 1000
+            _log_turn_latency(category, classify_parse_ms=classify_parse_ms, explain_ms=explain_ms)
             yield _sse_event("done", {})
 
         return StreamingHttpResponse(
@@ -194,16 +230,21 @@ class ChatView(View):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def _handle_refinement(self, session, message):
+    async def _handle_refinement(self, session, message, intent, classify_parse_ms):
         try:
-            intent, query_embedding = await asyncio.gather(
-                aparse_intent(message),
-                sync_to_async(encode_query)(message),
-            )
+            t_embed = time.perf_counter()
+            query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
+            embed_ms = (time.perf_counter() - t_embed) * 1000
+
+            intent_dict = intent.model_dump(exclude={"category", "semantic_query"})
             session_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
-            top_movies = await _generate_and_score(query_embedding, intent, session_vector, query_text=message)
+
+            t_score = time.perf_counter()
+            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, session_vector, query_text=message)
+            score_ms = (time.perf_counter() - t_score) * 1000
+
             serialized = [_serialize_movie(m) for m in top_movies]
-            await _save_session(session, message, intent, query_embedding, top_movies)
+            await _save_session(session, message, intent_dict, query_embedding, top_movies)
         except Exception:
             logger.exception("ChatView refinement error")
             return JsonResponse({"error": "internal error"}, status=500)
@@ -212,20 +253,34 @@ class ChatView(View):
             {"serial_name": m["serial_name"], "genres": m["genres"], "description": m["description"]}
             for m in top_movies
         ]
+        top_titles = [m["serial_name"] for m in top_movies]
+        candidate_titles = [m["serial_name"] for m in candidate_pool]
 
         async def event_stream():
             yield _sse_event("movies", {
                 "session_id": str(session.session_id),
                 "session_token": session.session_token,
                 "movies": serialized,
-                "intent": intent,
+                "intent": intent_dict,
             })
             has_tokens = False
+            explanation_parts = []
+            t_explain = time.perf_counter()
             async for token in astream_explanation(message, movies_for_llm):
                 has_tokens = True
+                explanation_parts.append(token)
                 yield _sse_event("token", {"text": token})
+            explain_ms = (time.perf_counter() - t_explain) * 1000
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
+
+            suspicious = check_explanation_titles("".join(explanation_parts), top_titles, candidate_titles)
+            if suspicious:
+                logger.warning(f"Explanation may reference non-recommended titles {suspicious} for query={message!r}")
+            _log_turn_latency(
+                intent.category, classify_parse_ms=classify_parse_ms,
+                embed_ms=embed_ms, score_ms=score_ms, explain_ms=explain_ms,
+            )
             yield _sse_event("done", {})
 
         return StreamingHttpResponse(

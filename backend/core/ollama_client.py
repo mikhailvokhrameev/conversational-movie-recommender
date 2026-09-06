@@ -5,6 +5,10 @@ Two roles: (1) parse natural language queries into structured intent (JSON mode)
 (2) generate Russian-language explanations for recommended movies (RAG pattern).
 Falls back to empty intent if Ollama is unavailable (semantic search still works).
 
+The async chat view uses a single combined classify+parse call
+(`aclassify_and_parse`, validated against the `MessageIntent` Pydantic schema);
+sync management commands still use the separate `parse_intent` call.
+
 Provides both sync and async variants for use in sync management commands
 and async Django views respectively.
 
@@ -18,11 +22,12 @@ or leaking reasoning into the user-visible stream.
 
 import json
 import logging
-from typing import Generator
+from typing import Generator, Literal, Optional
 
 import httpx
 import numpy as np
 from django.conf import settings
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from core.embedding_service import cosine_similarity, encode_texts
 
@@ -39,18 +44,47 @@ CATALOG_GENRES = [
     "Триллеры", "Ужасы", "Фантастика", "Фильмы для детей", "Фитнес", "Фэнтези",
 ]
 
-CLASSIFY_PROMPT = """You are a message classifier for a movie recommendation chatbot.
-Classify the user's message into exactly one category. Return a JSON object.
+CLASSIFY_AND_PARSE_PROMPT = """You are a message classifier and intent parser for a Russian movie recommendation chatbot. Given a user message, return ONE JSON object with all of the fields below.
 
-Categories:
+Categories (put the best match in "category"):
 - "new_search": user wants movie recommendations (e.g. "хочу комедию", "покажи триллеры", "что посмотреть")
 - "follow_up": user asks about previously recommended movies (e.g. "расскажи про первый", "кто снял этот фильм?", "о чём он?")
 - "refinement": user wants to adjust the last recommendations (e.g. "а повеселее?", "без сериалов", "только российские", "что-нибудь поновее")
 - "general_chat": greetings, thanks, questions about the bot (e.g. "привет", "спасибо", "как ты работаешь?")
 
-Return: {{"category": "<one of: new_search, follow_up, refinement, general_chat>"}}
+ALLOWED GENRES (use ONLY these exact strings, copy-paste):
+{genres}
 
-User message: "{message}"
+JSON fields:
+- "category": one of the four categories above
+- "semantic_query": the core of what the user is looking for, in Russian, with filler words and pure filter phrases (genre/country/age/year constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If category is not new_search/refinement, just repeat the message.
+- "genres": list of matching genres from the ALLOWED list above
+- "mood": one of: happy, sad, excited, relaxed, romantic, thoughtful, scared, energetic, or ""
+- "themes": list of themes mentioned
+- "negations": list of genres the user does NOT want (from ALLOWED list)
+- "reference_films": list of film titles mentioned
+- "country_exclusions": list of countries the user does NOT want (e.g. "США", "Россия", "Франция" -- use the country name as commonly written in Russian, not a genre)
+- "max_age_rating": if the user wants something suitable for a specific age or younger (e.g. "для детей" -> 6, "детям можно" -> 12), the maximum age rating as a number, else null
+- "min_release_year": if the user wants recent/newer films (e.g. "поновее", "после 2015", "современный") a minimum release year as a number, else null
+
+Example:
+User: "хочу что-то смешное, но не ужасы"
+{{"category": "new_search", "semantic_query": "весёлый фильм", "genres": ["Комедии"], "mood": "happy", "themes": [], "negations": ["Ужасы"], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+
+Example:
+User: "расскажи про первый фильм"
+{{"category": "follow_up", "semantic_query": "расскажи про первый фильм", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+
+Example:
+User: "привет"
+{{"category": "general_chat", "semantic_query": "привет", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+
+Example:
+User: "детектив, но не американский, и чтобы поновее"
+{{"category": "new_search", "semantic_query": "детектив", "genres": ["Детективы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": ["США"], "max_age_rating": null, "min_release_year": 2015}}
+
+Now parse this message:
+User: "{message}"
 """
 
 CONVERSATIONAL_PROMPT = """You are a Russian-speaking movie recommendation assistant. You ONLY discuss movies, series, directors, actors, genres, and cinema.
@@ -199,6 +233,25 @@ def _build_movies_context(movies: list[dict]) -> str:
     )
 
 
+def check_explanation_titles(
+    explanation: str, top_titles: list[str], candidate_titles: list[str]
+) -> list[str]:
+    """Flag candidate titles the explanation mentions that weren't offered to the user.
+
+    Cheap diagnostic, not a runtime guard: it reuses the retrieval candidate
+    pool already held in memory for this turn instead of scanning the full
+    catalog, so it only catches the model confusing movies it saw during
+    retrieval -- not a title invented outright. Log-only; callers should not
+    alter the already-streamed response based on this.
+    """
+    top_set = set(top_titles)
+    lowered = explanation.lower()
+    return [
+        title for title in candidate_titles
+        if title not in top_set and title.lower() in lowered
+    ]
+
+
 def _coerce_float(value) -> float | None:
     if value is None:
         return None
@@ -215,6 +268,52 @@ def _coerce_int(value) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+class MessageIntent(BaseModel):
+    """Structured output of `aclassify_and_parse`: classification + parsed filters.
+
+    `category` has no default -- a missing or hallucinated value fails
+    validation, which is what triggers the repair retry in
+    `aclassify_and_parse`. Everything else degrades tolerantly (unknown shape
+    -> empty/None), matching the pre-merge `_extract_intent` behavior, since
+    losing a filter is far less costly than losing the routing decision.
+    """
+
+    category: Literal["new_search", "follow_up", "refinement", "general_chat"]
+    semantic_query: str = ""
+    genres: list[str] = Field(default_factory=list)
+    mood: str = ""
+    themes: list[str] = Field(default_factory=list)
+    negations: list[str] = Field(default_factory=list)
+    reference_films: list[str] = Field(default_factory=list)
+    country_exclusions: list[str] = Field(default_factory=list)
+    max_age_rating: Optional[float] = None
+    min_release_year: Optional[int] = None
+
+    @field_validator("genres", "themes", "negations", "reference_films", mode="before")
+    @classmethod
+    def _default_to_list(cls, value):
+        if not isinstance(value, list):
+            return []
+        return [v for v in value if isinstance(v, str)]
+
+    @field_validator("country_exclusions", mode="before")
+    @classmethod
+    def _clean_country_exclusions(cls, value):
+        if not isinstance(value, list):
+            return []
+        return [c for c in value if isinstance(c, str) and c.strip()]
+
+    @field_validator("max_age_rating", mode="before")
+    @classmethod
+    def _coerce_age_rating(cls, value):
+        return _coerce_float(value)
+
+    @field_validator("min_release_year", mode="before")
+    @classmethod
+    def _coerce_year(cls, value):
+        return _coerce_int(value)
 
 
 def _extract_intent(parsed: dict) -> dict:
@@ -240,6 +339,24 @@ def _intent_payload(query: str) -> dict:
                 query=query, genres=", ".join(CATALOG_GENRES)
             )},
         ],
+        "format": "json",
+        "stream": False,
+        "think": settings.OLLAMA_THINKING,
+    }
+
+
+def _classify_and_parse_payload(message: str, repair_note: str | None = None) -> dict:
+    content = CLASSIFY_AND_PARSE_PROMPT.format(
+        message=message, genres=", ".join(CATALOG_GENRES)
+    )
+    if repair_note:
+        content += (
+            f"\n\nYour previous response was invalid: {repair_note}\n"
+            "Return ONLY a single valid JSON object matching the schema above."
+        )
+    return {
+        "model": settings.OLLAMA_MODEL,
+        "messages": [{"role": "user", "content": content}],
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
@@ -349,46 +466,57 @@ def is_available() -> bool:
 # --- Async API (for Django async views) ---
 
 
-async def aparse_intent(query: str) -> dict:
-    """Async variant of parse_intent for use in async Django views."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json=_intent_payload(query),
-                timeout=settings.OLLAMA_TIMEOUTS["intent"],
-            )
-            response.raise_for_status()
-            parsed = _parse_json_response(response.json()["message"]["content"])
-            return _extract_intent(parsed)
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Async intent parsing failed, using fallback: {e}")
-        return _fallback_intent(query)
+async def _request_classify_and_parse(message: str, repair_note: str | None = None) -> dict:
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{settings.OLLAMA_BASE_URL}/api/chat",
+            json=_classify_and_parse_payload(message, repair_note=repair_note),
+            timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
+        )
+        response.raise_for_status()
+        return _parse_json_response(response.json()["message"]["content"])
 
 
-async def aclassify_message(message: str) -> str:
-    """Classify a user message into one of: new_search, follow_up, refinement, general_chat."""
-    valid = {"new_search", "follow_up", "refinement", "general_chat"}
+def _fallback_message_intent(message: str) -> MessageIntent:
+    return MessageIntent(category="new_search", semantic_query=message)
+
+
+async def aclassify_and_parse(message: str) -> MessageIntent:
+    """Classify the message and extract structured intent in a single call.
+
+    Replaces the old two-call aclassify_message + aparse_intent sequence used
+    by the async chat view -- fewer round trips, and classify/parse can no
+    longer disagree since they're the same response. On a response that
+    fails MessageIntent validation (most commonly a hallucinated/missing
+    "category"), retries once with the validation error fed back to the
+    model; a request-level failure (network/HTTP/JSON) skips the retry and
+    falls back immediately, since repairing a message that never arrived
+    can't help. A second failure of any kind falls back to
+    category="new_search" with empty filters, same as the old classify
+    default -- semantic search still works without parsed intent.
+    """
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": settings.OLLAMA_MODEL,
-                    "messages": [{"role": "user", "content": CLASSIFY_PROMPT.format(message=message)}],
-                    "format": "json",
-                    "stream": False,
-                    "think": settings.OLLAMA_THINKING,
-                },
-                timeout=settings.OLLAMA_TIMEOUTS["classify"],
-            )
-            response.raise_for_status()
-            parsed = _parse_json_response(response.json()["message"]["content"])
-            category = parsed.get("category", "new_search")
-            return category if category in valid else "new_search"
+        raw = await _request_classify_and_parse(message)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Message classification failed, defaulting to new_search: {e}")
-        return "new_search"
+        logger.warning(f"Classify+parse request failed, using fallback: {e}")
+        return _fallback_message_intent(message)
+
+    try:
+        intent = MessageIntent.model_validate(raw)
+    except ValidationError as e:
+        logger.warning(f"Classify+parse validation failed, retrying with repair: {e}")
+        try:
+            repaired = await _request_classify_and_parse(message, repair_note=str(e))
+            intent = MessageIntent.model_validate(repaired)
+        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValidationError) as e2:
+            logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
+            return _fallback_message_intent(message)
+
+    intent.genres = _normalize_genres(intent.genres)
+    intent.negations = _normalize_genres(intent.negations)
+    if not intent.semantic_query.strip():
+        intent.semantic_query = message
+    return intent
 
 
 async def astream_conversational(message: str, context: str = ""):

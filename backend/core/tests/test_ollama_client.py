@@ -8,60 +8,155 @@ from core.ollama_client import (
     _ThinkStreamFilter,
     _parse_json_response,
     _strip_think,
-    aclassify_message,
-    aparse_intent,
+    aclassify_and_parse,
+    check_explanation_titles,
+    MessageIntent,
     _extract_intent,
     _fallback_intent,
     parse_intent,
 )
 
 
-class TestClassifyMessage:
-    @pytest.mark.asyncio
-    async def test_returns_valid_category(self):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "message": {"content": json.dumps({"category": "follow_up"})}
-        }
-
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=mock_response)
-
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
-            result = await aclassify_message("расскажи про первый фильм")
-            assert result == "follow_up"
-
-    @pytest.mark.asyncio
-    async def test_invalid_category_defaults_to_new_search(self):
+def _mock_ollama_responses(*contents):
+    """Patch httpx.AsyncClient so successive posts return the given response bodies."""
+    responses = []
+    for content in contents:
         mock_response = MagicMock()
         mock_response.raise_for_status = MagicMock()
-        mock_response.json.return_value = {
-            "message": {"content": json.dumps({"category": "invalid_type"})}
-        }
+        mock_response.json.return_value = {"message": {"content": content}}
+        responses.append(mock_response)
 
-        mock_client = AsyncMock()
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=False)
-        mock_client.post = AsyncMock(return_value=mock_response)
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.post = AsyncMock(side_effect=responses)
+    return mock_client
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
-            result = await aclassify_message("test")
-            assert result == "new_search"
+
+class TestClassifyAndParse:
+    @pytest.mark.asyncio
+    async def test_returns_valid_intent_and_category(self):
+        content = json.dumps({
+            "category": "new_search",
+            "semantic_query": "весёлая комедия",
+            "genres": ["Комедии"],
+            "mood": "happy",
+            "themes": [],
+            "negations": [],
+            "reference_films": [],
+            "country_exclusions": [],
+            "max_age_rating": None,
+            "min_release_year": None,
+        })
+        mock_client = _mock_ollama_responses(content)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("хочу весёлую комедию")
+
+        assert isinstance(result, MessageIntent)
+        assert result.category == "new_search"
+        assert result.semantic_query == "весёлая комедия"
+        assert result.genres == ["Комедии"]
+        assert mock_client.post.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_http_error_defaults_to_new_search(self):
+    async def test_invalid_category_retries_once_then_succeeds(self):
+        bad = json.dumps({"category": "not_a_real_category", "semantic_query": "x"})
+        good = json.dumps({"category": "follow_up", "semantic_query": "x"})
+        mock_client = _mock_ollama_responses(bad, good)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("расскажи про первый фильм")
+
+        assert result.category == "follow_up"
+        assert mock_client.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_invalid_category_repair_also_fails_uses_fallback(self):
+        bad = json.dumps({"category": "not_a_real_category"})
+        mock_client = _mock_ollama_responses(bad, bad)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("test message")
+
+        assert result.category == "new_search"
+        assert result.semantic_query == "test message"
+        assert result.genres == []
+        assert mock_client.post.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_http_error_uses_fallback_without_retry(self):
         mock_client = AsyncMock()
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection failed"))
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
-            result = await aclassify_message("test")
-            assert result == "new_search"
+            result = await aclassify_and_parse("test")
+
+        assert result.category == "new_search"
+        assert result.semantic_query == "test"
+        assert mock_client.post.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_empty_semantic_query_falls_back_to_raw_message(self):
+        content = json.dumps({"category": "new_search", "semantic_query": ""})
+        mock_client = _mock_ollama_responses(content)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("хочу комедию")
+
+        assert result.semantic_query == "хочу комедию"
+
+    @pytest.mark.asyncio
+    async def test_genres_and_negations_are_normalized(self):
+        content = json.dumps({
+            "category": "new_search",
+            "semantic_query": "q",
+            "genres": ["комедия"],
+            "negations": ["хоррор"],
+        })
+        mock_client = _mock_ollama_responses(content)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: [x.upper() for x in g]):
+            result = await aclassify_and_parse("q")
+
+        assert result.genres == ["КОМЕДИЯ"]
+        assert result.negations == ["ХОРРОР"]
+
+
+class TestCheckExplanationTitles:
+    def test_no_suspicious_titles_when_only_top_titles_mentioned(self):
+        explanation = "Рекомендую Фильм А, отличная драма."
+        result = check_explanation_titles(
+            explanation, top_titles=["Фильм А"], candidate_titles=["Фильм А", "Фильм Б"]
+        )
+        assert result == []
+
+    def test_flags_candidate_title_outside_top_titles(self):
+        explanation = "Кстати, Фильм Б тоже интересный, но рекомендую Фильм А."
+        result = check_explanation_titles(
+            explanation, top_titles=["Фильм А"], candidate_titles=["Фильм А", "Фильм Б"]
+        )
+        assert result == ["Фильм Б"]
+
+    def test_case_insensitive_match(self):
+        explanation = "рекомендую фильм б"
+        result = check_explanation_titles(
+            explanation, top_titles=["Фильм А"], candidate_titles=["Фильм А", "Фильм Б"]
+        )
+        assert result == ["Фильм Б"]
+
+    def test_empty_explanation_returns_no_suspicious_titles(self):
+        result = check_explanation_titles(
+            "", top_titles=["Фильм А"], candidate_titles=["Фильм А", "Фильм Б"]
+        )
+        assert result == []
 
 
 class TestExtractIntent:

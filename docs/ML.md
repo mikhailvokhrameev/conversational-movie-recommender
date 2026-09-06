@@ -49,14 +49,16 @@ alongside the reranker and embedder (~8.2GB total).
 **Reasoning mode is disabled** (`llm.thinking: false`). This is a hybrid
 reasoning model: left alone it emits a `<think>...</think>` span before every
 answer. That breaks JSON-mode intent parsing and adds seconds to each of the
-three sequential LLM calls per turn. The flag is sent to Ollama on every
-request, and `ollama_client` additionally strips reasoning spans from both
-parsed JSON and the streamed output, so an Ollama build that ignores the flag
-degrades to slower rather than broken.
+two sequential LLM calls per turn (classify+parse, then explanation). The
+flag is sent to Ollama on every request, and `ollama_client` additionally
+strips reasoning spans from both parsed JSON and the streamed output, so an
+Ollama build that ignores the flag degrades to slower rather than broken.
 
 **Two roles**:
-1. **Intent parsing**: extracts genres, mood, themes, negations, reference
-   films from natural language queries. Uses JSON mode for structured output.
+1. **Classification + intent parsing**: one combined call (`aclassify_and_parse`)
+   returns the message category plus genres, mood, themes, negations, and
+   reference films, validated against a Pydantic schema with a repair retry
+   on invalid JSON. Uses JSON mode for structured output.
 2. **Explanation generation**: writes Russian-language explanations of why
    each recommended movie matches the query (RAG pattern).
 

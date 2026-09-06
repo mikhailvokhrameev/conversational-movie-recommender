@@ -186,10 +186,11 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   ├── validate message (non-empty, <= 2000 chars)
   ├── get or create session (expired sessions are replaced)
   |
-  ├──[PARALLEL via asyncio.gather]──┐
-  │   aparse_intent(message)        │  encode_query(message)
-  │   (Ollama LLM, ~2s)            │  (sentence-transformers, ~0.3s)
-  └──────────────┬──────────────────┘
+  aclassify_and_parse(message)                ← single Ollama call: category +
+  (Ollama LLM, ~2s, Pydantic-validated,          filters + semantic_query
+   1 retry-with-repair on invalid JSON)
+                 |
+  encode_query(intent.semantic_query)        ← sentence-transformers, ~0.3s
                  v
   generate_candidates(embedding, intent)     ← hard filters + exact cosine search
   score_candidates(candidates, ...)          ← semantic + metadata + session,
@@ -234,7 +235,7 @@ these can be changed -- no environment variable overrides them.
 | `llm.base_url` | `http://ollama:11434` | Ollama server URL |
 | `llm.model` | RuadaptQwen3-8B-Hybrid (Q4_K_M) | Model for classification, intent parsing, explanations |
 | `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
-| `llm.timeout_seconds.*` | 30 / 60 / 120 | Per-call timeouts (classify / intent / explanation) |
+| `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | multilingual mpnet | Embedding model |
 | `embedding.dimensions` | `768` | Vector width (changing needs a migration + re-embed) |
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
@@ -260,7 +261,9 @@ Environment variables are reserved for secrets and deployment wiring
 
 The API runs on Django ASGI via uvicorn. Key threading decisions:
 
-- **Intent parsing** (`aparse_intent`): fully async via `httpx.AsyncClient`.
+- **Classification + intent parsing** (`aclassify_and_parse`): fully async via `httpx.AsyncClient`,
+  one combined call validated against the `MessageIntent` Pydantic schema (with a
+  repair retry on invalid JSON) instead of two separate classify/parse calls.
 - **Embedding encoding** (`encode_query`): wrapped in `sync_to_async(thread_sensitive=True)`.
   This serializes embedding calls on the main thread because sentence-transformers
   uses shared GPU state that is not thread-safe.
