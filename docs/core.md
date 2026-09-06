@@ -35,8 +35,8 @@ scoring.score_candidates() over the whole candidate set
   |   metadata:  genre_overlap(intent, movie)      * 0.3
   |   session:   cosine_sim(session_vec, movie_vec) * 0.3
   v
-reranking.rerank_candidates(query, scored)   [optional, CPU cross-encoder]
-  |   top-20 by score -> (query, movie) pairs -> blended 50/50 with scorer
+reranking.rerank_candidates(query, scored)   [optional, GPU cross-encoder]
+  |   top-50 by score -> (query, movie) pairs -> blended 50/50 with scorer
   v
 scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
   |   Greedy MMR: balance relevance vs diversity
@@ -159,7 +159,7 @@ relevance directly, which is what lets it catch relationships a bi-encoder
 structurally cannot. The cost is that nothing can be precomputed: every
 (query, movie) pair is a model call.
 
-So it runs on a short slice. The top `reranking.top_k` (default 20) candidates by
+So it runs on a short slice. The top `reranking.top_k` (default 50) candidates by
 scorer total are paired with the query, scored, and blended:
 
     total = reranking.weight * rerank_norm + (1 - reranking.weight) * scorer_norm
@@ -170,16 +170,16 @@ what it says. Blending rather than replacing keeps the session and genre
 signal, which the cross-encoder knows nothing about.
 
 The call returns only the reranked slice. Candidates below the cut ranked
-below 20 items and cannot reach a top-5 result, and keeping them would mix
+below 50 items and cannot reach a top-5 result, and keeping them would mix
 two incompatible `total` scales in one list.
 
 **Model and device are one decision.** `bge-reranker-v2-m3` (the default) is
-an XLM-RoBERTa-large backbone: ~302M body parameters, ~155 GFLOPs per pair at
-256 tokens, so 20 candidates is ~3.1 TFLOPs. That is ~0.15s on a discrete GPU
-and ~15s on CPU. `reranking.device: auto` picks cuda when present, which is
-what makes this model viable; without a GPU, switch `reranking.model` to a
-small cross-encoder or set `reranking.enabled: false` rather than just moving
-this one to CPU.
+an XLM-RoBERTa-large backbone: ~302M body parameters. Measured on this GPU
+(GTX 1080 Ti): 20 pairs ~0.26s, 50 pairs ~0.64s, 100 pairs ~1.22s -- versus
+~5.6s for 20 pairs on CPU. `reranking.device: auto` picks cuda when present,
+which is what makes this model viable; without a GPU, switch
+`reranking.model` to a small cross-encoder or set `reranking.enabled: false`
+rather than just moving this one to CPU.
 
 **Fail-safe**: a model that will not load or a prediction that raises logs and
 returns the candidates in scorer order. Reranking is a quality improvement,

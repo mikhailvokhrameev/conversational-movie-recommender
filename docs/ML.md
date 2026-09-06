@@ -190,7 +190,7 @@ must sum to 1.0. That file is the only place they can be changed.
 
 ## Cross-Encoder Reranking
 
-**Choice**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 20 scored
+**Choice**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 50 scored
 candidates, blended 50/50 with the scorer total.
 
 **Why rerank at all**: the scorer is a bi-encoder comparison -- query vector
@@ -202,10 +202,10 @@ an exact title match scores highly on direct relevance even when the
 embeddings disagreed.
 
 **Model and device are one decision**: bge-reranker-v2-m3 is an
-XLM-RoBERTa-large backbone at ~302M body parameters, about 155 GFLOPs per pair
-at 256 tokens. Twenty candidates is ~3.1 TFLOPs -- roughly 0.15s on this GPU
-and roughly 15s on CPU. The same model is either comfortably interactive or
-completely unusable depending on where it runs, so `reranking.device: auto`
+XLM-RoBERTa-large backbone at ~302M body parameters. Measured on this GPU
+(GTX 1080 Ti): 20 pairs ~0.26s, 50 pairs ~0.64s, 100 pairs ~1.22s -- versus
+~5.6s for 20 pairs on CPU. The same model is either comfortably interactive
+or completely unusable depending on where it runs, so `reranking.device: auto`
 (cuda when present) is not an optimisation here, it is what makes the choice
 viable at all.
 
@@ -223,9 +223,10 @@ intent. Replacing the scorer total would discard personalization entirely.
 Both sides are min-max normalized across the slice before blending, so
 `reranking.weight` means what it says.
 
-**Why only 20**: every candidate is a model forward pass, so `reranking.top_k`
-is the primary latency dial. Twenty is comfortably more than the five results
-returned, while keeping the added latency near a second on CPU.
+**Why 50**: every candidate is a model forward pass, so `reranking.top_k` is
+the primary latency dial. Raised from 20 to 50 once this ran on GPU: +0.38s
+for a 2.5x larger reranked pool, against a ~2s LLM call already in the same
+request.
 
 **Fail-safe**: a model that fails to load, or a prediction that raises, logs
 and returns candidates in scorer order. A failed download must not break
