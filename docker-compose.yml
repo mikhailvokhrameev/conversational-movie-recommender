@@ -53,6 +53,17 @@ services:
 
   backend:
     build: ./backend
+    # The reranker (bge-reranker-v2-m3) runs in this container, not in ollama.
+    # Without the card it falls back to CPU, where a 20-pair rerank costs tens
+    # of seconds instead of ~0.15s. Both services reserve the same GPU; the
+    # LLM takes ~5.0GB and the reranker + embedder ~2.2GB, which fits 11GB.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     environment:
       DATABASE_URL: postgres://recommender:${DB_PASSWORD:-changeme}@db:5432/recommender
       DJANGO_SETTINGS_MODULE: recommender.settings

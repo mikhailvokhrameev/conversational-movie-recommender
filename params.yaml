@@ -8,16 +8,20 @@
 #
 # ---------------------------------------------------------------------------
 # HARDWARE PROFILE: a discrete NVIDIA GPU with ~11GB of VRAM. docker-compose.yml
-# reserves the card for Ollama, so plain `docker compose up --build` is enough.
+# reserves the card for both the ollama and backend services -- the reranker
+# and embedder run in backend, not in ollama, and need the card too.
 #
-# VRAM budget with everything resident:
+# VRAM budget with everything resident (measured, not estimated):
 #
 #   RuadaptQwen3-8B-Hybrid, Q4_K_M      ~5.0 GB
-#   bge-reranker-v2-m3, fp16             ~1.1 GB
+#   bge-reranker-v2-m3, fp32             ~2.2 GB
 #   mpnet embedder, fp32                 ~1.1 GB
-#   CUDA context + activations           ~1.0 GB
+#   CUDA context + activations           ~1.0-1.5 GB
 #                                        --------
-#                                        ~8.2 GB of 11 GB
+#                                        ~9.3-9.8 GB of 11 GB
+#
+# The reranker loads fp32, not fp16 -- sentence-transformers does not
+# downcast bge-reranker-v2-m3 automatically. Budget for the larger figure.
 #
 # This profile does NOT fit an 8GB Apple Silicon machine, and Docker Desktop
 # on macOS cannot reach the Apple GPU at all. For that machine the working
@@ -105,16 +109,19 @@ diversification:
 reranking:
   enabled: true
   # bge-reranker-v2-m3: multilingual, XLM-RoBERTa-large backbone (~568M params,
-  # ~302M in the body). Roughly 155 GFLOPs per pair at 256 tokens, so 20 pairs
-  # is ~3.1 TFLOPs -- about 0.15s on this GPU versus ~15s on CPU. It is only
-  # viable *because* device below puts it on the card.
+  # ~302M in the body). Measured on this GPU (GTX 1080 Ti): 20 pairs ~0.26s,
+  # 50 pairs ~0.64s, 100 pairs ~1.22s -- versus ~5.6s for 20 pairs on CPU.
+  # The GFLOPs estimate this used to cite was off by ~2x on the GPU side and
+  # ~3x on the CPU side; the CPU/GPU ratio it implied held up.
   model: BAAI/bge-reranker-v2-m3
   # auto lets sentence-transformers pick (cuda > mps > cpu). Pin to "cpu" to
-  # free ~1.1GB of VRAM, but only with a small reranker -- this model on CPU
-  # makes every request take tens of seconds.
+  # free ~2.2GB of VRAM, but only with a small reranker -- this model on CPU
+  # makes every request take seconds instead of a fraction of one.
   device: auto
   # Every candidate here is a model forward pass: the main latency dial.
-  top_k: 20
+  # Raised from 20 to 50 now that this runs on GPU: +0.38s for a 2.5x larger
+  # reranked pool, against a ~2s LLM call already in the same request.
+  top_k: 50
   # Share of the final score taken from the cross-encoder; the rest stays with
   # the three-signal scorer, which carries session and genre intent.
   weight: 0.5
