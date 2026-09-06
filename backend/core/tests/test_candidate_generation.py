@@ -86,6 +86,14 @@ class TestHardFilters:
         assert "New film" in names
         assert "Old film" not in names
 
+    def test_min_release_year_keeps_movies_with_null_release_date(self):
+        _make_movie(serial_name="Unknown date film", release_date=None, url="https://okko.tv/3")
+
+        results = generate_candidates(EMBEDDING, intent={"min_release_year": 2015})
+
+        names = {m["serial_name"] for m in results}
+        assert "Unknown date film" in names
+
     def test_hard_filters_combine(self):
         _make_movie(
             serial_name="Matches all",

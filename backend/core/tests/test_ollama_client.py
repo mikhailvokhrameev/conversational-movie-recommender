@@ -2,14 +2,17 @@ import json
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
+import numpy as np
 import pytest
 
 from core.ollama_client import (
     _ThinkStreamFilter,
     _parse_json_response,
     _strip_think,
+    _normalize_genres,
     aclassify_and_parse,
     check_explanation_titles,
+    CATALOG_GENRES,
     MessageIntent,
     _extract_intent,
     _fallback_intent,
@@ -113,6 +116,17 @@ class TestClassifyAndParse:
         assert result.semantic_query == "хочу комедию"
 
     @pytest.mark.asyncio
+    async def test_malformed_json_on_first_request_uses_fallback_without_retry(self):
+        mock_client = _mock_ollama_responses("not valid json")
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            result = await aclassify_and_parse("test")
+
+        assert result.category == "new_search"
+        assert result.semantic_query == "test"
+        assert mock_client.post.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_genres_and_negations_are_normalized(self):
         content = json.dumps({
             "category": "new_search",
@@ -157,6 +171,41 @@ class TestCheckExplanationTitles:
             "", top_titles=["Фильм А"], candidate_titles=["Фильм А", "Фильм Б"]
         )
         assert result == []
+
+
+class TestMessageIntentValidation:
+    def test_tolerates_malformed_llm_field_shapes(self):
+        intent = MessageIntent.model_validate({
+            "category": "new_search",
+            "genres": "Комедии",
+            "country_exclusions": ["США", 42, None, ""],
+            "max_age_rating": "kids",
+            "min_release_year": "soon",
+        })
+        assert intent.genres == []
+        assert intent.country_exclusions == ["США"]
+        assert intent.max_age_rating is None
+        assert intent.min_release_year is None
+
+
+class TestNormalizeGenres:
+    def test_exact_match_passthrough(self):
+        with patch(
+            "core.ollama_client._get_genre_embeddings",
+            return_value=[np.zeros(4)] * len(CATALOG_GENRES),
+        ):
+            assert _normalize_genres(["Комедии"]) == ["Комедии"]
+
+    def test_drops_below_threshold(self, settings):
+        settings.GENRE_MATCH_THRESHOLD = 0.99
+        with patch(
+            "core.ollama_client._get_genre_embeddings",
+            return_value=[np.array([0.0, 1.0])] * len(CATALOG_GENRES),
+        ), patch(
+            "core.ollama_client.encode_texts",
+            return_value=[np.array([1.0, 0.0])],
+        ):
+            assert _normalize_genres(["totally unrelated term"]) == []
 
 
 class TestExtractIntent:
