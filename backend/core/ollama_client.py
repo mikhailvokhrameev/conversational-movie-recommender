@@ -26,6 +26,7 @@ from typing import Generator, Literal, Optional
 
 import httpx
 import numpy as np
+from asgiref.sync import sync_to_async
 from django.conf import settings
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -512,8 +513,10 @@ async def aclassify_and_parse(message: str) -> MessageIntent:
             logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
             return _fallback_message_intent(message)
 
-    intent.genres = _normalize_genres(intent.genres)
-    intent.negations = _normalize_genres(intent.negations)
+    intent.genres, intent.negations = await sync_to_async(
+        lambda: (_normalize_genres(intent.genres), _normalize_genres(intent.negations)),
+        thread_sensitive=False,
+    )()
     if not intent.semantic_query.strip():
         intent.semantic_query = message
     return intent
