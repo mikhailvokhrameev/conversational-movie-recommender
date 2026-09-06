@@ -7,7 +7,6 @@ export function useChat() {
   const [messages, setMessages] = useState([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [sessionId, setSessionId] = useState(null)
-  const sessionTokenRef = useRef(null)
   const abortRef = useRef(null)
 
   const sendMessage = useCallback(async (text) => {
@@ -61,7 +60,7 @@ export function useChat() {
             eventType = line.slice(7).trim()
           } else if (line.startsWith('data: ') && eventType) {
             const data = JSON.parse(line.slice(6))
-            handleSSEEvent(eventType, data, setMessages, setSessionId, sessionTokenRef)
+            handleSSEEvent(eventType, data, setMessages, setSessionId)
             eventType = null
           }
         }
@@ -87,18 +86,16 @@ export function useChat() {
     if (abortRef.current) abortRef.current.abort()
     setMessages([])
     setSessionId(null)
-    sessionTokenRef.current = null
     setIsStreaming(false)
   }, [])
 
   return { messages, isStreaming, sendMessage, sessionId, reset }
 }
 
-function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef) {
+function handleSSEEvent(event, data, setMessages, setSessionId) {
   switch (event) {
     case 'movies':
       setSessionId(data.session_id)
-      if (data.session_token) sessionTokenRef.current = data.session_token
       setMessages(prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]
@@ -114,7 +111,6 @@ function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef)
       break
     case 'session':
       setSessionId(data.session_id)
-      if (data.session_token) sessionTokenRef.current = data.session_token
       break
     case 'token':
       setMessages(prev => {
