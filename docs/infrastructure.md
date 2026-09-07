@@ -59,6 +59,18 @@ The system runs as 4 Docker services via `docker compose up`:
 
 Not yet implemented. Will serve on port 3000.
 
+## Security Tradeoffs
+
+`db` (`:5433`) and `ollama` (`:11434`) are published to the host with no
+authentication — anyone who can reach those ports can read/write the
+catalog and session data directly, or drive the LLM. Not a real risk for a
+local pet project on a trusted machine, but before any deployment reachable
+outside localhost: drop the host port mappings for `db`/`ollama` in
+`docker-compose.yml` (keep them on the internal Docker network only, where
+`backend` already reaches them by service name) or put them behind a
+firewall/VPN.
+Source: external audit, 2026-09-04.
+
 ## Configuration
 
 ### params.yaml (all model and tuning values)
