@@ -52,11 +52,11 @@ def _serialize_movie(movie: dict) -> dict:
     }
 
 
-async def _get_or_create_session(session_id: str | None) -> ChatSession:
-    if session_id:
+async def _get_or_create_session(session_id: str | None, token: str) -> ChatSession:
+    if session_id and token:
         try:
             session = await ChatSession.objects.aget(session_id=session_id)
-            if not session.is_expired():
+            if not session.is_expired() and secrets.compare_digest(token, session.session_token):
                 return session
         except ChatSession.DoesNotExist:
             pass
@@ -136,7 +136,8 @@ class ChatView(View):
 
         try:
             session_id = body.get("session_id")
-            session = await _get_or_create_session(session_id)
+            token = request.headers.get("X-Session-Token", "")
+            session = await _get_or_create_session(session_id, token)
             t0 = time.perf_counter()
             intent = await aclassify_and_parse(message)
             classify_parse_ms = (time.perf_counter() - t0) * 1000

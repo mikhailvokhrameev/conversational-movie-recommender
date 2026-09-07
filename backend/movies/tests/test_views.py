@@ -6,7 +6,9 @@ from django.conf import settings
 from django.test import AsyncRequestFactory
 
 from core.session_manager import update_preference_vector
-from movies.views import ChatView, SessionHistoryView, _save_session, _serialize_movie
+from movies.views import (
+    ChatView, SessionHistoryView, _get_or_create_session, _save_session, _serialize_movie,
+)
 
 
 class TestSerializeMovie:
@@ -90,6 +92,41 @@ class TestChatViewValidation:
         view = ChatView.as_view()
         response = await view(request)
         assert response.status_code == 400
+
+
+@pytest.mark.django_db
+class TestGetOrCreateSession:
+    @pytest.mark.asyncio
+    async def test_no_session_id_creates_new_session(self):
+        session = await _get_or_create_session(None, "")
+        assert session.pk is not None
+
+    @pytest.mark.asyncio
+    async def test_valid_token_resumes_existing_session(self):
+        from movies.models import ChatSession
+        existing = await ChatSession.objects.acreate()
+
+        session = await _get_or_create_session(str(existing.session_id), existing.session_token)
+
+        assert session.pk == existing.pk
+
+    @pytest.mark.asyncio
+    async def test_missing_token_does_not_resume_existing_session(self):
+        from movies.models import ChatSession
+        existing = await ChatSession.objects.acreate()
+
+        session = await _get_or_create_session(str(existing.session_id), "")
+
+        assert session.pk != existing.pk
+
+    @pytest.mark.asyncio
+    async def test_wrong_token_does_not_resume_existing_session(self):
+        from movies.models import ChatSession
+        existing = await ChatSession.objects.acreate()
+
+        session = await _get_or_create_session(str(existing.session_id), "wrong-token")
+
+        assert session.pk != existing.pk
 
 
 @pytest.mark.django_db
