@@ -16,8 +16,8 @@ export default function WelcomeScreen({ onSuggestionClick }) {
   }
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-end gap-4 pt-8 sm:pt-12 overflow-hidden">
-      <div className="flex flex-col items-center gap-6 sm:gap-7 px-4 w-full">
+    <div className="flex-1 flex flex-col items-center overflow-hidden">
+      <div className="flex-1 flex flex-col items-center justify-center gap-6 sm:gap-7 px-4 w-full pb-4">
         <h1 className="sr-only">Conversational movie recommender</h1>
 
         <svg viewBox="0 0 1600 300" className="relative z-10 w-full max-w-4xl sm:max-w-5xl -mb-8" aria-hidden="true">
