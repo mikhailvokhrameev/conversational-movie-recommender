@@ -3,20 +3,15 @@ import django.contrib.postgres.search
 from django.db import migrations
 
 
-def populate_search_vectors(apps, schema_editor):
-    """Backfill the tsvector for rows imported before this column existed."""
-    from movies.search_index import refresh_search_vectors
-
-    refresh_search_vectors()
-
-
-def noop(apps, schema_editor):
-    """Nothing to undo: reversing the migration drops the column outright."""
-
-
 class Migration(migrations.Migration):
     """Add the lexical retrieval channel: a weighted tsvector over
     title/director/actors, plus the GIN index that makes matching it cheap.
+
+    No backfill here: the very next migration (0005_tmdb_catalog) truncates
+    movies_movie outright, and refresh_search_vectors() references columns
+    (original_title, keywords) that only exist after that migration. Actual
+    population happens via import_catalog, which calls
+    refresh_search_vectors() once TMDB rows are loaded.
     """
 
     dependencies = [
@@ -37,5 +32,4 @@ class Migration(migrations.Migration):
                 fields=["search_vector"], name="movie_search_vector_gin"
             ),
         ),
-        migrations.RunPython(populate_search_vectors, noop),
     ]
