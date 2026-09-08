@@ -11,32 +11,40 @@
 # reserves the card for both the ollama and backend services -- the reranker
 # and embedder run in backend, not in ollama, and need the card too.
 #
-# VRAM budget with everything resident (measured, not estimated):
+# VRAM budget with everything resident (estimated for the qwen3:8b / bge-m3
+# swap below -- re-measure after the swap and adjust this comment):
 #
-#   RuadaptQwen3-8B-Hybrid, Q4_K_M      ~5.0 GB
+#   qwen3:8b, Q4_K_M                     ~5.0 GB
 #   bge-reranker-v2-m3, fp32             ~2.2 GB
-#   mpnet embedder, fp32                 ~1.1 GB
+#   bge-m3 embedder, fp32                ~2.2 GB
 #   CUDA context + activations           ~1.0-1.5 GB
 #                                        --------
-#                                        ~9.3-9.8 GB of 11 GB
+#                                        ~10.4-10.9 GB of 11 GB
+#
+# This is noticeably tighter than the old mpnet embedder's ~1.1GB left --
+# bge-m3 is XLM-RoBERTa-large-based, the same size class as the reranker.
+# If it doesn't fit, the mitigations are the same as below: a smaller
+# llm.model, or reranking.device: cpu.
 #
 # The reranker loads fp32, not fp16 -- sentence-transformers does not
 # downcast bge-reranker-v2-m3 automatically. Budget for the larger figure.
 #
 # This profile does NOT fit an 8GB Apple Silicon machine, and Docker Desktop
 # on macOS cannot reach the Apple GPU at all. For that machine the working
-# settings were llm.model qwen2.5:3b and reranking.enabled false, with Ollama
+# settings were a small llm.model and reranking.enabled false, with Ollama
 # run natively on the host for Metal. See docs/infrastructure.md.
 # ---------------------------------------------------------------------------
 
 llm:
-  # Russian-adapted Qwen3 8B. Pulled straight from HuggingFace by the ollama
-  # entrypoint; the tag after the colon selects the GGUF quantization.
-  model: hf.co/RefalMachine/RuadaptQwen3-8B-Hybrid-GGUF:Q4_K_M
+  # Plain Qwen3 8B, pulled from Ollama's own model library (not a custom
+  # hf.co GGUF pull) -- the product is English now, so there's no reason for
+  # a Russian-adapted variant. Same architecture family as before: it's still
+  # a hybrid-reasoning model, so the "think" handling below still applies.
+  model: qwen3:8b
   base_url: http://ollama:11434
 
-  # RuadaptQwen3-8B-Hybrid is a HYBRID REASONING model: left to itself it emits
-  # a <think>...</think> block before its answer. That is actively harmful
+  # Qwen3 8B is a HYBRID REASONING model: left to itself it emits a
+  # <think>...</think> block before its answer. That is actively harmful
   # here. Classification, intent parsing, and explanation run in JSON mode
   # (the first two share one call) and expect a bare object, and the
   # reasoning pass costs seconds per call on top of already-sequential LLM
@@ -58,17 +66,20 @@ llm:
     explanation: 120
 
 embedding:
-  # 768-dim mpnet (~278M parameters, ~1.1GB). Upgrading this is a tracked TODO
-  # -- BGE-M3 or multilingual-e5-large would likely measure better, but that
-  # is a change to make against the golden-set evaluation, not blind.
+  # 1024-dim BGE-M3 (~568M parameters, XLM-RoBERTa-large backbone, ~2.2GB
+  # fp32). Upgraded from the old 768-dim multilingual-mpnet as part of the
+  # TMDB catalog swap -- the full re-embed was happening anyway, so this
+  # rides along instead of waiting on the separately-tracked golden-set-gated
+  # comparison in TODOS.md. Multilingual, so it still handles non-English
+  # content fine even though the product itself is English now.
   #
   # CHANGING EITHER VALUE IS NOT FREE. `dimensions` is baked into the
   # Movie.embedding and ChatSession.preference_vector columns, so a change
   # needs a schema migration AND a full re-run of
   # `manage.py generate_embeddings` over the catalog. Existing vectors are
   # not convertible between models or dimensions.
-  model: sentence-transformers/paraphrase-multilingual-mpnet-base-v2
-  dimensions: 768
+  model: BAAI/bge-m3
+  dimensions: 1024
 
 retrieval:
   # Candidates pulled from each channel before fusion.
@@ -84,10 +95,10 @@ retrieval:
     lexical: 0.7
 
   lexical:
-    # Postgres text search configuration. 'russian' gives snowball stemming,
-    # which is what lets "Место встречи" match "Место встречи изменить нельзя".
-    text_search_config: russian
-    # Shorter tokens are almost all prepositions and particles.
+    # Postgres text search configuration. 'english' gives snowball stemming
+    # over the catalog's English titles/keywords.
+    text_search_config: english
+    # Shorter tokens are almost all prepositions and articles.
     min_term_length: 3
     # Ceiling on tsquery size for a long rambling message.
     max_terms: 12
@@ -96,9 +107,14 @@ scoring:
   # Applied to signals that have been min-max normalized across the candidate
   # set, so these weights describe actual influence. Should sum to 1.0.
   weights:
-    semantic: 0.4
-    metadata: 0.3
-    session: 0.3
+    semantic: 0.35
+    metadata: 0.25
+    session: 0.25
+    # Biases toward well-known titles. Deliberately a scoring signal, not a
+    # hard filter -- TMDB's popularity metric is unbounded and non-linear,
+    # so there's no absolute threshold an LLM could reliably pick (unlike
+    # vote_average's bounded 0-10 scale, which *is* a hard filter below).
+    popularity: 0.15
   # Value given to a signal that is identical across every candidate and so
   # carries no ranking information.
   neutral_score: 0.5
@@ -126,7 +142,7 @@ reranking:
   # reranked pool, against a ~2s LLM call already in the same request.
   top_k: 50
   # Share of the final score taken from the cross-encoder; the rest stays with
-  # the three-signal scorer, which carries session and genre intent.
+  # the four-signal scorer, which carries session, genre intent, and popularity.
   weight: 0.5
   max_length: 256
   # Characters of description passed to the cross-encoder. The model truncates
@@ -137,8 +153,8 @@ session:
   # EMA weight on the newest query when updating the preference vector.
   alpha: 0.7
   # EMA weight used instead of `alpha` on turns classified as `refinement`
-  # ("а повеселее?", "не ужасы"). Explicit corrections should dominate the
-  # session vector, not get diluted 70/30 by whatever the user asked for
+  # ("something funnier?", "no horror"). Explicit corrections should dominate
+  # the session vector, not get diluted 70/30 by whatever the user asked for
   # one turn ago -- hard filters (negations, exclusions) already drop
   # disallowed genres outright, but the EMA vector still feeds the
   # `session` scoring signal, so a low alpha here let a stale direction
@@ -154,3 +170,13 @@ intent:
 catalog:
   import_batch_size: 500
   embedding_batch_size: 64
+  # Quality floor applied at import time: rows below this vote_count are
+  # dropped along with unreleased/adult/no-overview/no-poster rows. Chosen to
+  # land the imported catalog around ~50K movies (from the raw 1.49M-row
+  # TMDB export), a reasonable step up from the old 18K Okko catalog without
+  # importing effectively-unknown, no-signal titles.
+  min_vote_count: 20
+  # TMDB's image CDN. poster_path from the catalog is appended directly:
+  # "{poster_base_url}{poster_size}{poster_path}".
+  poster_base_url: "https://image.tmdb.org/t/p/"
+  poster_size: w500

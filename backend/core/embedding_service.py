@@ -1,7 +1,7 @@
 """Sentence-transformers embedding service with lazy-loaded singleton model.
 
-Wraps paraphrase-multilingual-mpnet-base-v2 (768-dim, Russian-capable).
-The model loads on first call and stays in memory for the process lifetime.
+Wraps BAAI/bge-m3 (1024-dim, multilingual). The model loads on first call and
+stays in memory for the process lifetime.
 """
 
 import logging
@@ -25,13 +25,13 @@ def get_model():
 
 
 def encode_texts(texts: list[str]) -> np.ndarray:
-    """Batch-encode texts into 768-dim vectors. Returns numpy array of shape (N, 768)."""
+    """Batch-encode texts into 1024-dim vectors. Returns numpy array of shape (N, 1024)."""
     model = get_model()
     return model.encode(texts, convert_to_numpy=True)
 
 
 def encode_query(query: str) -> list[float]:
-    """Encode a single query string into a 768-dim vector (as Python list)."""
+    """Encode a single query string into a 1024-dim vector (as Python list)."""
     model = get_model()
     embedding = model.encode([query], convert_to_numpy=True)[0]
     return embedding.tolist()

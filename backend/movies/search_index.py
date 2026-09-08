@@ -1,24 +1,25 @@
 """Maintenance of the Movie.search_vector full-text column.
 
 The lexical channel exists to catch what embeddings miss: exact entities.
-A query naming a specific title or actor ("что-то как Место встречи
-изменить нельзя", "фильмы с Хабенским") needs literal token matching --
-embeddings encode meaning, not names.
+A query naming a specific title or franchise ("something like The Backrooms",
+"movies with keyword time loop") needs literal token matching -- embeddings
+encode meaning, not names.
 
 Only entity-bearing fields are indexed:
 
-  serial_name  weight A   the title itself, the strongest exact-match signal
-  director     weight B   a name
-  actors       weight B   names (jsonb array, flattened to text)
+  serial_name, original_title   weight A   the title, in either language --
+                                            the strongest exact-match signal
+  keywords                      weight B   curated franchise/character/theme
+                                            tags (the catalog has no
+                                            director/cast data to index)
 
 `description` is deliberately excluded. It is long free text, so it would
 dominate the index by sheer token count and match on ordinary vocabulary --
 and it is precisely what the semantic channel already handles well. Keeping
 it out preserves the split: lexical finds names, semantic finds meaning.
 
-Text search config is 'russian' (snowball stemmer + stopwords). Russian is
-heavily inflected, so stemming is what lets a query for "Место встречи"
-match the catalogued "Место встречи изменить нельзя".
+Text search config is 'english' (snowball stemmer + stopwords), matching the
+catalog's English titles/keywords.
 """
 
 from django.db import connection
@@ -26,12 +27,12 @@ from django.db import connection
 # One canonical definition of the vector, used by both the backfill migration
 # and post-import refreshes so the two can never drift apart.
 _SEARCH_VECTOR_EXPR = """
-    setweight(to_tsvector('russian', coalesce(serial_name, '')), 'A')
-    || setweight(to_tsvector('russian', coalesce(director, '')), 'B')
-    || setweight(to_tsvector('russian', coalesce(
-           CASE WHEN jsonb_typeof(actors) = 'array'
-                THEN (SELECT string_agg(a.value, ' ')
-                      FROM jsonb_array_elements_text(actors) AS a(value))
+    setweight(to_tsvector('english', coalesce(serial_name, '')), 'A')
+    || setweight(to_tsvector('english', coalesce(original_title, '')), 'A')
+    || setweight(to_tsvector('english', coalesce(
+           CASE WHEN jsonb_typeof(keywords) = 'array'
+                THEN (SELECT string_agg(k.value, ' ')
+                      FROM jsonb_array_elements_text(keywords) AS k(value))
                 ELSE '' END, '')), 'B')
 """
 

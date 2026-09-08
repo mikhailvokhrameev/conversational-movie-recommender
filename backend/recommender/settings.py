@@ -100,7 +100,7 @@ DATABASES = {
 
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
-LANGUAGE_CODE = "ru-ru"
+LANGUAGE_CODE = "en-us"
 TIME_ZONE = "Europe/Moscow"
 USE_I18N = True
 USE_TZ = True
@@ -164,7 +164,10 @@ GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
 _catalog = PARAMS["catalog"]
 IMPORT_BATCH_SIZE = _catalog["import_batch_size"]
 EMBEDDING_BATCH_SIZE = _catalog["embedding_batch_size"]
+MIN_VOTE_COUNT = _catalog["min_vote_count"]
+TMDB_POSTER_BASE_URL = _catalog["poster_base_url"]
+TMDB_POSTER_SIZE = _catalog["poster_size"]
 
-CATALOG_PARQUET_PATH = os.environ.get(
-    "CATALOG_PARQUET_PATH", str(BASE_DIR / "catalog_okko.parquet")
+CATALOG_CSV_PATH = os.environ.get(
+    "CATALOG_CSV_PATH", str(BASE_DIR / "TMDB Movie Dataset v11.csv")
 )

@@ -1,6 +1,7 @@
+import csv
 import logging
+from datetime import date
 
-import pandas as pd
 from django.conf import settings
 from django.core.management.base import BaseCommand
 
@@ -9,15 +10,77 @@ from movies.search_index import refresh_search_vectors
 
 logger = logging.getLogger(__name__)
 
+# Raised well above Python's 128KB default: TMDB overview/keywords fields can
+# be long enough to trip it on a handful of rows.
+csv.field_size_limit(10_000_000)
+
+
+def _split_list(value: str) -> list[str]:
+    if not value:
+        return []
+    return [item.strip() for item in value.split(", ") if item.strip()]
+
+
+def _parse_date(value: str) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def _parse_int(value: str, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value: str, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _passes_quality_filter(row: dict, min_vote_count: int) -> bool:
+    return (
+        row.get("status") == "Released"
+        and row.get("adult") != "True"
+        and bool((row.get("overview") or "").strip())
+        and bool((row.get("poster_path") or "").strip())
+        and _parse_int(row.get("vote_count")) >= min_vote_count
+    )
+
+
+def _row_to_movie(row: dict) -> Movie:
+    return Movie(
+        tmdb_id=_parse_int(row["id"]),
+        serial_name=row.get("title") or "",
+        original_title=row.get("original_title") or "",
+        genres=_split_list(row.get("genres") or ""),
+        country=_split_list(row.get("production_countries") or ""),
+        original_language=row.get("original_language") or "",
+        keywords=_split_list(row.get("keywords") or ""),
+        release_date=_parse_date(row.get("release_date") or ""),
+        description=row.get("overview") or "",
+        runtime=_parse_int(row.get("runtime"), default=None) if row.get("runtime") else None,
+        popularity=_parse_float(row.get("popularity")),
+        vote_average=_parse_float(row.get("vote_average")),
+        vote_count=_parse_int(row.get("vote_count")),
+        poster_path=row.get("poster_path") or None,
+    )
+
 
 class Command(BaseCommand):
-    help = "Import movie catalog from catalog_okko.parquet into the database"
+    help = "Import the TMDB movie catalog CSV into the database"
 
     def add_arguments(self, parser):
         parser.add_argument(
             "--skip-existing",
             action="store_true",
-            help="Skip movies that already exist (matched by URL)",
+            help="Skip movies that already exist (matched by tmdb_id)",
         )
         parser.add_argument(
             "--batch-size",
@@ -29,65 +92,48 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         skip_existing = options["skip_existing"]
         batch_size = options["batch_size"] or settings.IMPORT_BATCH_SIZE
-        parquet_path = settings.CATALOG_PARQUET_PATH
+        csv_path = settings.CATALOG_CSV_PATH
+        min_vote_count = settings.MIN_VOTE_COUNT
 
-        self.stdout.write(f"Reading catalog from {parquet_path}...")
-        df = pd.read_parquet(parquet_path)
-        self.stdout.write(f"Loaded {len(df)} items from parquet")
+        existing_ids = (
+            set(Movie.objects.values_list("tmdb_id", flat=True)) if skip_existing else set()
+        )
 
-        if skip_existing:
-            existing_urls = set(Movie.objects.values_list("url", flat=True))
-            df = df[~df["url"].isin(existing_urls)]
-            self.stdout.write(f"{len(df)} new items to import (skipped existing)")
-
-        if df.empty:
-            self.stdout.write(self.style.SUCCESS("Nothing to import"))
-            return
-
-        movies = []
-        for _, row in df.iterrows():
-            genres = row["genres"]
-            if not isinstance(genres, list):
-                genres = list(genres) if genres is not None else []
-
-            country = row["country"]
-            if not isinstance(country, list):
-                country = list(country) if country is not None else []
-
-            actors = row["actors"]
-            if not isinstance(actors, list):
-                actors = list(actors) if actors is not None else []
-
-            release_date = row.get("release_date")
-            if pd.isna(release_date):
-                release_date = None
-
-            age_rating = row.get("age_rating")
-            if pd.isna(age_rating):
-                age_rating = None
-
-            movies.append(
-                Movie(
-                    serial_name=row["serial_name"] or "",
-                    genres=genres,
-                    content_type=row["content_type"] or "",
-                    country=country,
-                    actors=actors,
-                    director=row["director"] or "",
-                    age_rating=age_rating,
-                    studio_name=row["studio_name"] or "",
-                    release_date=release_date,
-                    description=row["description"] or "",
-                    url=row["url"],
-                )
-            )
-
+        self.stdout.write(f"Reading catalog from {csv_path}...")
+        seen = 0
+        kept = 0
+        batch: list[Movie] = []
         created = 0
-        for i in range(0, len(movies), batch_size):
-            batch = movies[i : i + batch_size]
+
+        with open(csv_path, newline="", encoding="utf-8") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                seen += 1
+                if not _passes_quality_filter(row, min_vote_count):
+                    continue
+
+                tmdb_id = _parse_int(row["id"])
+                if skip_existing and tmdb_id in existing_ids:
+                    continue
+
+                kept += 1
+                batch.append(_row_to_movie(row))
+
+                if len(batch) >= batch_size:
+                    Movie.objects.bulk_create(batch, ignore_conflicts=True)
+                    created += len(batch)
+                    self.stdout.write(f"  Imported {created} ({seen} rows scanned)...")
+                    batch = []
+
+        if batch:
             Movie.objects.bulk_create(batch, ignore_conflicts=True)
             created += len(batch)
-            self.stdout.write(f"  Imported {created}/{len(movies)}...")
+
+        self.stdout.write(f"Scanned {seen} rows, kept {kept} passing the quality filter")
+
+        if created == 0:
+            self.stdout.write(self.style.SUCCESS("Nothing to import"))
+            return
 
         # bulk_create bypasses any per-row vector computation, so the lexical
         # index is rebuilt here in one UPDATE.

@@ -26,7 +26,7 @@ class Command(BaseCommand):
 
         movies = list(
             Movie.objects.filter(embedding__isnull=True)
-            .values_list("id", "serial_name", "genres", "description")
+            .values_list("id", "serial_name", "genres", "description", "keywords")
         )
 
         if not movies:
@@ -45,14 +45,17 @@ class Command(BaseCommand):
                 batch = movies[i : i + batch_size]
 
                 texts = []
-                for movie_id, name, genres, description in batch:
+                for movie_id, name, genres, description, keywords in batch:
                     genre_str = ", ".join(genres) if genres else ""
                     desc_truncated = (description or "")[:500]
-                    texts.append(f"{name}. {genre_str}. {desc_truncated}")
+                    keyword_str = ", ".join((keywords or [])[:10])
+                    texts.append(
+                        f"{name}. {genre_str}. {desc_truncated}. Keywords: {keyword_str}"
+                    )
 
                 embeddings = model.encode(texts, convert_to_numpy=True)
 
-                for (movie_id, _, _, _), embedding in zip(batch, embeddings):
+                for (movie_id, _, _, _, _), embedding in zip(batch, embeddings):
                     updated_ids.append(movie_id)
                     updated_vectors.append(embedding.tolist())
 

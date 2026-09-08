@@ -2,7 +2,7 @@
 
 Communicates with a standalone Ollama container via its HTTP API.
 Two roles: (1) parse natural language queries into structured intent (JSON mode),
-(2) generate Russian-language explanations for recommended movies (RAG pattern).
+(2) generate English-language explanations for recommended movies (RAG pattern).
 Falls back to empty intent if Ollama is unavailable (semantic search still works).
 
 The async chat view uses a single combined classify+parse call
@@ -12,7 +12,7 @@ sync management commands still use the separate `parse_intent` call.
 Provides both sync and async variants for use in sync management commands
 and async Django views respectively.
 
-Hybrid reasoning models (RuadaptQwen3-8B-Hybrid, the configured default) emit
+Hybrid reasoning models (Qwen3, the configured default) emit
 a <think>...</think> span before their answer unless told not to. Every call
 here sends Ollama's "think" flag from params.yaml, and both the JSON and the
 streaming paths strip any reasoning span that arrives anyway -- so an Ollama
@@ -37,62 +37,64 @@ logger = logging.getLogger(__name__)
 _genre_embeddings = None
 
 CATALOG_GENRES = [
-    "Аниме", "Артхаус", "Биографии", "Блоги", "Боевики", "Вестерны",
-    "Военное", "Детективы", "Документальное", "Драмы", "Интервью",
-    "Историческое", "Комедии", "Концерты", "Короткий метр", "Криминальное",
-    "Курсы", "Мелодрамы", "Музыкальное", "Мультфильмы", "Презентации",
-    "Приключения", "Природа", "Путешествия", "Семейное", "Советское",
-    "Триллеры", "Ужасы", "Фантастика", "Фильмы для детей", "Фитнес", "Фэнтези",
+    "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
+    "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
+    "Romance", "Science Fiction", "TV Movie", "Thriller", "War", "Western",
 ]
 
-CLASSIFY_AND_PARSE_PROMPT = """You are a message classifier and intent parser for a Russian movie recommendation chatbot. Given a user message, return ONE JSON object with all of the fields below.
+CLASSIFY_AND_PARSE_PROMPT = """You are a message classifier and intent parser for a movie recommendation chatbot. Given a user message, return ONE JSON object with all of the fields below.
 
 Categories (put the best match in "category"):
-- "new_search": user wants movie recommendations (e.g. "хочу комедию", "покажи триллеры", "что посмотреть")
-- "follow_up": user asks about previously recommended movies (e.g. "расскажи про первый", "кто снял этот фильм?", "о чём он?")
-- "refinement": user wants to adjust the last recommendations (e.g. "а повеселее?", "без сериалов", "только российские", "что-нибудь поновее")
-- "general_chat": greetings, thanks, questions about the bot (e.g. "привет", "спасибо", "как ты работаешь?")
+- "new_search": user wants movie recommendations (e.g. "I want a comedy", "show me thrillers", "what should I watch")
+- "follow_up": user asks about previously recommended movies (e.g. "tell me about the first one", "who directed that?", "what's it about?")
+- "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
+- "general_chat": greetings, thanks, questions about the bot (e.g. "hi", "thanks", "how do you work?")
 
 ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
 
 JSON fields:
 - "category": one of the four categories above
-- "semantic_query": the core of what the user is looking for, in Russian, with filler words and pure filter phrases (genre/country/age/year constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If category is not new_search/refinement, just repeat the message.
+- "semantic_query": the core of what the user is looking for, with filler words and pure filter phrases (genre/country/rating/year/runtime/language constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If category is not new_search/refinement, just repeat the message.
 - "genres": list of matching genres from the ALLOWED list above
 - "mood": one of: happy, sad, excited, relaxed, romantic, thoughtful, scared, energetic, or ""
 - "themes": list of themes mentioned
 - "negations": list of genres the user does NOT want (from ALLOWED list)
 - "reference_films": list of film titles mentioned
-- "country_exclusions": list of countries the user does NOT want (e.g. "США", "Россия", "Франция" -- use the country name as commonly written in Russian, not a genre)
-- "max_age_rating": if the user wants something suitable for a specific age or younger (e.g. "для детей" -> 6, "детям можно" -> 12), the maximum age rating as a number, else null
-- "min_release_year": if the user wants recent/newer films (e.g. "поновее", "после 2015", "современный") a minimum release year as a number, else null
+- "country_exclusions": list of production countries the user does NOT want (e.g. "USA", "France" -- common English country name, not a genre)
+- "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
+- "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10 (e.g. "highly rated" -> 7.0, "critically acclaimed" -> 7.5), else null
+- "min_release_year": if the user wants recent/newer films (e.g. "something newer", "after 2015", "modern") a minimum release year, else null
+- "max_release_year": if the user wants older films or a specific era (e.g. "90s movies" -> 1999, "before 2000" -> 1999) a maximum release year, else null
+- "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
+- "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
+- "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
 
 Example:
-User: "хочу что-то смешное, но не ужасы"
-{{"category": "new_search", "semantic_query": "весёлый фильм", "genres": ["Комедии"], "mood": "happy", "themes": [], "negations": ["Ужасы"], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+User: "I want something funny, but not horror"
+{{"category": "new_search", "semantic_query": "a fun film", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
-User: "расскажи про первый фильм"
-{{"category": "follow_up", "semantic_query": "расскажи про первый фильм", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+User: "tell me about the first movie"
+{{"category": "follow_up", "semantic_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
-User: "привет"
-{{"category": "general_chat", "semantic_query": "привет", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+User: "hi"
+{{"category": "general_chat", "semantic_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
-User: "детектив, но не американский, и чтобы поновее"
-{{"category": "new_search", "semantic_query": "детектив", "genres": ["Детективы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": ["США"], "max_age_rating": null, "min_release_year": 2015}}
+User: "a highly rated 90s Korean thriller"
+{{"category": "new_search", "semantic_query": "a thriller", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
 
 Now parse this message:
 User: "{message}"
 """
 
-CONVERSATIONAL_PROMPT = """You are a Russian-speaking movie recommendation assistant. You ONLY discuss movies, series, directors, actors, genres, and cinema.
+CONVERSATIONAL_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
 {context}
 
 Rules:
-- Always respond in Russian
+- Always respond in English
 - If the user asks about anything unrelated to movies or cinema, politely redirect: say you are a movie assistant and suggest discussing films instead
 - Be concise, friendly, and knowledgeable about cinema
 
@@ -110,38 +112,43 @@ JSON fields:
 - "themes": list of themes mentioned
 - "negations": list of genres the user does NOT want (from ALLOWED list)
 - "reference_films": list of film titles mentioned
-- "country_exclusions": list of countries the user does NOT want (e.g. "США", "Россия", "Франция" -- use the country name as commonly written in Russian, not a genre)
-- "max_age_rating": if the user wants something suitable for a specific age or younger (e.g. "для детей" -> 6, "детям можно" -> 12), the maximum age rating as a number, else null
-- "min_release_year": if the user wants recent/newer films (e.g. "поновее", "после 2015", "современный") a minimum release year as a number, else null
+- "country_exclusions": list of production countries the user does NOT want (e.g. "USA", "France")
+- "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
+- "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10, else null
+- "min_release_year": if the user wants recent/newer films a minimum release year, else null
+- "max_release_year": if the user wants older films or a specific era a maximum release year, else null
+- "min_runtime": if the user wants a long film a minimum runtime in minutes, else null
+- "max_runtime": if the user wants a short film a maximum runtime in minutes, else null
+- "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language, else []
 
 Example:
-User: "хочу что-то смешное, но не ужасы"
-{{"genres": ["Комедии"], "mood": "happy", "themes": [], "negations": ["Ужасы"], "reference_films": [], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+User: "I want something funny, but not horror"
+{{"genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
-User: "триллер как Молчание ягнят"
-{{"genres": ["Триллеры"], "mood": "excited", "themes": [], "negations": [], "reference_films": ["Молчание ягнят"], "country_exclusions": [], "max_age_rating": null, "min_release_year": null}}
+User: "a thriller like Silence of the Lambs"
+{{"genres": ["Thriller"], "mood": "excited", "themes": [], "negations": [], "reference_films": ["Silence of the Lambs"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
-User: "детектив, но не американский, и чтобы поновее"
-{{"genres": ["Детективы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": ["США"], "max_age_rating": null, "min_release_year": 2015}}
+User: "a highly rated 90s Korean thriller"
+{{"genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
 
 Example:
-User: "мультфильм для детей"
-{{"genres": ["Мультфильмы"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "max_age_rating": 6, "min_release_year": null}}
+User: "a short animated family film"
+{{"genres": ["Animation", "Family"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 90, "original_languages": []}}
 
 Now parse this query:
 User: "{query}"
 """
 
-EXPLANATION_PROMPT = """You are a movie recommendation assistant speaking Russian. The user asked: "{query}"
+EXPLANATION_PROMPT = """You are a movie recommendation assistant. The user asked: "{query}"
 
-Based on their preferences, here are recommended movies. For each movie, write 1-2 sentences in Russian explaining why it matches what the user is looking for. Be specific about the connection between the user's request and each movie's qualities.
+Based on their preferences, here are recommended movies. For each movie, write 1-2 sentences explaining why it matches what the user is looking for. Be specific about the connection between the user's request and each movie's qualities.
 
 Movies:
 {movies_context}
 
-Write a brief, natural response in Russian recommending these movies with personalized explanations."""
+Write a brief, natural response recommending these movies with personalized explanations."""
 
 
 _THINK_OPEN = "<think>"
@@ -289,8 +296,13 @@ class MessageIntent(BaseModel):
     negations: list[str] = Field(default_factory=list)
     reference_films: list[str] = Field(default_factory=list)
     country_exclusions: list[str] = Field(default_factory=list)
-    max_age_rating: Optional[float] = None
+    country_inclusions: list[str] = Field(default_factory=list)
+    min_vote_average: Optional[float] = None
     min_release_year: Optional[int] = None
+    max_release_year: Optional[int] = None
+    min_runtime: Optional[int] = None
+    max_runtime: Optional[int] = None
+    original_languages: list[str] = Field(default_factory=list)
 
     @field_validator("genres", "themes", "negations", "reference_films", mode="before")
     @classmethod
@@ -299,22 +311,30 @@ class MessageIntent(BaseModel):
             return []
         return [v for v in value if isinstance(v, str)]
 
-    @field_validator("country_exclusions", mode="before")
+    @field_validator(
+        "country_exclusions", "country_inclusions", "original_languages", mode="before"
+    )
     @classmethod
-    def _clean_country_exclusions(cls, value):
+    def _clean_string_list(cls, value):
         if not isinstance(value, list):
             return []
         return [c for c in value if isinstance(c, str) and c.strip()]
 
-    @field_validator("max_age_rating", mode="before")
+    @field_validator("min_vote_average", mode="before")
     @classmethod
-    def _coerce_age_rating(cls, value):
+    def _coerce_vote_average(cls, value):
         return _coerce_float(value)
 
-    @field_validator("min_release_year", mode="before")
+    @field_validator(
+        "min_release_year", "max_release_year", "min_runtime", "max_runtime", mode="before"
+    )
     @classmethod
-    def _coerce_year(cls, value):
+    def _coerce_year_or_runtime(cls, value):
         return _coerce_int(value)
+
+
+def _clean_strs(values) -> list[str]:
+    return [v for v in values if isinstance(v, str) and v.strip()] if values else []
 
 
 def _extract_intent(parsed: dict) -> dict:
@@ -324,11 +344,14 @@ def _extract_intent(parsed: dict) -> dict:
         "themes": parsed.get("themes", []),
         "negations": _normalize_genres(parsed.get("negations", [])),
         "reference_films": parsed.get("reference_films", []),
-        "country_exclusions": [
-            c for c in parsed.get("country_exclusions", []) if isinstance(c, str) and c.strip()
-        ],
-        "max_age_rating": _coerce_float(parsed.get("max_age_rating")),
+        "country_exclusions": _clean_strs(parsed.get("country_exclusions", [])),
+        "country_inclusions": _clean_strs(parsed.get("country_inclusions", [])),
+        "min_vote_average": _coerce_float(parsed.get("min_vote_average")),
         "min_release_year": _coerce_int(parsed.get("min_release_year")),
+        "max_release_year": _coerce_int(parsed.get("max_release_year")),
+        "min_runtime": _coerce_int(parsed.get("min_runtime")),
+        "max_runtime": _coerce_int(parsed.get("max_runtime")),
+        "original_languages": _clean_strs(parsed.get("original_languages", [])),
     }
 
 
@@ -420,7 +443,7 @@ def parse_intent(query: str) -> dict:
 
 
 def generate_explanation(query: str, movies: list[dict]) -> str:
-    """Generate a Russian-language explanation of why each movie matches the query (RAG)."""
+    """Generate an English-language explanation of why each movie matches the query (RAG)."""
     try:
         return _chat_sync(
             _explanation_payload(query, movies)["messages"],
@@ -656,6 +679,11 @@ def _fallback_intent(_query: str) -> dict:
         "negations": [],
         "reference_films": [],
         "country_exclusions": [],
-        "max_age_rating": None,
+        "country_inclusions": [],
+        "min_vote_average": None,
         "min_release_year": None,
+        "max_release_year": None,
+        "min_runtime": None,
+        "max_runtime": None,
+        "original_languages": [],
     }

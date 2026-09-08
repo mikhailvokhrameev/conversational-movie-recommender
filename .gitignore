@@ -64,6 +64,7 @@ frontend/dist/
 
 # Data files
 catalog_okko.parquet
+TMDB Movie Dataset v11.csv
 .gstack/
 
 # Frontend

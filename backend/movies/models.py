@@ -14,33 +14,37 @@ def generate_token():
 
 
 class Movie(models.Model):
+    tmdb_id = models.IntegerField(unique=True)
     serial_name = models.CharField(max_length=500, db_index=True)
+    original_title = models.CharField(max_length=500, blank=True, default="")
     genres = models.JSONField(default=list)
-    content_type = models.CharField(max_length=50)
     country = models.JSONField(default=list)
-    actors = models.JSONField(default=list)
-    director = models.CharField(max_length=255, blank=True, default="")
-    age_rating = models.FloatField(null=True, blank=True)
-    studio_name = models.CharField(max_length=500, blank=True, default="")
+    original_language = models.CharField(max_length=10, blank=True, default="")
+    keywords = models.JSONField(default=list)
     release_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True, default="")
-    url = models.URLField(max_length=500, unique=True)
+    runtime = models.IntegerField(null=True, blank=True)
+    popularity = models.FloatField(default=0.0)
+    vote_average = models.FloatField(default=0.0)
+    vote_count = models.IntegerField(default=0)
+    poster_path = models.CharField(max_length=500, null=True, blank=True)
     embedding = VectorField(
         dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
     )
 
-    # Lexical retrieval channel: title/director/actors as a weighted tsvector.
-    # Populated by movies.search_index.refresh_search_vectors(), not on save --
-    # the catalog is bulk-imported, so it is rebuilt in one UPDATE afterwards.
+    # Lexical retrieval channel: title/original_title/keywords as a weighted
+    # tsvector. Populated by movies.search_index.refresh_search_vectors(), not
+    # on save -- the catalog is bulk-imported, so it is rebuilt in one UPDATE
+    # afterwards.
     search_vector = SearchVectorField(null=True, blank=True)
 
-    # No ANN index on `embedding` by design. At ~18K rows an exact cosine scan
-    # costs on the order of tens of milliseconds, against an ~2s Ollama intent
-    # call in the same request -- so HNSW bought under 2% of request latency
-    # while giving up exact recall. It also degrades under the hard filters in
-    # candidate_generation: a filtered HNSW scan post-filters its candidate
-    # list and can return far fewer rows than the requested limit. Revisit if
-    # the catalog grows by an order of magnitude.
+    # No ANN index on `embedding` by design. At ~50K rows an exact cosine scan
+    # still costs on the order of tens of milliseconds, against an ~2s Ollama
+    # intent call in the same request -- so HNSW buys under 2% of request
+    # latency while giving up exact recall. It also degrades under the hard
+    # filters in candidate_generation: a filtered HNSW scan post-filters its
+    # candidate list and can return far fewer rows than the requested limit.
+    # Revisit if the catalog grows by another order of magnitude.
     #
     # The GIN index below is a different case: full-text matching without an
     # index means computing tsvectors for every row on every query, which is

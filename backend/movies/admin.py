@@ -4,9 +4,9 @@ from .models import Movie, ChatSession
 
 @admin.register(Movie)
 class MovieAdmin(admin.ModelAdmin):
-    list_display = ("serial_name", "content_type", "director", "release_date", "age_rating")
-    list_filter = ("content_type",)
-    search_fields = ("serial_name", "director", "description")
+    list_display = ("serial_name", "release_date", "vote_average", "popularity")
+    list_filter = ("original_language",)
+    search_fields = ("serial_name", "original_title", "description")
 
 
 @admin.register(ChatSession)

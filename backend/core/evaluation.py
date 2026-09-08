@@ -111,7 +111,7 @@ def diversity(embeddings: list[list[float]]) -> float:
 def novelty(recommended_genres: list[list[str]], genre_freq: dict[str, float]) -> float:
     """How non-obvious the recommendations are, based on genre rarity.
 
-    Uses inverse frequency: rare genres (Артхаус) score higher than common ones (Драмы).
+    Uses inverse frequency: rare genres (Documentary) score higher than common ones (Drama).
     Returns value in [0, 1] where 1 = all rare genres, 0 = all common genres.
     """
     if not recommended_genres or not genre_freq:

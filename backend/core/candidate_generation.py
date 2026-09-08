@@ -1,8 +1,9 @@
 """Candidate generation: hard filters, two retrieval channels, RRF fusion.
 
-Applies hard filters (genre negation, country exclusion, max age rating,
-min release year, content type) as SQL WHERE clauses, then retrieves through
-two independent channels and fuses their rankings:
+Applies hard filters (genre negation, country exclusion/inclusion, rating
+floor, release year range, runtime range, original language) as SQL WHERE
+clauses, then retrieves through two independent channels and fuses their
+rankings:
 
   semantic  exact pgvector cosine distance over the query embedding
   lexical   Postgres full-text match over title/director/actors
@@ -58,9 +59,10 @@ def generate_candidates(
 ) -> list[dict]:
     """Retrieve candidates via hard-filtered semantic + lexical search.
 
-    1. Hard filters: exclude movies matching negated genres, excluded
-       countries, above the requested age rating, or older than the
-       requested release year; optionally pin content_type
+    1. Hard filters: exclude movies matching negated genres, excluded/not
+       included countries, below the requested rating, outside the
+       requested release year or runtime range, or not in the requested
+       original language(s)
     2. Rank the survivors by exact cosine distance (semantic channel)
     3. Rank the survivors by full-text match (lexical channel), if
        `query_text` yields any usable terms
@@ -115,8 +117,11 @@ def generate_candidates(
 def _apply_hard_filters(queryset, intent: dict | None):
     """Apply the intent's hard constraints as SQL WHERE clauses.
 
-    Movies with a null age_rating or release_date are kept rather than
-    excluded -- unknown metadata means "cannot judge", not "fails".
+    Movies with null metadata (rating, release_date, runtime) are kept rather
+    than excluded -- unknown metadata means "cannot judge", not "fails".
+    `original_languages` is the one exception: original_language is always
+    known for an imported row, so it's an exact `__in` match with no
+    null-passes-through branch.
     """
     if not intent:
         return queryset
@@ -127,10 +132,17 @@ def _apply_hard_filters(queryset, intent: dict | None):
     for excluded_country in intent.get("country_exclusions", []):
         queryset = queryset.exclude(country__contains=[excluded_country])
 
-    max_age_rating = intent.get("max_age_rating")
-    if max_age_rating is not None:
+    country_inclusions = intent.get("country_inclusions", [])
+    if country_inclusions:
+        included = reduce(
+            operator.or_, (Q(country__contains=[c]) for c in country_inclusions)
+        )
+        queryset = queryset.filter(included)
+
+    min_vote_average = intent.get("min_vote_average")
+    if min_vote_average is not None:
         queryset = queryset.filter(
-            Q(age_rating__lte=max_age_rating) | Q(age_rating__isnull=True)
+            Q(vote_average__gte=min_vote_average) | Q(vote_average__isnull=True)
         )
 
     min_release_year = intent.get("min_release_year")
@@ -139,9 +151,27 @@ def _apply_hard_filters(queryset, intent: dict | None):
             Q(release_date__year__gte=min_release_year) | Q(release_date__isnull=True)
         )
 
-    content_type = intent.get("content_type")
-    if content_type:
-        queryset = queryset.filter(content_type=content_type)
+    max_release_year = intent.get("max_release_year")
+    if max_release_year is not None:
+        queryset = queryset.filter(
+            Q(release_date__year__lte=max_release_year) | Q(release_date__isnull=True)
+        )
+
+    min_runtime = intent.get("min_runtime")
+    if min_runtime is not None:
+        queryset = queryset.filter(
+            Q(runtime__gte=min_runtime) | Q(runtime__isnull=True)
+        )
+
+    max_runtime = intent.get("max_runtime")
+    if max_runtime is not None:
+        queryset = queryset.filter(
+            Q(runtime__lte=max_runtime) | Q(runtime__isnull=True)
+        )
+
+    original_languages = intent.get("original_languages", [])
+    if original_languages:
+        queryset = queryset.filter(original_language__in=original_languages)
 
     return queryset
 
@@ -211,16 +241,20 @@ def _rrf_fuse(
 def _as_candidate_dict(movie: Movie, lexical_rank: int | None) -> dict:
     return {
         "id": movie.id,
+        "tmdb_id": movie.tmdb_id,
         "serial_name": movie.serial_name,
+        "original_title": movie.original_title,
         "genres": movie.genres,
-        "content_type": movie.content_type,
         "country": movie.country,
-        "actors": movie.actors,
-        "director": movie.director,
-        "age_rating": movie.age_rating,
+        "original_language": movie.original_language,
+        "keywords": movie.keywords,
         "release_date": str(movie.release_date) if movie.release_date else None,
         "description": movie.description,
-        "url": movie.url,
+        "runtime": movie.runtime,
+        "popularity": movie.popularity,
+        "vote_average": movie.vote_average,
+        "vote_count": movie.vote_count,
+        "poster_path": movie.poster_path,
         "embedding": list(movie.embedding) if movie.embedding is not None else None,
         "distance": float(movie.distance),
         # 0-based position in the lexical channel, or None if it was found
