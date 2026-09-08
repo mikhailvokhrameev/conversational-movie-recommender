@@ -1,6 +1,6 @@
 export default function PosterArc({ posters }) {
-  const fanned = posters.filter((_, i) => i % 2 === 0)
-  const step = (360 / fanned.length) * 1.18
+  const fanned = posters.filter((_, i) => i % 3 === 0)
+  const step = 360 / fanned.length
 
   return (
     <div
