@@ -3,7 +3,7 @@ export default function MovieCard({ movie }) {
 
   return (
     <a
-      href={movie.url}
+      href={`https://www.themoviedb.org/movie/${movie.tmdb_id}`}
       target="_blank"
       rel="noopener noreferrer"
       className="group flex-shrink-0 w-44 sm:w-48 rounded-lg bg-surface overflow-hidden
@@ -11,11 +11,20 @@ export default function MovieCard({ movie }) {
                  transition-colors duration-200 hover:bg-elevated
                  focus-visible:outline-2 focus-visible:outline-amber focus-visible:outline-offset-2"
     >
-      <div className="aspect-[3/4] bg-elevated flex items-center justify-center">
-        <svg className="w-8 h-8 text-muted opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-          <rect x="2" y="2" width="20" height="20" rx="2" />
-          <path d="M7 2v20M17 2v20M2 7h20M2 12h20M2 17h20" />
-        </svg>
+      <div className="aspect-[3/4] bg-elevated flex items-center justify-center overflow-hidden">
+        {movie.poster_url ? (
+          <img
+            src={movie.poster_url}
+            alt={movie.serial_name}
+            loading="lazy"
+            className="w-full h-full object-cover"
+          />
+        ) : (
+          <svg className="w-8 h-8 text-muted opacity-30" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+            <rect x="2" y="2" width="20" height="20" rx="2" />
+            <path d="M7 2v20M17 2v20M2 7h20M2 12h20M2 17h20" />
+          </svg>
+        )}
       </div>
 
       <div className="p-2.5 flex flex-col gap-1.5 flex-1">
@@ -25,10 +34,10 @@ export default function MovieCard({ movie }) {
 
         <div className="flex items-center gap-1.5 text-[0.7rem] text-muted">
           {year && <span>{year}</span>}
-          {movie.director && (
+          {movie.vote_average > 0 && (
             <>
               <span className="opacity-40">·</span>
-              <span className="truncate">{movie.director}</span>
+              <span>★ {movie.vote_average.toFixed(1)}</span>
             </>
           )}
         </div>
