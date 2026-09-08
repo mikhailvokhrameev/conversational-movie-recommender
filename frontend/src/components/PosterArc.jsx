@@ -1,20 +1,21 @@
 export default function PosterArc({ posters }) {
-  const step = 360 / posters.length
+  const fanned = posters.filter((_, i) => i % 2 === 0)
+  const step = 360 / fanned.length
 
   return (
     <div
-      className="poster-arc"
+      className="poster-arc shrink-0"
       aria-hidden="true"
       style={{
-        '--arc-h': 'clamp(160px, 22vw, 260px)',
-        '--arc-r': 'clamp(300px, 85vw, 1000px)',
-        '--card-w': 'clamp(84px, 9vw, 132px)',
-        '--card-h': 'clamp(126px, 13.5vw, 198px)',
-        '--arc-duration': '200s',
+        '--arc-h': 'clamp(300px, 38vw, 460px)',
+        '--arc-r': 'clamp(340px, 40vw, 560px)',
+        '--card-w': 'clamp(160px, 18vw, 240px)',
+        '--card-h': 'clamp(240px, 27vw, 360px)',
+        '--arc-duration': '150s',
       }}
     >
       <div className="poster-orbit-wheel">
-        {posters.map((src, i) => (
+        {fanned.map((src, i) => (
           <div
             key={src}
             className="poster-card rounded-2xl overflow-hidden shadow-lg shadow-black/20 ring-1 ring-black/10"

@@ -83,7 +83,7 @@ body {
 .poster-orbit-wheel {
   position: absolute;
   left: 50%;
-  top: var(--arc-r);
+  top: calc(var(--arc-r) + var(--card-h) * 0.55);
   width: calc(var(--arc-r) * 2);
   height: calc(var(--arc-r) * 2);
   transform: translate(-50%, -50%) rotate(0deg);
