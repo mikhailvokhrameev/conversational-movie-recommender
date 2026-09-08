@@ -48,7 +48,7 @@ class TestClassifyAndParse:
             "negations": [],
             "reference_films": [],
             "country_exclusions": [],
-            "max_age_rating": None,
+            "min_vote_average": None,
             "min_release_year": None,
         })
         mock_client = _mock_ollama_responses(content)
@@ -179,12 +179,12 @@ class TestMessageIntentValidation:
             "category": "new_search",
             "genres": "Комедии",
             "country_exclusions": ["США", 42, None, ""],
-            "max_age_rating": "kids",
+            "min_vote_average": "great",
             "min_release_year": "soon",
         })
         assert intent.genres == []
         assert intent.country_exclusions == ["США"]
-        assert intent.max_age_rating is None
+        assert intent.min_vote_average is None
         assert intent.min_release_year is None
 
 
@@ -217,7 +217,7 @@ class TestExtractIntent:
             "negations": ["Ужасы"],
             "reference_films": ["Один дома"],
             "country_exclusions": ["США"],
-            "max_age_rating": 12,
+            "min_vote_average": 7.0,
             "min_release_year": 2015,
         }
         result = _extract_intent(parsed)
@@ -225,7 +225,7 @@ class TestExtractIntent:
         assert result["themes"] == ["семья"]
         assert result["reference_films"] == ["Один дома"]
         assert result["country_exclusions"] == ["США"]
-        assert result["max_age_rating"] == 12.0
+        assert result["min_vote_average"] == 7.0
         assert result["min_release_year"] == 2015
 
     def test_missing_fields_default_to_empty(self):
@@ -236,18 +236,18 @@ class TestExtractIntent:
         assert result["negations"] == []
         assert result["reference_films"] == []
         assert result["country_exclusions"] == []
-        assert result["max_age_rating"] is None
+        assert result["min_vote_average"] is None
         assert result["min_release_year"] is None
 
     def test_invalid_hard_constraint_types_are_dropped(self):
         parsed = {
             "country_exclusions": ["США", 42, None, ""],
-            "max_age_rating": "not-a-number",
+            "min_vote_average": "not-a-number",
             "min_release_year": "also-not-a-number",
         }
         result = _extract_intent(parsed)
         assert result["country_exclusions"] == ["США"]
-        assert result["max_age_rating"] is None
+        assert result["min_vote_average"] is None
         assert result["min_release_year"] is None
 
 
@@ -260,7 +260,7 @@ class TestFallbackIntent:
         assert result["negations"] == []
         assert result["reference_films"] == []
         assert result["country_exclusions"] == []
-        assert result["max_age_rating"] is None
+        assert result["min_vote_average"] is None
         assert result["min_release_year"] is None
 
 

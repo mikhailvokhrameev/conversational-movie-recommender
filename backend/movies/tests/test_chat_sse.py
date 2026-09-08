@@ -18,18 +18,18 @@ def _mock_classify_and_parse(category, semantic_query="", **filters):
 
 
 def _mock_encode(embedding=None):
-    return embedding or [0.1] * 768
+    return embedding or [0.1] * 1024
 
 
 def _mock_generate_and_score(movies=None):
     async def _gen(query_embedding, intent, session_vector, query_text=""):
         result = movies or [
             {
-                "id": 1, "serial_name": "Test Film", "genres": ["Драмы"],
-                "content_type": "Фильм", "country": ["Россия"], "actors": [],
-                "director": "Director", "age_rating": 16.0, "release_date": "2024-01-01",
-                "description": "A test", "url": "https://okko.tv/test",
-                "embedding": [0.1] * 768, "total": 0.85, "semantic": 0.4,
+                "id": 1, "tmdb_id": 1, "serial_name": "Test Film", "original_title": "Test Film",
+                "genres": ["Drama"], "country": ["US"], "release_date": "2024-01-01",
+                "description": "A test", "runtime": 120, "vote_average": 7.5,
+                "poster_path": "/abc123.jpg",
+                "embedding": [0.1] * 1024, "total": 0.85, "semantic": 0.4,
                 "metadata": 0.3, "session": 0.15,
             }
         ]
@@ -70,7 +70,7 @@ class TestChatSSENewSearch:
         )
 
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
-             patch("movies.views.encode_query", return_value=[0.1] * 768), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
              patch("movies.views.astream_explanation", _empty_stream):
@@ -98,7 +98,7 @@ class TestChatSSENewSearch:
             data=json.dumps({"message": "ну хочу такую весёлую комедию пожалуйста"}),
             content_type="application/json",
         )
-        encode_mock = MagicMock(return_value=[0.1] * 768)
+        encode_mock = MagicMock(return_value=[0.1] * 1024)
 
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="весёлая комедия")), \
              patch("movies.views.encode_query", encode_mock), \
@@ -180,7 +180,7 @@ class TestChatSSERefinement:
         )
 
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("refinement", semantic_query="а повеселее?")), \
-             patch("movies.views.encode_query", return_value=[0.1] * 768), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
              patch("movies.views.astream_explanation", _empty_stream):

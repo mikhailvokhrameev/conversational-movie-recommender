@@ -89,21 +89,23 @@ class Command(BaseCommand):
     def _parse_weights(self, weights_str):
         if weights_str:
             parts = [float(x) for x in weights_str.split(",")]
-            return {"semantic": parts[0], "metadata": parts[1], "session": parts[2]}
+            # popularity is held at its configured value -- --weights only varies
+            # the three signals it always has, so it doesn't silently zero popularity.
+            return {
+                "semantic": parts[0], "metadata": parts[1], "session": parts[2],
+                "popularity": settings.SCORE_WEIGHTS.get("popularity", 0.0),
+            }
         return settings.SCORE_WEIGHTS
 
     def _build_intent(self, test_case):
         intent = {"genres": list(test_case.get("relevant_genres", []))}
         if "negated_genres" in test_case:
             intent["negations"] = test_case["negated_genres"]
-        if "relevant_content_type" in test_case:
-            intent["content_type"] = test_case["relevant_content_type"]
         return intent
 
     def _score_query(self, test_case, k, weights, use_llm=False):
         query = test_case["query"]
         relevant_genres = set(test_case.get("relevant_genres", []))
-        relevant_content_type = test_case.get("relevant_content_type")
         negated_genres = set(test_case.get("negated_genres", []))
 
         query_embedding = encode_query(query)
@@ -123,21 +125,15 @@ class Command(BaseCommand):
 
         hits = []
         negation_violations = 0
-        content_type_violations = 0
         for m in diversified:
             movie_genres = set(m.get("genres", []))
             is_relevant = False
 
             if relevant_genres and (relevant_genres & movie_genres):
                 is_relevant = True
-            if relevant_content_type and m.get("content_type") == relevant_content_type:
-                is_relevant = True
 
             if negated_genres and (negated_genres & movie_genres):
                 negation_violations += 1
-                is_relevant = False
-            if relevant_content_type and m.get("content_type") != relevant_content_type:
-                content_type_violations += 1
                 is_relevant = False
 
             if is_relevant:
@@ -159,7 +155,6 @@ class Command(BaseCommand):
             k=k,
         )
         metrics["negation_violations"] = negation_violations
-        metrics["content_type_violations"] = content_type_violations
         metrics["_recommended_titles"] = recommended_titles
         return metrics
 
@@ -177,9 +172,7 @@ class Command(BaseCommand):
             per_query.append(metrics)
 
             neg = metrics.get("negation_violations", 0)
-            ct = metrics.get("content_type_violations", 0)
             violations = f" neg={neg}" if neg else ""
-            violations += f" ct={ct}" if ct else ""
             llm_str = f" LLM={metrics['llm_relevance']:.1f}" if "llm_relevance" in metrics else ""
             self.stdout.write(
                 f"  {test_case['query'][:50]:50s} P@{k}={metrics['precision_at_k']:.2f} "
@@ -223,7 +216,10 @@ class Command(BaseCommand):
 
         results = []
         for i, (sem, met, ses) in enumerate(grid):
-            weights = {"semantic": sem, "metadata": met, "session": ses}
+            weights = {
+                "semantic": sem, "metadata": met, "session": ses,
+                "popularity": settings.SCORE_WEIGHTS.get("popularity", 0.0),
+            }
             if use_llm:
                 self.stdout.write(
                     f"  Config {i+1}/{len(grid)}: sem={sem} met={met} ses={ses}..."

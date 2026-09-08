@@ -15,32 +15,33 @@ class TestSerializeMovie:
     def test_serializes_all_fields(self):
         movie = {
             "id": 1,
+            "tmdb_id": 42,
             "serial_name": "Test Film",
-            "genres": ["Драмы"],
-            "content_type": "Фильм",
-            "country": ["Россия"],
-            "actors": ["Actor"],
-            "director": "Director",
-            "age_rating": 16.0,
+            "original_title": "Test Film",
+            "genres": ["Drama"],
+            "country": ["US"],
             "release_date": "2024-01-01",
             "description": "A test film",
-            "url": "https://okko.tv/test",
+            "runtime": 120,
+            "vote_average": 7.5,
+            "poster_path": "/abc123.jpg",
             "total": 0.87654,
         }
         result = _serialize_movie(movie)
         assert result["score"] == 0.8765
         assert result["serial_name"] == "Test Film"
+        assert result["poster_url"] == f"{settings.TMDB_POSTER_BASE_URL}{settings.TMDB_POSTER_SIZE}/abc123.jpg"
         assert "total" not in result
         assert "embedding" not in result
 
-    def test_null_age_rating(self):
+    def test_null_poster_path_yields_null_poster_url(self):
         movie = {
-            "id": 1, "serial_name": "T", "genres": [], "content_type": "",
-            "country": [], "actors": [], "director": "", "age_rating": None,
-            "release_date": None, "description": "", "url": "", "total": 0.5,
+            "id": 1, "tmdb_id": 1, "serial_name": "T", "original_title": "T",
+            "genres": [], "country": [], "release_date": None, "description": "",
+            "runtime": None, "vote_average": 0.0, "poster_path": None, "total": 0.5,
         }
         result = _serialize_movie(movie)
-        assert result["age_rating"] is None
+        assert result["poster_url"] is None
 
 
 @pytest.mark.django_db
@@ -135,8 +136,8 @@ class TestSaveSession:
     async def test_refinement_uses_higher_alpha_than_new_search(self):
         from movies.models import ChatSession
 
-        existing_vector = [0.1] * 768
-        new_embedding = [0.9] + [0.0] * 767
+        existing_vector = [0.1] * 1024
+        new_embedding = [0.9] + [0.0] * 1023
 
         session_new_search = await ChatSession.objects.acreate(preference_vector=existing_vector)
         await _save_session(session_new_search, "q", {}, new_embedding, [], category="new_search")

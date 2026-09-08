@@ -1,175 +1,95 @@
 [
   {
-    "query": "хочу посмотреть хорошую комедию",
-    "relevant_genres": [
-      "Комедии"
-    ],
+    "query": "I want to watch a good comedy",
+    "relevant_genres": ["Comedy"],
     "description": "Direct genre request"
   },
   {
-    "query": "что-то страшное на ночь",
-    "relevant_genres": [
-      "Ужасы",
-      "Триллеры"
-    ],
+    "query": "something scary to watch tonight",
+    "relevant_genres": ["Horror", "Thriller"],
     "description": "Mood-driven request, night context"
   },
   {
-    "query": "фильм про космос и путешествия",
-    "relevant_genres": [
-      "Фантастика",
-      "Приключения"
-    ],
+    "query": "a movie about space and travel",
+    "relevant_genres": ["Science Fiction", "Adventure"],
     "description": "Theme-based request"
   },
   {
-    "query": "хочу драму, но не мелодраму",
-    "relevant_genres": [
-      "Драмы"
-    ],
-    "negated_genres": [
-      "Мелодрамы"
-    ],
+    "query": "I want a drama, but not a romance",
+    "relevant_genres": ["Drama"],
+    "negated_genres": ["Romance"],
     "description": "Genre with negation"
   },
   {
-    "query": "легкий семейный фильм на вечер",
-    "relevant_genres": [
-      "Семейное",
-      "Комедии",
-      "Мультфильмы"
-    ],
+    "query": "a light family movie for the evening",
+    "relevant_genres": ["Family", "Comedy", "Animation"],
     "description": "Family context request"
   },
   {
-    "query": "корейский триллер",
-    "relevant_genres": [
-      "Триллеры"
-    ],
-    "relevant_country": [
-      "Корея Южная"
-    ],
-    "description": "Genre + country filter"
+    "query": "a gripping crime thriller",
+    "relevant_genres": ["Crime", "Thriller"],
+    "description": "Genre combination"
   },
   {
-    "query": "документальный фильм о природе",
-    "relevant_genres": [
-      "Документальное",
-      "Природа"
-    ],
+    "query": "a documentary about nature",
+    "relevant_genres": ["Documentary"],
     "description": "Documentary subgenre"
   },
   {
-    "query": "хочу боевик с хорошими спецэффектами",
-    "relevant_genres": [
-      "Боевики",
-      "Фантастика"
-    ],
+    "query": "I want an action movie with great effects",
+    "relevant_genres": ["Action", "Science Fiction"],
     "description": "Action with quality expectation"
   },
   {
-    "query": "романтический фильм для двоих",
-    "relevant_genres": [
-      "Мелодрамы"
-    ],
+    "query": "a romantic movie for date night",
+    "relevant_genres": ["Romance"],
     "description": "Romantic mood request"
   },
   {
-    "query": "что-нибудь детективное, расследование",
-    "relevant_genres": [
-      "Детективы",
-      "Криминальное"
-    ],
+    "query": "something like a detective investigation",
+    "relevant_genres": ["Mystery", "Crime"],
     "description": "Detective/crime request"
   },
   {
-    "query": "советское кино",
-    "relevant_genres": [
-      "Советское"
-    ],
-    "relevant_country": [
-      "СССР"
-    ],
-    "description": "Era-specific request"
-  },
-  {
-    "query": "аниме для взрослых",
-    "relevant_genres": [
-      "Аниме"
-    ],
-    "description": "Anime with age constraint"
-  },
-  {
-    "query": "фильм для ребёнка 6 лет",
-    "relevant_genres": [
-      "Мультфильмы",
-      "Фильмы для детей",
-      "Семейное"
-    ],
-    "description": "Children's content request"
-  },
-  {
-    "query": "исторический фильм о войне",
-    "relevant_genres": [
-      "Историческое",
-      "Военное",
-      "Драмы"
-    ],
+    "query": "a historical film about war",
+    "relevant_genres": ["War", "History", "Drama"],
     "description": "Historical war films"
   },
   {
-    "query": "фантастика, но не ужасы и не боевик",
-    "relevant_genres": [
-      "Фантастика",
-      "Фэнтези"
-    ],
-    "negated_genres": [
-      "Ужасы",
-      "Боевики"
-    ],
+    "query": "sci-fi, but not horror and not action",
+    "relevant_genres": ["Science Fiction", "Fantasy"],
+    "negated_genres": ["Horror", "Action"],
     "description": "Genre with multiple negations"
   },
   {
-    "query": "хочу посмотреть сериал, не фильм",
-    "relevant_content_type": "Сериал",
-    "description": "Content type filter"
-  },
-  {
-    "query": "что-то вроде Шерлока Холмса",
-    "relevant_genres": [
-      "Детективы"
-    ],
+    "query": "something like Sherlock Holmes",
+    "relevant_genres": ["Mystery"],
     "description": "Reference-based request"
   },
   {
-    "query": "весёлый мультик для всей семьи",
-    "relevant_genres": [
-      "Мультфильмы",
-      "Комедии",
-      "Семейное"
-    ],
+    "query": "a fun animated movie for the whole family",
+    "relevant_genres": ["Animation", "Comedy", "Family"],
     "description": "Animated family comedy"
   },
   {
-    "query": "артхаусное европейское кино",
-    "relevant_genres": [
-      "Артхаус",
-      "Драмы"
-    ],
-    "relevant_country": [
-      "Франция",
-      "Германия",
-      "Италия"
-    ],
-    "description": "Arthouse European cinema"
+    "query": "a biographical film about a musician",
+    "relevant_genres": ["Music", "Drama"],
+    "description": "Biographical music film"
   },
   {
-    "query": "биографический фильм о музыканте",
-    "relevant_genres": [
-      "Биографии",
-      "Музыкальное",
-      "Драмы"
-    ],
-    "description": "Biographical music film"
+    "query": "a fantasy adventure with magic",
+    "relevant_genres": ["Fantasy", "Adventure"],
+    "description": "Fantasy adventure request"
+  },
+  {
+    "query": "a classic western",
+    "relevant_genres": ["Western"],
+    "description": "Genre-specific request"
+  },
+  {
+    "query": "a psychological mystery, not a horror movie",
+    "relevant_genres": ["Mystery", "Thriller"],
+    "negated_genres": ["Horror"],
+    "description": "Genre with negation"
   }
 ]

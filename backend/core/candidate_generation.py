@@ -6,7 +6,7 @@ clauses, then retrieves through two independent channels and fuses their
 rankings:
 
   semantic  exact pgvector cosine distance over the query embedding
-  lexical   Postgres full-text match over title/director/actors
+  lexical   Postgres full-text match over title/original_title/keywords
 
 The two exist for different failure modes. Embeddings encode meaning but not
 identity, so a query naming a specific film or actor can miss it entirely.
