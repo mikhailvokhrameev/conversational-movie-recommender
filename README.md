@@ -2,19 +2,21 @@
 
 ## What is it
 
-A conversational movie recommendation system for the Okko streaming platform. Users describe what they want to watch in Russian natural language, and the system returns personalized picks with real-time streaming explanations of why each movie fits.
+A conversational movie recommendation system built on a ~50K-movie TMDB catalog. Users describe what they want to watch in natural language, and the system returns personalized picks with real-time streaming explanations of why each movie fits.
 
-The chat understands context: follow-up questions about recommended movies, preference refinements ("а повеселее?"), and general conversation are handled differently from new search queries. Preferences are learned across the conversation via an embedding-based preference vector.
+The chat understands context: follow-up questions about recommended movies, preference refinements ("something funnier?"), and general conversation are handled differently from new search queries. Preferences are learned across the conversation via an embedding-based preference vector.
 
 ## Motivation
 
-Most movie recommendation systems are either keyword-based search (fragile, no understanding of intent) or collaborative filtering (cold-start problem, no explainability). This project combines three signals into a hybrid approach:
+Most movie recommendation systems are either keyword-based search (fragile, no understanding of intent) or collaborative filtering (cold-start problem, no explainability). This project combines multiple signals into a hybrid approach:
 
-- **Semantic search** via sentence-transformers embeddings + pgvector HNSW index for fast approximate nearest neighbor retrieval
-- **Metadata matching** via LLM-powered intent parsing that extracts genres, mood, themes, and negations from natural language
+- **Semantic search** via a BGE-M3 embedder + pgvector exact cosine distance
+- **Lexical search** via a Postgres full-text channel over title/keywords, fused with the semantic channel by Reciprocal Rank Fusion -- catches named titles that embeddings miss
+- **Cross-encoder reranking** (bge-reranker-v2-m3) over the fused candidate pool
+- **Metadata matching** via LLM-powered intent parsing that extracts genres, mood, themes, negations, and hard filters (rating floor, release year, runtime, language, country) from natural language
 - **Session-based preference learning** via exponential moving average on the user's query embeddings
 
-The LLM layer (Ollama with qwen2.5:7b, running locally on GPU) handles intent parsing, message classification, and Russian-language explanation generation. Everything runs locally via Docker, no external API calls.
+The LLM layer (Ollama with qwen3:8b, running locally on GPU) handles intent parsing, message classification, and explanation generation. Everything runs locally via Docker, no external API calls.
 
 ## Architecture
 
@@ -24,7 +26,7 @@ The LLM layer (Ollama with qwen2.5:7b, running locally on GPU) handles intent pa
 │                                                              │
 │  ┌───────────┐  ┌──────────────┐  ┌────────────────────┐   │
 │  │ PostgreSQL │  │    Ollama    │  │     Frontend       │   │
-│  │ + pgvector │  │ qwen2.5:7b  │  │  React + Vite      │   │
+│  │ + pgvector │  │   qwen3:8b   │  │  React + Vite      │   │
 │  │   :5432    │  │   :11434    │  │     :3000           │   │
 │  └─────┬──────┘  └──────┬──────┘  └──────────┬─────────┘   │
 │        │                │                     │ proxy /api   │
@@ -41,14 +43,13 @@ The LLM layer (Ollama with qwen2.5:7b, running locally on GPU) handles intent pa
 ```
 User message
   │
-  ├── Classify message (Ollama) → new_search / follow_up / refinement / general_chat
+  ├── Classify + parse intent (Ollama, JSON mode, one call) → category + genres/mood/themes/filters
   │
   ├── [new_search / refinement]
-  │     ├── Parse intent (Ollama, JSON mode) ──┐
-  │     │                                      ├── parallel
-  │     ├── Encode query (sentence-transformers) ──┘
-  │     ├── Candidate generation (pgvector HNSW, top 100)
-  │     ├── Hybrid scoring (semantic 0.4 + metadata 0.3 + session 0.3)
+  │     ├── Encode query (BGE-M3)
+  │     ├── Candidate generation (hard filters, then semantic + lexical channels fused by RRF, top 100)
+  │     ├── Hybrid scoring (semantic 0.35 + metadata 0.25 + session 0.25 + popularity 0.15)
+  │     ├── Cross-encoder reranking (bge-reranker-v2-m3, top 50)
   │     ├── MMR diversification (top 5)
   │     └── SSE stream: movie cards (instant) + explanation (token by token)
   │
@@ -60,11 +61,12 @@ User message
 
 | Layer | Technology |
 |-------|-----------|
-| LLM | Ollama + qwen2.5:7b (local, GPU-accelerated) |
-| Embeddings | sentence-transformers/paraphrase-multilingual-mpnet-base-v2 (768-dim) |
-| Vector DB | PostgreSQL 16 + pgvector (HNSW index, cosine distance) |
+| LLM | Ollama + qwen3:8b (local, GPU-accelerated) |
+| Embeddings | BAAI/bge-m3 (1024-dim) |
+| Reranker | BAAI/bge-reranker-v2-m3 (cross-encoder) |
+| Vector DB | PostgreSQL 16 + pgvector (exact cosine distance) + full-text (tsvector/RRF) |
 | Backend | Django 4.2, async views, uvicorn ASGI, httpx |
-| Frontend | React 18, Vite, Tailwind CSS 4, OKLCH dark/light theme |
+| Frontend | React 19, Vite, Tailwind CSS 4, OKLCH dark/light theme |
 | Infrastructure | Docker Compose (4 services) |
 | Tests | pytest, pytest-django, pytest-asyncio |
 
@@ -84,9 +86,9 @@ cp .env.example .env
 docker compose up --build
 ```
 
-On first start, Ollama will automatically pull the qwen2.5:7b model (~4.7 GB). The backend will run migrations and import the movie catalog.
+On first start, Ollama will automatically pull the qwen3:8b model (~5.0 GB). The backend will run migrations and import the TMDB movie catalog (~50K movies -- the first import + embedding pass takes a while).
 
-Once everything is up, open http://localhost:3000 and start chatting in Russian.
+Once everything is up, open http://localhost:3000 and start chatting.
 
 **Useful commands:**
 
@@ -112,18 +114,21 @@ docker compose exec backend python manage.py evaluate_scoring --sweep
 ```
 backend/
 ├── core/                       # ML pipeline
-│   ├── ollama_client.py            # LLM: intent parse, classify, explain, chat
-│   ├── embedding_service.py        # sentence-transformers wrapper
-│   ├── candidate_generation.py     # pgvector ANN search
+│   ├── ollama_client.py            # LLM: classify+parse intent, explain, chat
+│   ├── embedding_service.py        # BGE-M3 wrapper
+│   ├── candidate_generation.py     # hard filters + semantic/lexical RRF fusion
+│   ├── reranking.py                # cross-encoder reranking stage
 │   ├── scoring.py                  # hybrid scoring + MMR diversification
 │   ├── session_manager.py          # EMA preference vector
 │   └── evaluation.py              # LLM-as-judge, metrics
 ├── movies/
 │   ├── models.py                   # Movie + ChatSession (pgvector fields)
 │   ├── views.py                    # async API: chat, sessions, health
-│   └── urls.py                     # /api/chat/, /api/sessions/, /api/health/
+│   ├── search_index.py             # full-text search_vector maintenance
+│   ├── urls.py                     # /api/chat/, /api/sessions/, /api/health/
+│   └── management/commands/        # import_catalog, generate_embeddings, evaluate_scoring
 └── recommender/
-    └── settings.py                 # Django config (env vars)
+    └── settings.py                 # Django config (env vars + params.yaml)
 
 frontend/src/
 ├── components/                 # ChatMessage, MovieCard, Header, ThemeToggle

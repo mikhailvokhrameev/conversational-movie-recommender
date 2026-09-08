@@ -17,7 +17,7 @@ via Server-Sent Events.
 
 | Field | Type | Required | Constraints | Description |
 |-------|------|----------|-------------|-------------|
-| `message` | string | yes | 1-2000 chars, trimmed | Movie query in Russian |
+| `message` | string | yes | 1-2000 chars, trimmed | Movie query in natural language |
 | `session_id` | UUID string | no | valid UUID v4 | Existing session to continue |
 
 **Response**: `text/event-stream` (SSE)
@@ -44,7 +44,7 @@ Contains the session UUID (for subsequent requests), the top-5 movie objects,
 and the parsed intent.
 
 **Phase 2 (streaming)**: Zero or more `token` events stream the LLM-generated
-Russian-language explanation. Tokens arrive as Ollama produces them.
+explanation. Tokens arrive as Ollama produces them.
 
 **Terminal**: A `done` event always closes the stream. If explanation generation
 failed, an `error` event precedes `done`.
@@ -54,37 +54,45 @@ failed, an `error` event precedes `done`.
 | Field | Type | Example |
 |-------|------|---------|
 | `id` | int | `42` |
-| `serial_name` | string | `"Интерстеллар"` |
-| `genres` | string[] | `["Фантастика", "Драмы"]` |
-| `content_type` | string | `"Фильм"` |
-| `country` | string[] | `["США"]` |
-| `actors` | string[] | `["Мэттью Макконахи"]` |
-| `director` | string | `"Кристофер Нолан"` |
-| `age_rating` | float\|null | `12.0` |
+| `tmdb_id` | int | `157336` |
+| `serial_name` | string | `"Interstellar"` |
+| `original_title` | string | `"Interstellar"` |
+| `genres` | string[] | `["Science Fiction", "Drama"]` |
+| `country` | string[] | `["US", "GB"]` |
 | `release_date` | string\|null | `"2014-10-26"` |
-| `description` | string | `"Когда засуха..."` |
-| `url` | string | `"https://okko.tv/movie/interstellar"` |
+| `description` | string | `"The adventures of a group of explorers..."` |
+| `runtime` | int\|null | `169` |
+| `vote_average` | float | `8.4` |
+| `poster_url` | string\|null | `"https://image.tmdb.org/t/p/w500/gEU2QniE6E77NI6lCU6MxlNBvIx.jpg"` |
 | `score` | float | `0.8234` |
 
 **Intent object shape**:
 
 | Field | Type | Example |
 |-------|------|---------|
-| `genres` | string[] | `["Комедии"]` |
+| `genres` | string[] | `["Comedy"]` |
 | `mood` | string | `"happy"` |
-| `themes` | string[] | `["семья"]` |
-| `negations` | string[] | `["Ужасы"]` |
-| `reference_films` | string[] | `["Один дома"]` |
-| `country_exclusions` | string[] | `["США"]` |
-| `max_age_rating` | float\|null | `12.0` |
+| `themes` | string[] | `["family"]` |
+| `negations` | string[] | `["Horror"]` |
+| `reference_films` | string[] | `["Home Alone"]` |
+| `country_exclusions` | string[] | `["US"]` |
+| `country_inclusions` | string[] | `[]` |
+| `min_vote_average` | float\|null | `7.0` |
 | `min_release_year` | int\|null | `2015` |
+| `max_release_year` | int\|null | `null` |
+| `min_runtime` | int\|null | `null` |
+| `max_runtime` | int\|null | `90` |
+| `original_languages` | string[] | `["ko"]` |
 
-`negations` and `country_exclusions` are enforced as SQL `WHERE`/`exclude`
-filters in candidate generation, not scoring weights — a movie violating
-either never enters the candidate set, regardless of semantic score.
-Same for `max_age_rating` and `min_release_year`. Movies with a null
-`age_rating` or `release_date` are never excluded by these filters (treated
-as "unknown, don't filter" rather than "fails the constraint").
+`negations`, `country_exclusions`/`country_inclusions`, `min_vote_average`,
+`min_release_year`/`max_release_year`, `min_runtime`/`max_runtime`, and
+`original_languages` are all enforced as SQL `WHERE`/`exclude` filters in
+candidate generation, not scoring weights — a movie violating any of them
+never enters the candidate set, regardless of semantic score. Movies with a
+null `vote_average`, `release_date`, or `runtime` are never excluded by these
+filters (treated as "unknown, don't filter" rather than "fails the
+constraint") — `original_languages` is the one exception, since
+`original_language` is always known for an imported row.
 
 **Error responses** (JSON, not SSE):
 
@@ -98,7 +106,7 @@ as "unknown, don't filter" rather than "fails the constraint").
 ```bash
 curl -N -X POST http://localhost:8000/api/chat/ \
   -H "Content-Type: application/json" \
-  -d '{"message": "хочу комедию про семью"}'
+  -d '{"message": "I want a comedy about family"}'
 ```
 
 **Example with session continuation**:
@@ -106,7 +114,7 @@ curl -N -X POST http://localhost:8000/api/chat/ \
 ```bash
 curl -N -X POST http://localhost:8000/api/chat/ \
   -H "Content-Type: application/json" \
-  -d '{"message": "а что-нибудь поновее?", "session_id": "a1b2c3d4-..."}'
+  -d '{"message": "something newer?", "session_id": "a1b2c3d4-..."}'
 ```
 
 ---
@@ -136,13 +144,13 @@ Requires the `X-Session-Token` header for authentication.
   "history": [
     {
       "role": "user",
-      "content": "хочу комедию",
-      "movies": ["Один дома", "Ирония судьбы"]
+      "content": "I want a comedy",
+      "movies": ["Home Alone", "Groundhog Day"]
     }
   ],
   "turn_count": 1,
   "preferences": {
-    "liked_genres": ["Комедии"],
+    "liked_genres": ["Comedy"],
     "disliked_genres": [],
     "themes": [],
     "reference_films": []
@@ -170,7 +178,7 @@ Returns service health and catalog size.
 {
   "status": "healthy",
   "timestamp": "2024-06-23T15:30:00.000000",
-  "catalog_size": 18130
+  "catalog_size": 50000
 }
 ```
 
@@ -190,12 +198,13 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   (Ollama LLM, ~2s, Pydantic-validated,          filters + semantic_query
    1 retry-with-repair on invalid JSON)
                  |
-  encode_query(intent.semantic_query)        ← sentence-transformers, ~0.3s
+  encode_query(intent.semantic_query)        ← BGE-M3, ~0.3s
                  v
-  generate_candidates(embedding, intent)     ← hard filters + exact cosine search
-  score_candidates(candidates, ...)          ← semantic + metadata + session,
+  generate_candidates(embedding, intent)     ← hard filters, then semantic + lexical
+                                               channels fused by RRF
+  score_candidates(candidates, ...)          ← semantic + metadata + session + popularity,
                                                each normalized across the set
-  rerank_candidates(query, scored)           ← cross-encoder, off by default
+  rerank_candidates(query, scored)           ← cross-encoder, on by default, top_k=50
   mmr_diversify(scored, top_n=5)             ← diversity selection
                  |
   _save_session()                            ← atomic update with SELECT FOR UPDATE
@@ -235,21 +244,21 @@ these can be changed -- no environment variable overrides them.
 | params.yaml path | Default | Effect |
 |------------------|---------|--------|
 | `llm.base_url` | `http://ollama:11434` | Ollama server URL |
-| `llm.model` | RuadaptQwen3-8B-Hybrid (Q4_K_M) | Model for classification, intent parsing, explanations |
+| `llm.model` | `qwen3:8b` | Model for classification, intent parsing, explanations |
 | `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
-| `embedding.model` | multilingual mpnet | Embedding model |
-| `embedding.dimensions` | `768` | Vector width (changing needs a migration + re-embed) |
+| `embedding.model` | `BAAI/bge-m3` | Embedding model |
+| `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
-| `scoring.weights.*` | 0.4 / 0.3 / 0.3 | Signal weights (semantic / metadata / session) |
+| `scoring.weights.*` | 0.35 / 0.25 / 0.25 / 0.15 | Signal weights (semantic / metadata / session / popularity) |
 | `diversification.top_n` | `5` | Results returned |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
 | `reranking.enabled` | `true` | Cross-encoder reranking on/off |
 | `reranking.model` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |
 | `reranking.device` | `auto` | `auto` / `cuda` / `cpu` (see ML.md before pinning) |
-| `reranking.top_k` | `20` | Candidates sent to the cross-encoder |
+| `reranking.top_k` | `50` | Candidates sent to the cross-encoder |
 | `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |

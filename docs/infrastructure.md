@@ -37,8 +37,8 @@ The system runs as 4 Docker services via `docker compose up`:
 - **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
   readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
   not cached
-- **Model cache**: persisted in `ollama_data` Docker volume (~1.9GB for the
-  default qwen2.5:3b)
+- **Model cache**: persisted in `ollama_data` Docker volume (~5.0GB for the
+  default qwen3:8b, Q4_K_M)
 - **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
   Profiles for running without one
 - **Health check**: `ollama --version`
@@ -51,13 +51,15 @@ The system runs as 4 Docker services via `docker compose up`:
 - **Startup sequence**: `migrate -> import_catalog -> uvicorn`
 - **Dependencies**: waits for `db` (healthy) and `ollama` (healthy) before starting
 - **Volumes**:
-  - `./catalog_okko.parquet:/app/catalog_okko.parquet:ro` (catalog data)
+  - `./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro` (catalog data)
   - `./data:/app/data:ro` (test queries for evaluation)
   - `model_cache:/root/.cache` (sentence-transformers model cache)
 
 ### frontend (React + Tailwind)
 
-Not yet implemented. Will serve on port 3000.
+- **Image**: custom, built from `frontend/Dockerfile`
+- **Port**: 3000 (Vite dev server)
+- **Proxies** `/api/*` to the backend service
 
 ## Security Tradeoffs
 
@@ -128,13 +130,18 @@ failing loudly beats silently degrading.
 VRAM with everything resident:
 
 ```
-RuadaptQwen3-8B-Hybrid, Q4_K_M   ~5.0 GB
-bge-reranker-v2-m3, fp16         ~1.1 GB
-mpnet embedder, fp32             ~1.1 GB
-CUDA context + activations       ~1.0 GB
+qwen3:8b, Q4_K_M                 ~5.0 GB
+bge-reranker-v2-m3, fp32         ~2.2 GB
+bge-m3 embedder, fp32            ~2.2 GB
+CUDA context + activations       ~1.0-1.5 GB
                                  --------
-                                 ~8.2 GB of 11 GB
+                                 ~10.4-10.9 GB of 11 GB
 ```
+
+Noticeably tighter than the old mpnet embedder's ~1.1GB -- BGE-M3 is in the
+same XLM-RoBERTa-large size class as the reranker. The reranker also loads
+fp32, not fp16 (sentence-transformers does not downcast it automatically).
+If it doesn't fit: a smaller `llm.model`, or `reranking.device: cpu`.
 
 ### Smaller machines
 
@@ -172,7 +179,7 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 
 | Command | Purpose |
 |---------|---------|
-| `import_catalog --skip-existing` | Load catalog_okko.parquet into PostgreSQL (idempotent), then rebuild search vectors |
+| `import_catalog --skip-existing` | Load the TMDB CSV into PostgreSQL (idempotent), then rebuild search vectors |
 | `generate_embeddings` | Embed all movie descriptions (batch size from params.yaml) |
 | `evaluate_scoring` | Run offline evaluation with genre-based metrics |
 | `evaluate_scoring --llm-judge` | Run evaluation with LLM graded relevance (slow) |
@@ -189,7 +196,7 @@ docker compose up backend
 # This automatically:
 # 1. Starts PostgreSQL, waits for health check
 # 2. Starts Ollama, pulls the model named in params.yaml (first time only)
-# 3. Starts backend: runs migrations, imports 18K movies from parquet
+# 3. Starts backend: runs migrations, imports ~50K movies from the TMDB CSV
 # 4. Starts uvicorn on port 8000
 
 # Generate embeddings (separate step, ~5 min on GPU)
@@ -214,8 +221,11 @@ rebuild: `docker compose build ollama --no-cache`
 **"No migrations to apply" but tables don't exist**: Migration files
 weren't in the Docker image. Rebuild: `docker compose build backend --no-cache`
 
-**Embedding generation slow**: On CPU, 18K descriptions take ~30-60 minutes.
-On GPU, ~5 minutes. Check GPU availability:
+**Embedding generation slow**: At the old 18K-item catalog this took ~5 minutes
+on GPU / ~30-60 minutes on CPU with the mpnet embedder. The current ~50K-item
+TMDB catalog with BGE-M3 (a larger model) will take proportionally longer on
+both -- re-measure and update this line after running it. Check GPU
+availability:
 `docker compose exec backend python -c "import torch; print(torch.cuda.is_available())"`
 
 **Ollama model not pulling**: Check logs: `docker compose logs ollama`.

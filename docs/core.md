@@ -8,32 +8,35 @@ which queries the Movie model via Django ORM + pgvector).
 ## Architecture
 
 ```
-User query (Russian natural language)
+User query (natural language)
   |
-  ├──[PARALLEL]──> ollama_client.parse_intent()     ──> structured intent (JSON)
-  │                  (includes mood detection)
-  │                  fallback: empty intent (semantic search still works)
-  │
-  └──[PARALLEL]──> embedding_service.encode_query()  ──> 768-dim query vector
+  v
+ollama_client.aclassify_and_parse()   ──> category + structured intent (one JSON call)
+  |                                        (includes mood detection)
+  |                                        fallback: empty intent (semantic search still works)
+  v
+embedding_service.encode_query()      ──> 1024-dim query vector (BGE-M3)
   |
   v
 candidate_generation.generate_candidates(query_vec, intent, query_text)
   |   1. HARD FILTERS (SQL WHERE, not scoring signals):
   |        - exclude movies matching negated genres
-  |        - exclude movies matching excluded countries
-  |        - exclude movies above max_age_rating (nulls pass through)
-  |        - exclude movies older than min_release_year (nulls pass through)
-  |   2. Optional: filter by content_type from intent
-  |   3. TWO RETRIEVAL CHANNELS over the survivors:
+  |        - exclude/include movies by country
+  |        - exclude movies below min_vote_average (nulls pass through)
+  |        - exclude movies outside min/max_release_year (nulls pass through)
+  |        - exclude movies outside min/max_runtime (nulls pass through)
+  |        - exclude movies not matching original_languages
+  |   2. TWO RETRIEVAL CHANNELS over the survivors:
   |        semantic -- exact cosine distance, top-100
-  |        lexical  -- Postgres full-text over title/director/actors, top-100
-  |   4. Fuse the two rankings via RRF -> top-100 candidates
+  |        lexical  -- Postgres full-text over title/original_title/keywords, top-100
+  |   3. Fuse the two rankings via RRF -> top-100 candidates
   v
 scoring.score_candidates() over the whole candidate set
   |   min-max normalize each signal across the set, then:
-  |   semantic:  cosine_sim(query_vec, movie_vec)  * 0.4
-  |   metadata:  genre_overlap(intent, movie)      * 0.3
-  |   session:   cosine_sim(session_vec, movie_vec) * 0.3
+  |   semantic:    cosine_sim(query_vec, movie_vec)   * 0.35
+  |   metadata:    genre_overlap(intent, movie)       * 0.25
+  |   session:     cosine_sim(session_vec, movie_vec) * 0.25
+  |   popularity:  normalized TMDB popularity         * 0.15
   v
 reranking.rerank_candidates(query, scored)   [optional, GPU cross-encoder]
   |   top-50 by score -> (query, movie) pairs -> blended 50/50 with scorer
@@ -44,7 +47,7 @@ scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
 Top-5 diverse recommendations
   |
   v
-ollama_client.generate_explanation()  ──> Russian-language RAG explanation
+ollama_client.astream_explanation()  ──> streamed RAG explanation
   |
   v
 session_manager.update_preference_vector()  ──> EMA blend into session vector
@@ -55,42 +58,49 @@ session_manager.track_explicit_preferences() ──> accumulate liked/disliked g
 
 ### `embedding_service.py` -- Vector Embeddings
 
-Wraps `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` (768 dimensions).
+Wraps `BAAI/bge-m3` (1024 dimensions).
 The model is loaded lazily on first call and cached as a module-level singleton.
 
 | Function | Input | Output | Use case |
 |----------|-------|--------|----------|
 | `get_model()` | -- | `SentenceTransformer` | Access the singleton model |
-| `encode_texts(texts)` | `list[str]` | `np.ndarray (N, 768)` | Batch embedding (catalog import) |
-| `encode_query(query)` | `str` | `list[float]` (768) | Single query at request time |
+| `encode_texts(texts)` | `list[str]` | `np.ndarray (N, 1024)` | Batch embedding (catalog import) |
+| `encode_query(query)` | `str` | `list[float]` (1024) | Single query at request time |
 | `cosine_similarity(a, b)` | two vectors | `float [-1, 1]` | Similarity between any two vectors |
 
 ### `ollama_client.py` -- LLM Integration
 
-Calls the Ollama container's HTTP API (`/api/chat`) for three tasks:
+Calls the Ollama container's HTTP API (`/api/chat`) for classification+intent
+parsing and explanation generation. The request path uses the async variants
+below; sync counterparts of the same functions exist for management commands
+(`evaluate_scoring`, etc.) that run outside the ASGI event loop.
 
-**Intent parsing** (`parse_intent`): Sends the user query with a structured prompt
-requesting JSON output. Ollama's `format: "json"` mode forces valid JSON.
-Extracts genres, mood, themes, negations, reference films, country exclusions,
-max age rating, and min release year. The latter three are hard constraints
-(country_exclusions, max_age_rating, min_release_year) -- they get applied as
-SQL filters in `candidate_generation.py`, not as scoring weights, so a movie
-violating one is excluded outright rather than merely ranked lower.
-On failure (timeout, malformed JSON, Ollama down), falls back to `_fallback_intent()`
-which returns an empty intent. Semantic search via embeddings still works without
-parsed intent -- it just loses metadata filtering.
+**Classification + intent parsing** (`aclassify_and_parse`): One combined JSON-mode
+call replaces what used to be two separate classify/parse requests. Sends the
+user query with a structured prompt requesting JSON output; Ollama's
+`format: "json"` mode forces valid JSON, and the result is validated against
+the `MessageIntent` Pydantic schema (one retry-with-repair on invalid category).
+Extracts the routing category plus genres, mood, themes, negations, reference
+films, country exclusions/inclusions, min vote average, min/max release year,
+min/max runtime, and original languages. All of the latter are hard
+constraints -- they get applied as SQL filters in `candidate_generation.py`,
+not as scoring weights, so a movie violating one is excluded outright rather
+than merely ranked lower. On failure (timeout, malformed JSON, Ollama down),
+falls back to `_fallback_intent()`/`_fallback_message_intent()`, which returns
+an empty intent. Semantic search via embeddings still works without parsed
+intent -- it just loses metadata filtering.
 
-**Explanation generation** (`generate_explanation`, `stream_explanation`): RAG pattern.
+**Explanation generation** (`astream_explanation`, `stream_explanation`): RAG pattern.
 Movie metadata and descriptions are injected as context, and the LLM writes 1-2
 sentences per movie explaining the match. The streaming variant yields tokens
 for progressive frontend display.
 
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
-| `parse_intent(query)` | `POST /api/chat` (JSON mode) | 60s | Keyword extraction |
-| `generate_explanation(query, movies)` | `POST /api/chat` | 120s | Empty string |
-| `stream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
-| `is_available()` | `GET /` | 5s | Returns `False` |
+| `aclassify_and_parse(message)` | `POST /api/chat` (JSON mode) | 45s | `_fallback_message_intent()` |
+| `astream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
+| `astream_conversational(message, context)` | `POST /api/chat` (stream) | 120s | Silent stop |
+| `ais_available()` | `GET /` | 5s | Returns `False` |
 
 ### `candidate_generation.py` -- Hard Filters + Hybrid Retrieval
 
@@ -101,16 +111,20 @@ candidates to the reranker.
 1. **Hard filters** (all SQL `WHERE`/`exclude`, not scoring signals):
    - `exclude(genres__contains=negated_genre)` for each negated genre
    - `exclude(country__contains=excluded_country)` for each excluded country
-   - `filter(age_rating__lte=max_age_rating)` (movies with no rating pass through)
-   - `filter(release_date__year__gte=min_release_year)` (movies with no date pass through)
-2. **Optional filter**: content_type from intent
-3. **Semantic channel**: `CosineDistance` ordering on the embedding column,
+   - `filter(country__contains=included_country)` (OR-ed) for country inclusions
+   - `filter(vote_average__gte=min_vote_average)` (movies with no rating pass through)
+   - `filter(release_date__year__gte/__lte=min/max_release_year)` (movies with no date pass through)
+   - `filter(runtime__gte/__lte=min/max_runtime)` (movies with no runtime pass through)
+   - `filter(original_language__in=original_languages)` (exact match, no null pass-through --
+     original_language is always known for an imported row)
+2. **Semantic channel**: `CosineDistance` ordering on the embedding column,
    limit=100. No ANN index -- see ML.md for the measurements behind that choice.
-4. **Lexical channel**: full-text match against `search_vector` (title weight A,
-   director and actors weight B), ranked by `ts_rank`, limit=100. Query terms are
-   OR-ed, since a conversational sentence would match nothing under AND.
-   Skipped entirely when the message yields no usable terms.
-5. **RRF fusion**: `weight / (60 + rank)` summed per movie across channels.
+3. **Lexical channel**: full-text match against `search_vector` (title/original_title
+   weight A, keywords weight B -- the catalog has no cast/crew data to index),
+   ranked by `ts_rank`, limit=100. Query terms are OR-ed, since a conversational
+   sentence would match nothing under AND. Skipped entirely when the message
+   yields no usable terms.
+4. **RRF fusion**: `weight / (60 + rank)` summed per movie across channels.
    Rank-based because a cosine distance and a `ts_rank` are not comparable
    quantities. Semantic is weighted 1.0 and lexical 0.7, so lexical only loses
    ties. Fusion decides pool membership; `scoring.py` re-ranks the pool.
@@ -119,20 +133,24 @@ Returns a list of movie dicts with all metadata + embedding for downstream scori
 
 ### `scoring.py` -- Hybrid Reranking + MMR Diversification
 
-**Scoring** -- three signals, weighted sum:
+**Scoring** -- four signals, weighted sum:
 
-- **Semantic (0.4)**: Cosine similarity between the query embedding and the movie's
+- **Semantic (0.35)**: Cosine similarity between the query embedding and the movie's
   pre-computed embedding. Mapped from [-1, 1] to [0, 1] via `(sim + 1) / 2`.
-- **Metadata (0.3)**: Genre overlap ratio between LLM-extracted intent genres and
+- **Metadata (0.25)**: Genre overlap ratio between LLM-extracted intent genres and
   movie genres. Direct matching only, no indirect mood-to-genre lookup.
-- **Session (0.3)**: Cosine similarity between the session preference vector and the
+- **Session (0.25)**: Cosine similarity between the session preference vector and the
   movie embedding. Zero on the first turn (no session vector yet).
+- **Popularity (0.15)**: TMDB's popularity metric. A scoring signal rather than a
+  hard filter, deliberately -- popularity is unbounded and non-linear, so there's
+  no absolute threshold an LLM could reliably pick (unlike vote_average's bounded
+  0-10 scale, which *is* a hard filter above).
 
 Signals are min-max normalized across the candidate set before the weighted
 sum, so the declared weights actually hold. Raw signals have very different
 spreads (semantic cosines cluster in a narrow band; genre overlap spans the
 full 0-1 range), and a signal's real influence is `weight * spread`. Without
-normalization metadata's 0.3 outranked semantic's 0.4. A signal identical
+normalization metadata's 0.25 could outrank semantic's 0.35. A signal identical
 across every candidate carries no ranking information and collapses to a
 neutral 0.5. Pre-normalization values are kept per candidate under
 `raw_scores` for debugging and evaluation.
@@ -213,7 +231,9 @@ Reusable evaluation framework for measuring recommendation quality:
 | `diversity` | 1 - mean pairwise cosine similarity (higher = more diverse results) |
 
 Used by `manage.py evaluate_scoring` and the ablation notebook.
-Test set: `data/test_queries.json` (20 hand-curated Russian queries with relevance judgments).
+Test set: `data/test_queries.json` (18 hand-curated English queries with relevance judgments).
+This is a genre-overlap heuristic, not the manually labeled golden-set eval
+tracked in `TODOS.md` -- see there before treating either as ground truth.
 
 ## Design Decisions
 

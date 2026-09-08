@@ -1,6 +1,6 @@
 # Frontend Reference (`frontend/`)
 
-React 18 + Vite + Tailwind CSS 4 chat interface for the movie recommender.
+React 19 + Vite + Tailwind CSS 4 chat interface for the movie recommender.
 Communicates with the backend via SSE streaming (`POST /api/chat/`).
 Dark cinematic theme with OKLCH color tokens.
 
@@ -8,7 +8,7 @@ Dark cinematic theme with OKLCH color tokens.
 
 | Tool | Version | Purpose |
 |------|---------|---------|
-| React | 18 | UI components |
+| React | 19 | UI components |
 | Vite | 8 | Build tool + dev server |
 | Tailwind CSS | 4 | Utility-first styling via `@tailwindcss/vite` |
 | Google Fonts | - | DM Serif Display (display) + Inter (body) |
@@ -25,14 +25,20 @@ frontend/
 ├── src/
 │   ├── main.jsx            React root mount
 │   ├── index.css           Tailwind imports, OKLCH tokens, keyframes
-│   ├── App.jsx             Top-level layout: welcome screen or chat + input
+│   ├── App.jsx             Top-level layout: header, welcome screen or chat + input
+│   ├── data/
+│   │   └── posters.js      Static poster image list for the welcome-screen hero
 │   ├── hooks/
-│   │   └── useChat.js      SSE streaming hook (fetch + ReadableStream)
+│   │   ├── useChat.js      SSE streaming hook (fetch + ReadableStream)
+│   │   └── useTheme.js     Dark/light theme state (localStorage-backed)
 │   └── components/
-│       ├── ChatInput.jsx   Textarea + send button form
-│       ├── ChatMessage.jsx User bubble or assistant response (cards + text)
-│       ├── MovieCard.jsx   Poster placeholder, title, genres, score, Okko link
-│       └── WelcomeScreen.jsx  Empty state with heading + suggestion chips
+│       ├── Header.jsx         Home button + theme toggle slot
+│       ├── ThemeToggle.jsx    Dark/light theme switch button
+│       ├── ChatInput.jsx      Textarea + send button form
+│       ├── ChatMessage.jsx    User bubble or assistant response (cards + text)
+│       ├── MovieCard.jsx      Poster (or placeholder), title, rating, genres, score, TMDB link
+│       ├── WelcomeScreen.jsx  Empty state: arc-text heading, input, suggestion chips, poster arc hero
+│       └── PosterArc.jsx      Decorative rotating arc of static poster images (welcome screen only)
 └── public/
     ├── favicon.svg
     └── icons.svg
@@ -62,11 +68,19 @@ Fonts:
 
 ### `App.jsx`
 
-Top-level layout. Full-viewport flex column (`h-svh`). Shows `WelcomeScreen`
-when no messages exist, otherwise a scrollable message list. Input bar is
-sticky at the bottom with `backdrop-blur-sm` and semi-transparent background.
+Top-level layout. Full-viewport flex column (`h-svh`). Renders `Header`
+(home button + `ThemeToggle` slot) above everything else, then shows
+`WelcomeScreen` when no messages exist, otherwise a scrollable message list.
+Input bar is sticky at the bottom with `backdrop-blur-sm` and semi-transparent
+background.
 
 Auto-scrolls to bottom on new messages via `useEffect` + `scrollRef`.
+
+### `Header.jsx` / `ThemeToggle.jsx`
+
+`Header` is a thin bar: a home button (resets the chat via `onHomeClick`) and
+a slot for `ThemeToggle`, a sun/moon icon button that flips `useTheme`'s
+`dark`/`light` state (persisted to `localStorage`).
 
 ### `useChat.js` (hook)
 
@@ -106,14 +120,18 @@ Renders a single message. Two layouts:
 
 ### `MovieCard.jsx`
 
-A link (`<a>`) to the movie's Okko URL. Opens in new tab. Structure:
-- Poster area: `aspect-[2/3]` placeholder with film-reel SVG icon
+A link (`<a>`) to the movie's TMDB page (`themoviedb.org/movie/{tmdb_id}`).
+Opens in new tab. Structure:
+- Poster area: `aspect-[3/4]`, renders the real poster (`movie.poster_url`,
+  built server-side from `poster_path`) when present, falls back to a
+  film-reel SVG icon when `poster_url` is null
 - Title: serif font (`font-display`), 2-line clamp, amber on hover
-- Metadata: year + director
-- Genre chips: up to 3, amber-muted background
+- Metadata: year + TMDB rating (`★ {vote_average}`), shown only when
+  `vote_average > 0`
+- Genre chips: up to 2, amber-muted background
 - Score badge: `{score * 100}% match` in amber
 
-Fixed width `w-56`, `flex-shrink-0` for horizontal scrolling.
+Fixed width `w-44 sm:w-48`, `flex-shrink-0` for horizontal scrolling.
 Focus-visible ring in amber for keyboard navigation.
 
 ### `ChatInput.jsx`
@@ -125,9 +143,20 @@ Textarea has hidden `<label>` for screen readers. Send button is 44px
 
 ### `WelcomeScreen.jsx`
 
-Centered vertically. Serif heading ("Что посмотреть?"), muted description,
-three suggestion chips. Chips call `sendMessage` directly on click.
-Focus-visible rings on all chips.
+Empty-state hero. An SVG arc-text heading ("conversational movie
+recommender" along a curved `<textPath>`, `sr-only` duplicated as plain text
+for accessibility), a pill-shaped input form (rotated -1deg, straightens on
+focus) that submits directly via `onSuggestionClick`, three suggestion-chip
+buttons below it, and a `PosterArc` decorative hero filling the rest of the
+viewport.
+
+### `PosterArc.jsx`
+
+Purely decorative (`aria-hidden`). Arranges the images from `data/posters.js`
+in a circular arc via CSS custom properties (`--angle` per card) and rotates
+the whole wheel slowly (`--arc-duration: 200s`). Posters are static assets
+under `frontend/images/`, unrelated to the movie catalog data -- see
+`PRODUCT.md` for sourcing.
 
 ## Dev Server
 
