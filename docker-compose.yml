@@ -72,7 +72,7 @@ services:
       ALLOWED_HOSTS: localhost,127.0.0.1,backend
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     volumes:
-      - ./catalog_okko.parquet:/app/catalog_okko.parquet:ro
+      - ./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro
       - ./data:/app/data:ro
       - ./params.yaml:/app/params.yaml:ro
       - model_cache:/root/.cache

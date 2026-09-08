@@ -36,18 +36,22 @@ class HealthView(APIView):
 
 
 def _serialize_movie(movie: dict) -> dict:
+    poster_path = movie["poster_path"]
     return {
         "id": movie["id"],
+        "tmdb_id": movie["tmdb_id"],
         "serial_name": movie["serial_name"],
+        "original_title": movie["original_title"],
         "genres": movie["genres"],
-        "content_type": movie["content_type"],
         "country": movie["country"],
-        "actors": movie["actors"],
-        "director": movie["director"],
-        "age_rating": float(movie["age_rating"]) if movie["age_rating"] is not None else None,
         "release_date": movie["release_date"],
         "description": movie["description"],
-        "url": movie["url"],
+        "runtime": movie["runtime"],
+        "vote_average": movie["vote_average"],
+        "poster_url": (
+            f"{settings.TMDB_POSTER_BASE_URL}{settings.TMDB_POSTER_SIZE}{poster_path}"
+            if poster_path else None
+        ),
         "score": round(float(movie["total"]), 4),
     }
 
@@ -117,7 +121,7 @@ def _last_movies_context(session: ChatSession) -> str:
     for entry in reversed(session.history):
         movies = entry.get("movies")
         if movies:
-            return "Последние рекомендованные фильмы: " + ", ".join(movies) + "."
+            return "Recently recommended movies: " + ", ".join(movies) + "."
     return ""
 
 
