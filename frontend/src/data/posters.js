@@ -37,7 +37,6 @@ const FILES = [
   'pin-from.jpeg',
   'Spider Man Kolobok.jpg',
   'Cars.jpeg',
-  'Despicable Me 2.jpeg',
   'News Images Pin.jpeg',
 ]
 
