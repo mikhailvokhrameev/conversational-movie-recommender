@@ -1,4 +1,49 @@
+import { useEffect, useState } from 'react'
 import MovieCard from './MovieCard'
+import { LOADING_MESSAGES } from '../data/loadingMessages'
+
+const LOADING_MESSAGE_INTERVAL_MS = 1800
+
+function pickNextLoadingMessage(current) {
+  if (LOADING_MESSAGES.length <= 1) return LOADING_MESSAGES[0]
+  let next
+  do {
+    next = LOADING_MESSAGES[Math.floor(Math.random() * LOADING_MESSAGES.length)]
+  } while (next === current)
+  return next
+}
+
+function RetrievalSkeleton() {
+  const [loadingMessage, setLoadingMessage] = useState(() => pickNextLoadingMessage())
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setLoadingMessage(current => pickNextLoadingMessage(current))
+    }, LOADING_MESSAGE_INTERVAL_MS)
+    return () => clearInterval(interval)
+  }, [])
+
+  return (
+    <div className="space-y-2">
+      <p
+        key={loadingMessage}
+        className="text-sm text-muted"
+        style={{ animation: `loading-message-fade ${LOADING_MESSAGE_INTERVAL_MS}ms ease-in-out` }}
+      >
+        {loadingMessage}
+      </p>
+      <div className="flex gap-2">
+        {[0, 1, 2].map(i => (
+          <div
+            key={i}
+            className="h-40 w-56 rounded-lg bg-surface animate-pulse"
+            style={{ animationDelay: `${i * 150}ms` }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
 
 export default function ChatMessage({ message, isStreaming, isLast }) {
   if (message.role === 'user') {
@@ -13,6 +58,7 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
 
   const hasMovies = message.movies?.length > 0
   const showCaret = isStreaming && isLast && !message.error
+  const showSkeleton = !message.explanation && showCaret && !hasMovies
 
   return (
     <div className="space-y-4 max-w-2xl">
@@ -42,17 +88,7 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
         </div>
       )}
 
-      {!message.explanation && showCaret && !hasMovies && (
-        <div className="flex gap-2">
-          {[0, 1, 2].map(i => (
-            <div
-              key={i}
-              className="h-40 w-56 rounded-lg bg-surface animate-pulse"
-              style={{ animationDelay: `${i * 150}ms` }}
-            />
-          ))}
-        </div>
-      )}
+      {showSkeleton && <RetrievalSkeleton />}
 
       {message.error && (
         <p className="text-sm text-error">

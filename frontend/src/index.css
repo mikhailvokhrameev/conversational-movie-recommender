@@ -56,6 +56,12 @@ body {
   50% { opacity: 0.3; }
 }
 
+@keyframes loading-message-fade {
+  0% { opacity: 0; transform: translateY(2px); }
+  15%, 85% { opacity: 1; transform: translateY(0); }
+  100% { opacity: 0; transform: translateY(-2px); }
+}
+
 @keyframes poster-orbit-spin {
   from { transform: translate(-50%, -50%) rotate(0deg); }
   to { transform: translate(-50%, -50%) rotate(360deg); }
