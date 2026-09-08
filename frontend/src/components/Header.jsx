@@ -6,7 +6,7 @@ export default function Header({ onHomeClick, themeSlot }) {
         className="font-display text-base sm:text-lg text-ink hover:text-amber transition-colors duration-150
                    focus-visible:outline-2 focus-visible:outline-amber focus-visible:outline-offset-2"
       >
-        Hybrid Movie Recommender
+        Conversational Movie Recommender
       </button>
       {themeSlot}
     </header>

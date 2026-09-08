@@ -1,22 +1,8 @@
-@import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600..800&family=DM+Serif+Display&family=Inter:wght@400;500;600&display=swap');
 @import "tailwindcss";
 
 @theme {
-  --color-bg: oklch(0.08 0 0);
-  --color-surface: oklch(0.15 0 0);
-  --color-elevated: oklch(0.20 0 0);
-  --color-amber: oklch(0.75 0.16 55);
-  --color-amber-hover: oklch(0.80 0.18 55);
-  --color-amber-muted: oklch(0.75 0.16 55 / 0.15);
-  --color-ink: oklch(0.95 0 0);
-  --color-muted: oklch(0.65 0 0);
-  --color-error: oklch(0.65 0.2 25);
-
-  --font-display: 'DM Serif Display', Georgia, serif;
-  --font-body: 'Inter', system-ui, sans-serif;
-}
-
-:root[data-theme="light"] {
+  /* Light is the app's default ground; dark is the explicit opt-in below. */
   --color-bg: oklch(1.00 0 0);
   --color-surface: oklch(0.95 0 0);
   --color-elevated: oklch(0.91 0 0);
@@ -26,6 +12,22 @@
   --color-ink: oklch(0.15 0 0);
   --color-muted: oklch(0.45 0 0);
   --color-error: oklch(0.55 0.22 25);
+
+  --font-display: 'DM Serif Display', Georgia, serif;
+  --font-display-arc: 'Bricolage Grotesque', 'Inter', system-ui, sans-serif;
+  --font-body: 'Inter', system-ui, sans-serif;
+}
+
+:root[data-theme="dark"] {
+  --color-bg: oklch(0.08 0 0);
+  --color-surface: oklch(0.15 0 0);
+  --color-elevated: oklch(0.20 0 0);
+  --color-amber: oklch(0.75 0.16 55);
+  --color-amber-hover: oklch(0.80 0.18 55);
+  --color-amber-muted: oklch(0.75 0.16 55 / 0.15);
+  --color-ink: oklch(0.95 0 0);
+  --color-muted: oklch(0.65 0 0);
+  --color-error: oklch(0.65 0.2 25);
 }
 
 body {
@@ -54,9 +56,46 @@ body {
   50% { opacity: 0.3; }
 }
 
+@keyframes poster-orbit-spin {
+  from { transform: translate(-50%, -50%) rotate(0deg); }
+  to { transform: translate(-50%, -50%) rotate(360deg); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }
+
+  .poster-orbit-wheel {
+    animation: none !important;
+    transform: translate(-50%, -50%) rotate(0deg) !important;
+  }
+}
+
+.poster-arc {
+  position: relative;
+  width: 100%;
+  height: var(--arc-h);
+  overflow: hidden;
+}
+
+.poster-orbit-wheel {
+  position: absolute;
+  left: 50%;
+  top: var(--arc-r);
+  width: calc(var(--arc-r) * 2);
+  height: calc(var(--arc-r) * 2);
+  transform: translate(-50%, -50%) rotate(0deg);
+  animation: poster-orbit-spin var(--arc-duration, 200s) linear infinite;
+}
+
+.poster-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: var(--card-w);
+  height: var(--card-h);
+  margin: calc(var(--card-h) / -2) 0 0 calc(var(--card-w) / -2);
+  transform: rotate(var(--angle)) translateY(calc(var(--arc-r) * -1));
 }

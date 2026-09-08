@@ -64,3 +64,7 @@ frontend/dist/
 
 # Data files
 catalog_okko.parquet
+.gstack/
+
+# Frontend
+.impeccable/
