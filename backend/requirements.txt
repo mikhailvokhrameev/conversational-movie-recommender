@@ -6,6 +6,10 @@ psycopg[binary]>=3.1,<4.0
 httpx>=0.27,<1.0
 uvicorn>=0.29,<1.0
 sentence-transformers>=2.6,<3.0
+# transformers 4.52.0 added a torch>=2.6 gate on torch.load for non-safetensors
+# checkpoints (CVE-2025-32434). torch is pinned to 2.5.1 for GTX 1080 Ti
+# (sm_61) support -- see backend/Dockerfile -- so keep transformers below that.
+transformers<4.52
 ollama>=0.4,<1.0
 numpy>=1.24,<2.0
 tqdm>=4.66,<5.0
