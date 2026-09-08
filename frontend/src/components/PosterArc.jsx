@@ -1,5 +1,5 @@
 export default function PosterArc({ posters }) {
-  const fanned = posters.filter((_, i) => i % 3 === 0)
+  const fanned = posters.filter((_, i) => i % 2 === 0)
   const step = 360 / fanned.length
 
   return (
@@ -7,10 +7,10 @@ export default function PosterArc({ posters }) {
       className="poster-arc shrink-0"
       aria-hidden="true"
       style={{
-        '--arc-h': 'clamp(390px, 49vw, 598px)',
-        '--arc-r': 'clamp(442px, 52vw, 728px)',
-        '--card-w': 'clamp(208px, 23vw, 312px)',
-        '--card-h': 'clamp(312px, 35vw, 468px)',
+        '--arc-h': 'clamp(429px, 54vw, 658px)',
+        '--arc-r': 'clamp(486px, 57vw, 800px)',
+        '--card-w': 'clamp(229px, 25vw, 343px)',
+        '--card-h': 'clamp(343px, 38.5vw, 515px)',
         '--arc-duration': '150s',
       }}
     >
