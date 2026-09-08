@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import MovieCard from './MovieCard'
 import { LOADING_MESSAGES } from '../data/loadingMessages'
 
-const LOADING_MESSAGE_INTERVAL_MS = 1800
+const LOADING_MESSAGE_INTERVAL_MS = 6767
 
 function pickNextLoadingMessage(current) {
   if (LOADING_MESSAGES.length <= 1) return LOADING_MESSAGES[0]
@@ -24,24 +24,13 @@ function RetrievalSkeleton() {
   }, [])
 
   return (
-    <div className="space-y-2">
-      <p
-        key={loadingMessage}
-        className="text-sm text-muted"
-        style={{ animation: `loading-message-fade ${LOADING_MESSAGE_INTERVAL_MS}ms ease-in-out` }}
-      >
-        {loadingMessage}
-      </p>
-      <div className="flex gap-2">
-        {[0, 1, 2].map(i => (
-          <div
-            key={i}
-            className="h-40 w-56 rounded-lg bg-surface animate-pulse"
-            style={{ animationDelay: `${i * 150}ms` }}
-          />
-        ))}
-      </div>
-    </div>
+    <p
+      key={loadingMessage}
+      className="text-sm text-muted"
+      style={{ animation: `loading-message-fade ${LOADING_MESSAGE_INTERVAL_MS}ms ease-in-out` }}
+    >
+      {loadingMessage}
+    </p>
   )
 }
 

@@ -35,6 +35,10 @@ const FILES = [
   'cine-pin-2.jpeg',
   'pin-from-your-pins.jpeg',
   'pin-from.jpeg',
+  'Spider Man Kolobok.jpg',
+  'Cars.jpeg',
+  'Despicable Me 2.jpeg',
+  'News Images Pin.jpeg',
 ]
 
 export const POSTERS = FILES.map(file => `/posters/${file}`)
