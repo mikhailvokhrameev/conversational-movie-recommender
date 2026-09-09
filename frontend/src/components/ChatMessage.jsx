@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import MovieCard from './MovieCard'
 import { LOADING_MESSAGES } from '../data/loadingMessages'
 
@@ -66,8 +68,10 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
       )}
 
       {message.explanation && (
-        <div className="text-sm leading-relaxed text-ink/90 whitespace-pre-wrap">
-          {message.explanation}
+        <div className="text-sm leading-relaxed text-ink/90">
+          <div className="prose prose-sm prose-chat max-w-none">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.explanation}</ReactMarkdown>
+          </div>
           {showCaret && (
             <span
               className="inline-block w-0.5 h-4 bg-amber ml-0.5 align-text-bottom"
