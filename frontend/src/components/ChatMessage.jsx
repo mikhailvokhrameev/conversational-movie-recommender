@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import MovieCard from './MovieCard'
 import { LOADING_MESSAGES } from '../data/loadingMessages'
 
-const LOADING_MESSAGE_INTERVAL_MS = 6767
+const LOADING_MESSAGE_INTERVAL_MS = 3500
 
 function pickNextLoadingMessage(current) {
   if (LOADING_MESSAGES.length <= 1) return LOADING_MESSAGES[0]
