@@ -125,3 +125,161 @@ body {
   margin: calc(var(--card-h) / -2) 0 0 calc(var(--card-w) / -2);
   transform: rotate(var(--angle)) translateY(calc(var(--arc-r) * -1));
 }
+
+/* --- Recommendation deck (MovieCarousel) ------------------------------- */
+
+.deck-stage {
+  --deck-card-w: 9rem;
+  position: relative;
+  width: 100%;
+  height: calc(var(--deck-card-w) * 1.5);
+  touch-action: pan-y;
+}
+
+@media (min-width: 640px) {
+  .deck-stage { --deck-card-w: 12.5rem; }
+}
+
+@media (min-width: 768px) {
+  .deck-stage { --deck-card-w: 14rem; }
+}
+
+.deck-card {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  width: var(--deck-card-w);
+  margin-left: calc(var(--deck-card-w) / -2);
+  transform-origin: 50% 88%;
+  transition:
+    transform 420ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    opacity 300ms ease;
+  will-change: transform, opacity;
+}
+
+.deck-card--active {
+  transform: translateX(0) scale(1) rotate(0deg);
+  opacity: 1;
+  z-index: 3;
+}
+
+.deck-card--prev {
+  transform: translateX(-52%) scale(0.88) rotate(-6deg);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.deck-card--next {
+  transform: translateX(52%) scale(0.88) rotate(6deg);
+  opacity: 0.55;
+  z-index: 2;
+}
+
+.deck-card--parked {
+  transform: translateX(0) scale(0.8) rotate(0deg);
+  opacity: 0;
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* Below sm the arrows sit over the poster art; a soft page-ground scrim keeps
+   the glyph legible without turning it into a circular button. */
+.deck-arrow {
+  position: absolute;
+  isolation: isolate;
+}
+
+.deck-arrow::before {
+  content: '';
+  position: absolute;
+  inset: -0.35rem -0.6rem;
+  border-radius: 9999px;
+  background: radial-gradient(closest-side, var(--color-bg) 45%, transparent 100%);
+  opacity: 0.85;
+  z-index: -1;
+}
+
+@media (min-width: 640px) {
+  .deck-arrow::before { display: none; }
+}
+
+/* --- Chat prose rhythm -------------------------------------------------- */
+
+.prose-chat > :first-child { margin-top: 0; }
+.prose-chat > :last-child { margin-bottom: 0; }
+
+.prose-chat p {
+  margin: 0.7em 0;
+  line-height: 1.65;
+}
+
+.prose-chat h1,
+.prose-chat h2,
+.prose-chat h3,
+.prose-chat h4 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  line-height: 1.25;
+  margin: 1.15em 0 0.45em;
+}
+
+.prose-chat h1 { font-size: 1.45em; }
+.prose-chat h2 { font-size: 1.3em; }
+.prose-chat h3 { font-size: 1.15em; }
+.prose-chat h4 { font-size: 1em; }
+
+.prose-chat strong { font-weight: 600; }
+
+.prose-chat ul,
+.prose-chat ol {
+  margin: 0.7em 0;
+  padding-left: 1.3em;
+}
+
+.prose-chat li { margin: 0.3em 0; }
+.prose-chat li > p { margin: 0.2em 0; }
+.prose-chat li::marker { color: var(--color-muted); }
+
+.prose-chat blockquote {
+  margin: 0.9em 0;
+  padding-left: 0.9em;
+  border-left: 2px solid var(--color-surface);
+  font-style: normal;
+  font-weight: 400;
+  color: var(--color-muted);
+}
+
+.prose-chat blockquote p:first-of-type::before,
+.prose-chat blockquote p:last-of-type::after { content: none; }
+
+.prose-chat code {
+  font-size: 0.875em;
+  font-weight: 500;
+  background: var(--color-surface);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+
+.prose-chat code::before,
+.prose-chat code::after { content: none; }
+
+.prose-chat pre {
+  margin: 0.9em 0;
+  padding: 0.85em 1em;
+  border-radius: 8px;
+}
+
+.prose-chat pre code {
+  background: transparent;
+  padding: 0;
+  font-weight: 400;
+}
+
+.prose-chat hr { margin: 1.3em 0; }
+
+.prose-chat table { margin: 0.9em 0; }
+
+.prose-chat a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}

@@ -22,6 +22,7 @@ export function useChat() {
       role: 'assistant',
       movies: [],
       explanation: '',
+      descriptions: [],
       intent: null,
       error: null,
     }
@@ -127,6 +128,22 @@ function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef)
           updated[updated.length - 1] = {
             ...last,
             explanation: last.explanation + data.text,
+          }
+        }
+        return updated
+      })
+      break
+    case 'blurb':
+      setMessages(prev => {
+        const updated = [...prev]
+        const last = updated[updated.length - 1]
+        if (last?.role === 'assistant') {
+          const descriptions = [...(last.descriptions || [])]
+          while (descriptions.length <= data.index) descriptions.push('')
+          descriptions[data.index] = descriptions[data.index] + data.text
+          updated[updated.length - 1] = {
+            ...last,
+            descriptions,
           }
         }
         return updated

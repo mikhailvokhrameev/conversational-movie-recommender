@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import MovieCard from './MovieCard'
+import MovieCarousel from './MovieCarousel'
 import { LOADING_MESSAGES } from '../data/loadingMessages'
 
 const LOADING_MESSAGE_INTERVAL_MS = 3500
@@ -53,20 +53,6 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      {hasMovies && (
-        <div className="relative -mx-4">
-          <div className="flex gap-3 overflow-x-auto py-1 px-4 snap-x snap-mandatory scrollbar-thin">
-            {message.movies.map(movie => (
-              <div key={movie.id} className="snap-start">
-                <MovieCard movie={movie} />
-              </div>
-            ))}
-            <div className="flex-shrink-0 w-1" aria-hidden="true" />
-          </div>
-          <div className="pointer-events-none absolute inset-y-0 right-0 w-12 bg-gradient-to-l from-bg to-transparent" />
-        </div>
-      )}
-
       {message.explanation && (
         <div className="text-sm leading-relaxed text-ink/90">
           <div className="prose prose-sm prose-chat max-w-none">
@@ -79,6 +65,14 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
             />
           )}
         </div>
+      )}
+
+      {hasMovies && (
+        <MovieCarousel
+          movies={message.movies}
+          descriptions={message.descriptions}
+          isStreaming={isStreaming && isLast}
+        />
       )}
 
       {showSkeleton && <RetrievalSkeleton />}
