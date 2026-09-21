@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from core.ollama_client import (
+    ExplanationSplitter,
     _ThinkStreamFilter,
     _parse_json_response,
     _strip_think,
@@ -325,3 +326,70 @@ class TestThinkStreamFilter:
 
     def test_empty_stream(self):
         assert self._run([]) == ""
+
+
+class TestExplanationSplitter:
+    """Each [[n]] marker moves the stream to the next movie's slot. Markers are
+    split across chunk boundaries as readily as <think> tags, and a model that
+    ignores the format must still get all of its text through."""
+
+    def _run(self, chunks, count=2):
+        splitter = ExplanationSplitter(count)
+        parts = []
+        for chunk in chunks:
+            parts.extend(splitter.feed(chunk))
+        parts.extend(splitter.flush())
+        return parts
+
+    def test_splits_intro_and_descriptions_in_one_chunk(self):
+        assert self._run(["Вот подборка.\n[[1]]\nПро первый.\n[[2]]\nПро второй."]) == [
+            (None, "Вот подборка.\n"),
+            (0, "Про первый.\n"),
+            (1, "Про второй."),
+        ]
+
+    def test_marker_split_across_three_chunks(self):
+        """'[', '[1' and ']]' are only a marker once the last piece arrives."""
+        assert self._run(["Интро [", "[1", "]]\nОписание"]) == [
+            (None, "Интро "),
+            (0, "Описание"),
+        ]
+
+    def test_no_markers_keeps_everything_in_the_intro(self):
+        """Degradation path: the model ignored the format, so nothing is dropped."""
+        assert self._run(["Один сплошной ", "ответ без маркеров."]) == [
+            (None, "Один сплошной "),
+            (None, "ответ без маркеров."),
+        ]
+
+    def test_out_of_range_marker_leaves_the_slot_alone(self):
+        assert self._run(["[[1]]\nПервый. [[9]] Всё ещё первый."]) == [
+            (0, "Первый. "),
+            (0, "Всё ещё первый."),
+        ]
+
+    def test_text_before_the_first_marker_is_intro(self):
+        assert self._run(["Нашёл кое-что интересное. [[1]] Первый."]) == [
+            (None, "Нашёл кое-что интересное. "),
+            (0, "Первый."),
+        ]
+
+    def test_flush_releases_a_held_back_tail(self):
+        """'[[' never became a marker, so it was ordinary text."""
+        splitter = ExplanationSplitter(2)
+        assert splitter.feed("Текст [[") == [(None, "Текст ")]
+        assert splitter.flush() == [(None, "[[")]
+
+    def test_repeated_marker_does_not_rewind(self):
+        assert self._run(["[[1]] Первый. [[1]] Всё ещё первый."]) == [
+            (0, "Первый. "),
+            (0, "Всё ещё первый."),
+        ]
+
+    def test_newline_after_a_marker_is_swallowed_across_a_boundary(self):
+        """The boundary falls between the marker and its newline -- a description
+        must never start with a blank line."""
+        assert self._run(["Интро\n[[1]]", "\n", "Описание"]) == [
+            (None, "Интро\n"),
+            (0, "Описание"),
+        ]

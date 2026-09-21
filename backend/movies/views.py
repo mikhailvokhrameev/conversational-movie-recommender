@@ -16,7 +16,7 @@ from core.candidate_generation import generate_candidates
 from core.embedding_service import encode_query
 from core.ollama_client import (
     aclassify_and_parse, check_explanation_titles,
-    astream_conversational, astream_explanation,
+    astream_conversational, astream_explanation_parts,
 )
 from core.reranking import rerank_candidates
 from core.scoring import mmr_diversify, score_candidates
@@ -101,7 +101,7 @@ def _append_history(session: ChatSession, role: str, content: str):
 def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
     """Returns (top_movies, candidate_pool): candidate_pool is the full reranked
     pool before the top-n cut, kept around cheaply for the hallucination check
-    in astream_explanation's caller -- no extra retrieval work, no DB round trip."""
+    in the explanation stream's caller -- no extra retrieval work, no DB round trip."""
     candidates = generate_candidates(query_embedding, intent, query_text=query_text)
     scored = score_candidates(candidates, query_embedding, intent, session_vector)
     reranked = rerank_candidates(query_text, scored)
@@ -192,10 +192,16 @@ class ChatView(View):
             has_tokens = False
             explanation_parts = []
             t_explain = time.perf_counter()
-            async for token in astream_explanation(message, movies_for_llm):
+            # The opening line keeps the plain "token" wire format so it streams
+            # live under the existing caret; each per-movie description goes out
+            # as a "blurb" addressed to the card it belongs to.
+            async for slot, text in astream_explanation_parts(message, movies_for_llm):
                 has_tokens = True
-                explanation_parts.append(token)
-                yield _sse_event("token", {"text": token})
+                explanation_parts.append(text)
+                if slot is None:
+                    yield _sse_event("token", {"text": text})
+                else:
+                    yield _sse_event("blurb", {"index": slot, "text": text})
             explain_ms = (time.perf_counter() - t_explain) * 1000
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})

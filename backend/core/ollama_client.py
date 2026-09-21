@@ -3,6 +3,11 @@
 Communicates with a standalone Ollama container via its HTTP API.
 Two roles: (1) parse natural language queries into structured intent (JSON mode),
 (2) generate English-language explanations for recommended movies (RAG pattern).
+
+The explanation is not one blob: the model is asked for an opening line followed
+by one `[[n]]`-marked description per movie, and `ExplanationSplitter` routes the
+token stream into those slots so the UI can show each description beside the
+movie it belongs to.
 Falls back to empty intent if Ollama is unavailable (semantic search still works).
 
 The async chat view uses a single combined classify+parse call
@@ -22,6 +27,7 @@ or leaking reasoning into the user-visible stream.
 
 import json
 import logging
+import re
 from typing import Generator, Literal, Optional
 
 import httpx
@@ -143,12 +149,27 @@ User: "{query}"
 
 EXPLANATION_PROMPT = """You are a movie recommendation assistant. The user asked: "{query}"
 
-Based on their preferences, here are recommended movies. For each movie, write 1-2 sentences explaining why it matches what the user is looking for. Be specific about the connection between the user's request and each movie's qualities.
-
 Movies:
 {movies_context}
 
-Write a brief, natural response recommending these movies with personalized explanations."""
+Answer in English, in two parts.
+
+PART 1 -- an opening line of one or two short sentences confirming the request and
+saying what this set has in common. Do NOT name any film title in the opening line.
+
+PART 2 -- for EACH movie above, in the same order, write its marker ([[1]], [[2]], ...)
+alone on a line, then two or three sentences about that one film: what it is about,
+and why it fits the request. Write about that film only, and never mention another one.
+
+Output exactly this shape, with nothing before, between, or after it:
+
+<opening line>
+[[1]]
+<description of movie 1>
+[[2]]
+<description of movie 2>
+
+Do not add headings, bullet points, numbering, or a closing remark."""
 
 
 _THINK_OPEN = "<think>"
@@ -234,10 +255,90 @@ class _ThinkStreamFilter:
         return remainder
 
 
+_MARKER_RE = re.compile(r"\[\[(\d+)\]\]")
+# A tail like '[', '[[', '[[1', '[[12' or '[[1]' could still grow into a marker.
+_PARTIAL_MARKER_RE = re.compile(r"\[\[?\d*\]?$")
+
+
+class ExplanationSplitter:
+    """Routes an explanation token stream into per-movie slots, across chunk boundaries.
+
+    The model is asked for an opening line followed by one `[[n]]`-marked
+    description per movie. `feed` and `flush` return `(slot, text)` pairs:
+    `slot` is None for the opening line preceding the first marker, and a
+    0-based index into the movie list afterwards -- the markers themselves are
+    1-based, matching `_build_movies_context`.
+
+    A marker can be split between chunks, so a tail that could still turn into
+    one is held back rather than emitted -- the same discipline
+    `_ThinkStreamFilter` applies to `<think>`.
+
+    Every way the model can deviate degrades silently instead of raising: an
+    out-of-range or already-used marker is consumed but leaves the current slot
+    alone, and a response with no markers at all stays whole in the intro slot.
+    The UI falls back to catalog copy for a movie it received no description
+    for, so mis-slotting text is recoverable where dropping it is not.
+    """
+
+    def __init__(self, count: int):
+        self._count = count
+        self._pending = ""
+        self._slot = None
+        self._seen = set()
+        # Whitespace between a marker and its description is layout, not text.
+        # The boundary can fall inside that run, so trimming is a state flag
+        # rather than a single lstrip.
+        self._trim_leading = False
+
+    def _emit(self, out: list, text: str) -> None:
+        if self._trim_leading:
+            text = text.lstrip()
+            if not text:
+                return
+            self._trim_leading = False
+        if text:
+            out.append((self._slot, text))
+
+    def feed(self, chunk: str) -> list[tuple[int | None, str]]:
+        self._pending += chunk
+        out = []
+
+        while True:
+            match = _MARKER_RE.search(self._pending)
+            if match is None:
+                break
+            # Text before the marker still belongs to the previous slot.
+            self._emit(out, self._pending[:match.start()])
+            index = int(match.group(1)) - 1
+            if 0 <= index < self._count and index not in self._seen:
+                self._seen.add(index)
+                self._slot = index
+            self._pending = self._pending[match.end():]
+            self._trim_leading = True
+
+        partial = _PARTIAL_MARKER_RE.search(self._pending)
+        cut = partial.start() if partial else len(self._pending)
+        self._emit(out, self._pending[:cut])
+        self._pending = self._pending[cut:]
+        return out
+
+    def flush(self) -> list[tuple[int | None, str]]:
+        """Emit anything held back once the stream ends.
+
+        A tail that never grew into a marker was ordinary text all along.
+        """
+        out = []
+        self._emit(out, self._pending)
+        self._pending = ""
+        return out
+
+
 def _build_movies_context(movies: list[dict]) -> str:
+    """Prefix each entry with the same [[n]] marker the model must echo back, so a
+    streamed description can be routed to the movie it describes."""
     return "\n".join(
-        f"- {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:200]}"
-        for m in movies
+        f"[[{i}]] {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:200]}"
+        for i, m in enumerate(movies, 1)
     )
 
 
@@ -443,7 +544,10 @@ def parse_intent(query: str) -> dict:
 
 
 def generate_explanation(query: str, movies: list[dict]) -> str:
-    """Generate an English-language explanation of why each movie matches the query (RAG)."""
+    """Generate an English-language explanation of why each movie matches the query (RAG).
+
+    The result is marker-delimited: an opening line, then a `[[n]]` line per movie.
+    """
     try:
         return _chat_sync(
             _explanation_payload(query, movies)["messages"],
@@ -455,7 +559,10 @@ def generate_explanation(query: str, movies: list[dict]) -> str:
 
 
 def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, None]:
-    """Streaming variant of generate_explanation. Yields tokens as they arrive."""
+    """Streaming variant of generate_explanation. Yields tokens as they arrive.
+
+    The token stream is marker-delimited: an opening line, then a `[[n]]` line per movie.
+    """
     try:
         with httpx.stream(
             "POST",
@@ -606,6 +713,22 @@ async def astream_explanation(query: str, movies: list[dict]):
                     yield tail
     except (httpx.HTTPError, json.JSONDecodeError) as e:
         logger.warning(f"Async explanation streaming failed: {e}")
+
+
+async def astream_explanation_parts(query: str, movies: list[dict]):
+    """Stream the explanation already routed into slots. Yields `(slot, text)`.
+
+    `slot` is None for the opening line and a 0-based index into `movies` for
+    each per-movie description -- see `ExplanationSplitter`. `astream_explanation`
+    is deliberately left as a raw token generator so the splitting stays
+    testable on its own, without an HTTP stream in the way.
+    """
+    splitter = ExplanationSplitter(len(movies))
+    async for token in astream_explanation(query, movies):
+        for part in splitter.feed(token):
+            yield part
+    for part in splitter.flush():
+        yield part
 
 
 async def ais_available() -> bool:
