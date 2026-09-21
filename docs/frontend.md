@@ -35,8 +35,8 @@ frontend/
 │       ├── Header.jsx         Home button + theme toggle slot
 │       ├── ThemeToggle.jsx    Dark/light theme switch button
 │       ├── ChatInput.jsx      Textarea + send button form
-│       ├── ChatMessage.jsx    User bubble or assistant response (cards + text)
-│       ├── MovieCard.jsx      Poster (or placeholder), title, rating, genres, score, TMDB link
+│       ├── ChatMessage.jsx    User bubble or assistant response (intro text + carousel)
+│       ├── MovieCarousel.jsx  Fanned poster deck, arrows, dots, description panel
 │       ├── WelcomeScreen.jsx  Empty state: arc-text heading, input, suggestion chips, poster arc hero
 │       └── PosterArc.jsx      Decorative rotating arc of static poster images (welcome screen only)
 └── public/
@@ -92,16 +92,27 @@ Manages chat state and SSE streaming. Returns `{ messages, isStreaming, sendMess
 { id: number, role: 'user', content: string }
 
 // Assistant message
-{ id: number, role: 'assistant', movies: Movie[], explanation: string, intent: object, error: string|null }
+{
+  id: number, role: 'assistant',
+  movies: Movie[],          // from the `movies` event
+  explanation: string,      // intro line, accumulated from `token` events
+  descriptions: string[],   // per-movie text, accumulated from `blurb` events (index-aligned with `movies`)
+  intent: object,
+  error: string|null
+}
 ```
 
 **SSE protocol:** Uses `fetch` + `ReadableStream` (not `EventSource`, because
 `EventSource` only supports GET). Parses the SSE text protocol manually:
-`event: <type>\ndata: <json>\n\n`. Three event types:
+`event: <type>\ndata: <json>\n\n`. Event types:
 - `movies`: sets session_id, movies array, and intent
-- `token`: appends text to explanation string
+- `token`: appends text to the explanation string (the intro line)
+- `blurb`: appends `text` to `descriptions[index]`, the per-movie description
 - `done`: ignored (stream closes naturally)
 - `error`: sets error message on the assistant message
+
+Plain conversational turns (`general_chat` / `follow_up`) receive only `token` events,
+so `movies` stays empty and no carousel renders -- just markdown prose.
 
 Each message gets a stable numeric `id` (module-level counter) for React keys.
 
@@ -112,27 +123,46 @@ Renders a single message. Two layouts:
 **User messages:** Right-aligned bubble with `bg-surface`, rounded corners
 (larger radius top, small bottom-right for chat bubble shape).
 
-**Assistant messages:** Left-aligned, up to `max-w-2xl`. Contains:
-1. Horizontal scroll row of `MovieCard` components (with right-edge gradient fade)
-2. Streaming explanation text with amber pulse caret during streaming
+**Assistant messages:** Left-aligned, up to `max-w-2xl`. Prose comes *first*, then the
+carousel -- the reverse of the older cards-then-text order. Contains:
+1. The intro line: streamed `token` text, markdown-rendered, with an amber pulse caret
+   during streaming. One or two sentences that name no titles.
+2. `MovieCarousel`, once the `movies` event has arrived
 3. Skeleton loading placeholders (3 pulsing rectangles) when waiting for first data
 4. Error message in `text-error` if stream failed
 
-### `MovieCard.jsx`
+A turn with no movies (plain chat) renders step 1 alone.
 
-A link (`<a>`) to the movie's TMDB page (`themoviedb.org/movie/{tmdb_id}`).
-Opens in new tab. Structure:
-- Poster area: `aspect-[3/4]`, renders the real poster (`movie.poster_url`,
-  built server-side from `poster_path`) when present, falls back to a
-  film-reel SVG icon when `poster_url` is null
-- Title: serif font (`font-display`), 2-line clamp, amber on hover
-- Metadata: year + TMDB rating (`★ {vote_average}`), shown only when
-  `vote_average > 0`
-- Genre chips: up to 2, amber-muted background
+### `MovieCarousel.jsx`
+
+The whole recommendation block: a fanned poster deck above a description panel.
+Replaces the former horizontal `MovieCard` shelf (`MovieCard.jsx` is gone; the poster
+card now lives inside this file and the metadata it used to carry moved into the panel).
+
+**Deck geometry.** Cards are poster-only. The active movie sits centered at full scale
+and full opacity; the previous and next movies peek out from behind it, scaled down,
+rotated slightly outward and semi-transparent -- a fanned hand of cards, the still
+counterpart to `PosterArc`'s revolving wheel. Each poster renders `movie.poster_url`
+when present and falls back to a film-reel SVG icon when it is null.
+
+**Navigation.** Left/right chevron arrows flank the deck and step the active index; the
+same step is bound to the arrow keys when the deck has focus, and to a horizontal swipe
+on touch. The index wraps in both directions, so the deck never dead-ends at either
+edge. A row of position dots under the deck shows where you are in the five results.
+
+**Description panel.** Sits under the deck and describes the *centered* movie only:
+- Title in serif (`font-display`), linking to the movie's TMDB page
+  (`themoviedb.org/movie/{tmdb_id}`, new tab)
+- Metadata: year + TMDB rating (`★ {vote_average}`), shown only when `vote_average > 0`
 - Score badge: `{score * 100}% match` in amber
+- Genre chips, amber-muted background
+- The description body, resolved through this fallback chain:
+  1. the streamed `blurb` text for that index, if any has arrived;
+  2. a "still writing" state while the stream is running and that slot is still empty;
+  3. the movie's catalog `description` from the `movies` event -- the path taken when
+     the model emitted no `[[n]]` markers at all (see [API](api.md)).
 
-Fixed width `w-44 sm:w-48`, `flex-shrink-0` for horizontal scrolling.
-Focus-visible ring in amber for keyboard navigation.
+Focus-visible rings in amber on the arrows, dots, and title link.
 
 ### `ChatInput.jsx`
 
@@ -179,7 +209,8 @@ or similar in production).
 - 44px minimum touch targets on buttons
 - `prefers-reduced-motion: reduce` disables all animations
 - Semantic HTML: `<main>`, `<footer>`, `<form>`, `<h1>`, `<h3>`
-- Movie cards are `<a>` elements (keyboard-focusable, screen-reader-announced)
+- The carousel's movie title is an `<a>` to TMDB (keyboard-focusable, screen-reader-announced)
+- Carousel arrows are buttons with `aria-label`s and respond to the arrow keys
 
 ## Related
 

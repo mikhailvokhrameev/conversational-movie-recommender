@@ -2,7 +2,8 @@
 
 The Django REST Framework API layer exposes three HTTP endpoints. All views
 are async (Django ASGI) and served by uvicorn. The chat endpoint returns a
-two-phase SSE stream: movie results immediately, then a streamed LLM explanation.
+two-phase SSE stream: movie results immediately, then a streamed LLM explanation
+(an intro line, followed by one description per movie).
 
 Base URL: `http://localhost:8000/api/`
 
@@ -22,7 +23,7 @@ via Server-Sent Events.
 
 **Response**: `text/event-stream` (SSE)
 
-The response is a stream of three event types, always in this order:
+The response is a stream of four event types, always in this order:
 
 ```
 event: movies
@@ -30,7 +31,11 @@ data: {"session_id": "...", "movies": [...], "intent": {...}}
 
 event: token
 data: {"text": "..."}
-...  (repeated per token)
+...  (repeated per token -- the intro line)
+
+event: blurb
+data: {"index": 0, "text": "..."}
+...  (repeated per fragment, grouped by movie, in movie order)
 
 event: error          (only if explanation generation failed)
 data: {"message": "explanation generation failed"}
@@ -43,8 +48,32 @@ data: {}
 Contains the session UUID (for subsequent requests), the top-5 movie objects,
 and the parsed intent.
 
-**Phase 2 (streaming)**: Zero or more `token` events stream the LLM-generated
-explanation. Tokens arrive as Ollama produces them.
+**Phase 2 (streaming)**: One LLM call produces the whole explanation, but it is no
+longer one blob. `EXPLANATION_PROMPT` asks for an opening line that names no titles,
+followed by one `[[n]]`-marked description per movie; `ExplanationSplitter` in
+`ollama_client.py` routes that single token stream into slots, and `_handle_search_like`
+maps each slot onto a wire event:
+
+- text before the first marker is the **intro**, emitted as `token` events -- the wire
+  format is unchanged, so the opening line still streams live;
+- text after the marker `[[n]]` belongs to movie *n*, emitted as `blurb` events.
+
+| `blurb` field | Type | Description |
+|---------------|------|-------------|
+| `index` | int | 0-based index into the `movies` array from the `movies` event (`[[1]]` maps to `index: 0`) |
+| `text` | string | A fragment of that movie's description |
+
+`blurb` text accumulates exactly like `token` text: a single movie's description arrives
+across several events, appended in arrival order. Markers that straddle a chunk boundary
+are held back until they are complete, so no partial `[[` ever leaks into the text.
+
+**Degradation**: if the model emits no markers at all, every token lands in the intro
+slot. The stream is then indistinguishable from the old single-blob format -- `token`
+events only, zero `blurb` events -- and the client falls back to each movie's catalog
+`description` from the `movies` event.
+
+**Conversational turns**: messages classified `general_chat` or `follow_up` take the
+conversational path and stream only `token` events -- no `movies`, no `blurb`.
 
 **Terminal**: A `done` event always closes the stream. If explanation generation
 failed, an `error` event precedes `done`.
@@ -210,7 +239,8 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   _save_session()                            ← atomic update with SELECT FOR UPDATE
                  |
   SSE Phase 1:   event: movies  {results + session_id + intent}
-  SSE Phase 2:   event: token   {text} ... (streamed from Ollama)
+  SSE Phase 2:   event: token   {text}          ... (intro line, streamed from Ollama)
+                 event: blurb   {index, text}   ... (per-movie descriptions, same stream)
   SSE Terminal:  event: done    {}
 ```
 
@@ -284,7 +314,9 @@ The API runs on Django ASGI via uvicorn. Key threading decisions:
   `sync_to_async(thread_sensitive=False)`. Runs in the general thread pool because
   the Django ORM and numpy computations are thread-safe.
 - **Explanation streaming** (`astream_explanation`): fully async generator via
-  `httpx.AsyncClient.stream()`.
+  `httpx.AsyncClient.stream()`. `astream_explanation_parts` wraps it with
+  `ExplanationSplitter` and yields `(slot, text)` pairs instead of raw tokens -- a pure
+  transform over the same stream, so it adds no second Ollama call and no extra thread.
 - **Session save** (`_save_session`): `sync_to_async(thread_sensitive=False)` with
   `transaction.atomic()` and `select_for_update()`.
 

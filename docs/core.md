@@ -47,8 +47,12 @@ scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
 Top-5 diverse recommendations
   |
   v
-ollama_client.astream_explanation()  ──> streamed RAG explanation
-  |
+ollama_client.astream_explanation()       ──> streamed RAG explanation (raw tokens):
+  |                                             opening line, then a [[n]]-marked
+  |                                             description per movie
+  v
+ollama_client.astream_explanation_parts() ──> same stream split into (slot, text) pairs
+  |                                             slot None = intro, 0..N-1 = movie index
   v
 session_manager.update_preference_vector()  ──> EMA blend into session vector
 session_manager.track_explicit_preferences() ──> accumulate liked/disliked genres
@@ -91,14 +95,34 @@ an empty intent. Semantic search via embeddings still works without parsed
 intent -- it just loses metadata filtering.
 
 **Explanation generation** (`astream_explanation`, `stream_explanation`): RAG pattern.
-Movie metadata and descriptions are injected as context, and the LLM writes 1-2
-sentences per movie explaining the match. The streaming variant yields tokens
-for progressive frontend display.
+Movie metadata and descriptions are injected as context by `_build_movies_context`,
+which prefixes each movie with a 1-based `[[n]]` marker. `EXPLANATION_PROMPT` asks for
+an opening line that names no titles, followed by one `[[n]]`-marked block per movie
+explaining the match. The streaming variant yields raw tokens for progressive frontend
+display.
+
+**Explanation splitting** (`astream_explanation_parts`, `ExplanationSplitter`):
+`ExplanationSplitter` is a sibling of `_ThinkStreamFilter` -- same shape, a stateful
+filter fed one chunk at a time. It watches the token stream for `[[n]]` markers and
+routes what follows into the matching slot, returning `(slot, text)` pairs where `slot`
+is `None` for the intro and a 0-based movie index thereafter. Markers can straddle a
+chunk boundary, so a partial match is held back until the marker is either completed or
+ruled out, and never reaches the caller as text. `astream_explanation_parts(query,
+movies)` is the async generator that wraps `astream_explanation` with that splitter and
+yields those pairs; `astream_explanation` itself is unchanged and still yields raw
+tokens for callers that want them.
+
+This is a pure transform over the one existing stream -- no second LLM call, no second
+timeout, no extra Ollama round trip. If the model emits no markers at all, everything
+lands in the intro slot; the frontend then falls back to each movie's catalog
+`description`, so a model that ignores the format degrades to the previous behaviour
+rather than failing.
 
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
 | `aclassify_and_parse(message)` | `POST /api/chat` (JSON mode) | 45s | `_fallback_message_intent()` |
 | `astream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
+| `astream_explanation_parts(query, movies)` | none -- wraps `astream_explanation` | inherited (120s) | All text in the intro slot |
 | `astream_conversational(message, context)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `ais_available()` | `GET /` | 5s | Returns `False` |
 
