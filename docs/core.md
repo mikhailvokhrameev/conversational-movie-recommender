@@ -283,8 +283,8 @@ query. EMA with alpha=0.7 makes recent queries dominate.
 via hard filters in `candidate_generation.py`, but the EMA vector still feeds the
 `session` scoring signal over whatever survives those filters. At the default
 alpha=0.7, 30% of a strongly-aligned prior-turn direction could still bias that
-signal back toward what the user just moved away from ("не ужасы, а повеселее"
-still nudging ranking toward horror-adjacent moods). Raising alpha to 0.92 on
+signal back toward what the user just moved away from ("not horror, something
+lighter" still nudging ranking toward horror-adjacent moods). Raising alpha to 0.92 on
 `refinement` turns makes the new query dominate the vector instead of blending,
 without discarding session history entirely (see `session.alpha_refinement` in
 params.yaml). The candidate pool itself is unaffected -- `generate_candidates`

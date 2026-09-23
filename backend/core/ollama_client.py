@@ -753,7 +753,7 @@ def _get_genre_embeddings() -> np.ndarray:
 def _normalize_genres(raw_genres: list) -> list[str]:
     """Map LLM genre output to exact catalog genre names via embedding similarity.
 
-    'комедия' -> 'Комедии', 'хоррор' -> 'Ужасы', 'мультик' -> 'Мультфильмы'
+    'sci-fi' -> 'Science Fiction', 'rom-com' -> 'Romance', 'scary movie' -> 'Horror'
     """
     if not raw_genres:
         return []

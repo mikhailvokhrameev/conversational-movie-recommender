@@ -39,6 +39,14 @@ on its own merits once it lands.
 `"{serial_name}. {genres joined}. {description[:500]}. Keywords: {keywords[:10] joined}"`.
 This captures title, genre signal, semantic content, and curated theme tags in one vector.
 
+> **Changing `embedding.model` or `embedding.dimensions` is not a config tweak.**
+> `dimensions` is baked into the `Movie.embedding` and `ChatSession.preference_vector`
+> pgvector columns, so either change requires a schema migration *and* a full
+> re-run of `manage.py generate_embeddings` over the entire catalog. Existing
+> vectors are not convertible between models or dimensions -- skipping the
+> re-run leaves stale vectors in place that fail comparisons silently rather
+> than raising an error. See `CLAUDE.md`.
+
 ## LLM (Ollama)
 
 **Choice**: Ollama running `qwen3:8b` (Q4_K_M, pulled from Ollama's own model
@@ -130,6 +138,16 @@ semantic finds meaning.
 
 **Text search config**: `english` (snowball stemmer + stopwords), matching
 the TMDB catalog's English titles and keywords.
+
+**Term extraction tunables** (`retrieval.lexical` in `params.yaml`,
+applied in `candidate_generation.py`'s `_lexical_terms`): the raw user
+message is lowercased and split into words before being turned into a
+`tsquery`.
+
+| Parameter | Value | What it controls |
+|-----------|-------|-------------------|
+| `min_term_length` | 3 | Drops any extracted word shorter than this many characters -- filters out prepositions/articles ("a", "of", "the") that would otherwise pollute the OR-ed query with noise terms. |
+| `max_terms` | 12 | Caps the number of terms kept (first N after the length filter), bounding `tsquery` size for a long, rambling conversational message. |
 
 **OR, not AND**: query terms are OR-ed. The input is a conversational
 sentence, so requiring every term to match would return nothing; `ts_rank`

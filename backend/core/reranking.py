@@ -15,12 +15,13 @@ Pipeline position:
 
 Model choice and device are coupled, and getting the pair wrong is the main
 way this step goes bad. bge-reranker-v2-m3 (the configured default) is an
-XLM-RoBERTa-large backbone: ~302M body parameters, ~155 GFLOPs per pair at
-256 tokens, so a 20-candidate rerank is ~3.1 TFLOPs. That is roughly 0.15s
-on a discrete GPU and roughly 15s on CPU -- the same model is either
+XLM-RoBERTa-large backbone: ~302M body parameters. sentence-transformers
+loads it in fp32 (it does not downcast this model), and measured timings
+on GPU are ~0.26s for 20 pairs, ~0.64s for 50 pairs, and ~1.22s for 100
+pairs, versus ~5.6s for 20 pairs on CPU -- the same model is either
 comfortably interactive or completely unusable depending on where it runs.
 
-So: on a GPU machine, run this model on the GPU (~1.1GB of VRAM at fp16).
+So: on a GPU machine, run this model on the GPU (~2.2GB of VRAM at fp32).
 Without a GPU, do not merely move this model to CPU -- switch to a small
 reranker such as cross-encoder/mmarco-mMiniLMv2-L12-H384-v1 (~21M body
 parameters, ~14x less compute, also multilingual), or set

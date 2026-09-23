@@ -19,7 +19,7 @@ No additional UI libraries, state management, or routing. Single-page app.
 
 ```
 frontend/
-├── index.html              HTML entry point (lang="ru")
+├── index.html              HTML entry point (lang="en")
 ├── vite.config.js          Vite config with Tailwind plugin + API proxy
 ├── Dockerfile              Node 20 Alpine, runs dev server on port 3000
 ├── src/
@@ -27,7 +27,8 @@ frontend/
 │   ├── index.css           Tailwind imports, OKLCH tokens, keyframes
 │   ├── App.jsx             Top-level layout: header, welcome screen or chat + input
 │   ├── data/
-│   │   └── posters.js      Static poster image list for the welcome-screen hero
+│   │   ├── posters.js      Static poster image list for the welcome-screen hero
+│   │   └── loadingMessages.js  LOADING_MESSAGES flavor-text pool for the retrieval skeleton
 │   ├── hooks/
 │   │   ├── useChat.js      SSE streaming hook (fetch + ReadableStream)
 │   │   └── useTheme.js     Dark/light theme state (localStorage-backed)
@@ -84,7 +85,10 @@ a slot for `ThemeToggle`, a sun/moon icon button that flips `useTheme`'s
 
 ### `useChat.js` (hook)
 
-Manages chat state and SSE streaming. Returns `{ messages, isStreaming, sendMessage, sessionId }`.
+Manages chat state and SSE streaming. Returns
+`{ messages, isStreaming, sendMessage, sessionId, reset }`. `reset` aborts any
+in-flight stream and clears `messages`/`sessionId`/the session token, returning
+to the empty state; `App.jsx` wires it to `Header`'s home button.
 
 **Message shape:**
 ```js
@@ -105,7 +109,10 @@ Manages chat state and SSE streaming. Returns `{ messages, isStreaming, sendMess
 **SSE protocol:** Uses `fetch` + `ReadableStream` (not `EventSource`, because
 `EventSource` only supports GET). Parses the SSE text protocol manually:
 `event: <type>\ndata: <json>\n\n`. Event types:
-- `movies`: sets session_id, movies array, and intent
+- `session`: sets `session_id` and stashes `session_token` (sent back as the
+  `X-Session-Token` header on the next request)
+- `movies`: sets session_id, movies array, and intent; also reads/sets
+  `session_token` from the payload (same as `session`)
 - `token`: appends text to the explanation string (the intro line)
 - `blurb`: appends `text` to `descriptions[index]`, the per-movie description
 - `done`: ignored (stream closes naturally)
@@ -128,7 +135,9 @@ carousel -- the reverse of the older cards-then-text order. Contains:
 1. The intro line: streamed `token` text, markdown-rendered, with an amber pulse caret
    during streaming. One or two sentences that name no titles.
 2. `MovieCarousel`, once the `movies` event has arrived
-3. Skeleton loading placeholders (3 pulsing rectangles) when waiting for first data
+3. `RetrievalSkeleton`: a single rotating loading-message string (from
+   `data/loadingMessages.js`'s `LOADING_MESSAGES`) that cross-fades to a new
+   phrase every few seconds, shown while waiting for first data
 4. Error message in `text-error` if stream failed
 
 A turn with no movies (plain chat) renders step 1 alone.
@@ -185,7 +194,7 @@ viewport.
 Purely decorative (`aria-hidden`). Arranges the images from `data/posters.js`
 in a circular arc via CSS custom properties (`--angle` per card) and rotates
 the whole wheel slowly (`--arc-duration: 200s`). Posters are static assets
-under `frontend/images/`, unrelated to the movie catalog data -- see
+served from `frontend/public/posters/`, unrelated to the movie catalog data -- see
 `PRODUCT.md` for sourcing.
 
 ## Dev Server
@@ -193,7 +202,7 @@ under `frontend/images/`, unrelated to the movie catalog data -- see
 Vite dev server runs on port 3000 with API proxy:
 
 ```js
-proxy: { '/api': 'http://localhost:8000' }
+proxy: { '/api': 'http://backend:8000' }
 ```
 
 In Docker, the frontend container connects to the backend service.

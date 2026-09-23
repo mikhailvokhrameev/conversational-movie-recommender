@@ -1,5 +1,5 @@
 // Real movie posters used to populate the welcome screen's poster arc.
-// Sourced from frontend/images/ (not the licensed Okko catalog — see PRODUCT.md).
+// Sourced from frontend/public/posters/ (not the licensed Okko catalog — see PRODUCT.md).
 const FILES = [
   'the-dark-knight.jpeg',
   'interstellar-1.jpeg',

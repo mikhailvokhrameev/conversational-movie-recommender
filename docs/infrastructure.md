@@ -101,23 +101,42 @@ are not convertible.
 
 ### Environment variables (secrets and wiring only)
 
+Configurable via `.env` (all three appear in `.env.example`):
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PASSWORD` | `changeme` | PostgreSQL password |
 | `SECRET_KEY` | insecure dev default | Django secret key |
 | `DEBUG` | `0` | Django debug mode |
-| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Comma-separated allowed hosts |
-| `CORS_ALLOWED_ORIGINS` | `http://localhost:3000,...` | Comma-separated CORS origins |
-| `DATABASE_URL` | compose-provided | Postgres connection string |
-| `PARAMS_PATH` | auto-discovered | Override the params.yaml location |
+
+Not settable via `.env` (listed for reference only -- neither appears in `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | compose-provided | Postgres connection string, built by `docker-compose.yml` from `DB_PASSWORD`; not read from `.env` |
+| `PARAMS_PATH` | auto-discovered | Override the params.yaml location; read directly by Django's `settings.py` when present in the container's environment, but not wired up in `docker-compose.yml` |
+
+`ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are **not** environment variables at
+all, despite looking like ones -- `docker-compose.yml` hardcodes them as
+literal values on the `backend` service (`localhost,127.0.0.1,backend` and
+`http://localhost:3000,http://127.0.0.1:3000` respectively), with no `${VAR}`
+substitution like `DB_PASSWORD`/`SECRET_KEY`/`DEBUG` use. Setting either in
+`.env` currently has no effect; changing them requires editing
+`docker-compose.yml` directly.
 
 Copy `.env.example` to `.env` and set a real `SECRET_KEY` before first run.
 
-## Hardware Profiles
+## Hardware Requirements and Manual Configuration
+
+There is no pre-built alternate deployment mode here -- no
+`docker-compose.cpu.yml`, no Compose `profiles:` key, just the one
+`docker-compose.yml`. Running on hardware other than what's committed means
+hand-editing `docker-compose.yml` and `params.yaml` yourself, as described in
+this section.
 
 The committed `params.yaml` targets a discrete NVIDIA GPU with ~11GB of VRAM,
-and `docker-compose.yml` reserves the card for Ollama, so the normal command is
-all you need:
+and `docker-compose.yml` reserves the card for both the `ollama` and the
+`backend` service, so the normal command is all you need:
 
 ```bash
 docker compose up --build
@@ -143,12 +162,15 @@ same XLM-RoBERTa-large size class as the reranker. The reranker also loads
 fp32, not fp16 (sentence-transformers does not downcast it automatically).
 If it doesn't fit: a smaller `llm.model`, or `reranking.device: cpu`.
 
-### Smaller machines
+### Running without a GPU (manual hand-edit)
 
 The committed profile does **not** fit an 8GB Apple Silicon Mac, and Docker
 Desktop on macOS cannot reach the Apple GPU at all (there is no Metal
 passthrough into its Linux VM). Requesting the `nvidia` driver also fails
-there, so the `deploy:` block under the `ollama` service has to go.
+there, so **both** GPU `deploy:` blocks in `docker-compose.yml` have to go:
+the one under the `ollama` service and the one under the `backend` service.
+Removing only one still leaves the other service requesting a GPU, and Compose
+will fail to start on a machine without one.
 
 Alongside that, change `params.yaml`:
 

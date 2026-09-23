@@ -21,19 +21,31 @@ via Server-Sent Events.
 | `message` | string | yes | 1-2000 chars, trimmed | Movie query in natural language |
 | `session_id` | UUID string | no | valid UUID v4 | Existing session to continue |
 
+Continuing a session requires **both** `session_id` in the body **and** the
+`X-Session-Token` header (the `session_token` value returned by the previous
+response's `movies` or `session` event). If either is missing, or if the
+token doesn't match, doesn't belong to that session, or the session has
+expired, a brand-new session is created instead -- silently, with no error.
+
 **Response**: `text/event-stream` (SSE)
 
-The response is a stream of four event types, always in this order:
+The response is a stream of event types, always in this order. Which first
+event appears depends on the message's classified category: `new_search`/
+`refinement` turns open with `movies`; `follow_up`/`general_chat` turns open
+with `session` instead (see **Conversational turns** below):
 
 ```
-event: movies
-data: {"session_id": "...", "movies": [...], "intent": {...}}
+event: movies          (new_search / refinement turns only)
+data: {"session_id": "...", "session_token": "...", "movies": [...], "intent": {...}}
+
+event: session         (follow_up / general_chat turns only)
+data: {"session_id": "...", "session_token": "..."}
 
 event: token
 data: {"text": "..."}
-...  (repeated per token -- the intro line)
+...  (repeated per token -- the intro line, or the whole reply on conversational turns)
 
-event: blurb
+event: blurb           (new_search / refinement turns only)
 data: {"index": 0, "text": "..."}
 ...  (repeated per fragment, grouped by movie, in movie order)
 
@@ -45,8 +57,9 @@ data: {}
 ```
 
 **Phase 1 (instant)**: The `movies` event fires as soon as candidates are scored.
-Contains the session UUID (for subsequent requests), the top-5 movie objects,
-and the parsed intent.
+Contains the session UUID and session token (send both back -- `session_id` in
+the body, `session_token` as the `X-Session-Token` header -- to continue the
+session on the next request), the top-5 movie objects, and the parsed intent.
 
 **Phase 2 (streaming)**: One LLM call produces the whole explanation, but it is no
 longer one blob. `EXPLANATION_PROMPT` asks for an opening line that names no titles,
@@ -73,7 +86,10 @@ events only, zero `blurb` events -- and the client falls back to each movie's ca
 `description` from the `movies` event.
 
 **Conversational turns**: messages classified `general_chat` or `follow_up` take the
-conversational path and stream only `token` events -- no `movies`, no `blurb`.
+conversational path. A `session` event is sent first (`{"session_id": "...",
+"session_token": "..."}`), since these turns still create or continue a session
+but have no movie results to attach it to; `token` events follow for the reply
+text -- no `movies`, no `blurb`.
 
 **Terminal**: A `done` event always closes the stream. If explanation generation
 failed, an `error` event precedes `done`.
@@ -127,8 +143,11 @@ constraint") — `original_languages` is the one exception, since
 
 | Status | Body | Cause |
 |--------|------|-------|
+| 400 | `{"error": "invalid JSON"}` | Request body is not parseable JSON |
 | 400 | `{"error": "message is required"}` | Empty or missing message |
 | 400 | `{"error": "message too long (max 2000 chars)"}` | Message exceeds 2000 chars |
+| 500 | `{"error": "internal error"}` | Classification (`aclassify_and_parse`) raised an exception |
+| 500 | `{"error": "internal error"}` | Candidate generation/scoring or session save raised an exception (search-like turns only) |
 
 **Example** (curl):
 
@@ -140,9 +159,15 @@ curl -N -X POST http://localhost:8000/api/chat/ \
 
 **Example with session continuation**:
 
+Both the `session_id` (in the body) and the `X-Session-Token` header (from the
+previous response's `movies` or `session` event) are required to continue a
+session -- `session_id` alone is not enough. If either is missing or doesn't
+match, a new session is created silently instead of an error.
+
 ```bash
 curl -N -X POST http://localhost:8000/api/chat/ \
   -H "Content-Type: application/json" \
+  -H "X-Session-Token: <session_token from previous response>" \
   -d '{"message": "something newer?", "session_id": "a1b2c3d4-..."}'
 ```
 
@@ -225,7 +250,10 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   |
   aclassify_and_parse(message)                ← single Ollama call: category +
   (Ollama LLM, ~2s, Pydantic-validated,          filters + semantic_query
-   1 retry-with-repair on invalid JSON)
+   1 retry-with-repair on schema validation
+   errors; a request-level failure --
+   network/HTTP/JSON decode -- skips the
+   retry and falls back immediately)
                  |
   encode_query(intent.semantic_query)        ← BGE-M3, ~0.3s
                  v
@@ -306,7 +334,8 @@ The API runs on Django ASGI via uvicorn. Key threading decisions:
 
 - **Classification + intent parsing** (`aclassify_and_parse`): fully async via `httpx.AsyncClient`,
   one combined call validated against the `MessageIntent` Pydantic schema (with a
-  repair retry on invalid JSON) instead of two separate classify/parse calls.
+  repair retry on schema validation errors, not on JSON decode failures --
+  those fall back immediately) instead of two separate classify/parse calls.
 - **Embedding encoding** (`encode_query`): wrapped in `sync_to_async(thread_sensitive=True)`.
   This serializes embedding calls on the main thread because sentence-transformers
   uses shared GPU state that is not thread-safe.
