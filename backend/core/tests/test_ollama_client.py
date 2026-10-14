@@ -21,6 +21,7 @@ from core.ollama_client import (
     _log_model_digest_once,
     _alog_model_digest_once,
     _StreamStats,
+    _build_movies_context,
     _ollama_options,
     _stream_chat_payload,
     aclassify_and_parse,
@@ -1340,3 +1341,28 @@ class TestModelDigestLogging:
             await aclassify_and_parse("hi")
         assert mock_client.get.await_count == 1
 
+
+class TestExplanationDescriptionCap:
+    MOVIES = [{"serial_name": "Alien", "genres": ["Horror"], "description": "x" * 500}]
+
+    def test_cap_comes_from_settings(self, settings):
+        settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS = 7
+        context = _build_movies_context(self.MOVIES)
+        assert "x" * 7 in context and "x" * 8 not in context
+
+    def test_default_cap_is_the_params_value(self, settings):
+        assert settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS == 200
+        context = _build_movies_context(self.MOVIES)
+        assert "x" * 200 in context and "x" * 201 not in context
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "200", None, True])
+    def test_rejects_non_positive_or_non_int(self, bad):
+        from recommender.settings import _validate_explanation_description_chars
+
+        with pytest.raises(ValueError, match="llm.explanation_description_chars"):
+            _validate_explanation_description_chars({"explanation_description_chars": bad})
+
+    def test_accepts_a_positive_int(self):
+        from recommender.settings import _validate_explanation_description_chars
+
+        _validate_explanation_description_chars({"explanation_description_chars": 1})

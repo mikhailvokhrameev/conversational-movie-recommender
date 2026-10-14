@@ -366,7 +366,7 @@ def _build_movies_context(movies: list[dict]) -> str:
     """Prefix each entry with the same [[n]] marker the model must echo back, so a
     streamed description can be routed to the movie it describes."""
     return "\n".join(
-        f"[[{i}]] {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:200]}"
+        f"[[{i}]] {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS]}"
         for i, m in enumerate(movies, 1)
     )
 

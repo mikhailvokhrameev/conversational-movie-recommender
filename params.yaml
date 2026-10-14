@@ -124,6 +124,13 @@ llm:
   # pinned, not tuned.
   seed: 42
 
+  # Characters of each movie's description put into the explanation prompt
+  # (the `[[n]]` movie list the model writes its per-movie text from). Same
+  # size as session.history_movie_description_chars on purpose: ~50-70 tokens
+  # per movie, enough premise for the model to say why it fits without
+  # inflating a prompt that is already budgeted against llm.num_ctx. Minimum 1.
+  explanation_description_chars: 200
+
   timeout_seconds:
     # Combined classify+intent call used by the live chat view (aclassify_and_parse).
     classify_parse: 45
@@ -200,7 +207,8 @@ retrieval:
 
 scoring:
   # Applied to signals that have been min-max normalized across the candidate
-  # set, so these weights describe actual influence. Should sum to 1.0.
+  # set, so these weights describe actual influence. Must be >= 0 and sum to
+  # 1.0: settings.py refuses to load otherwise.
   weights:
     semantic: 0.35
     metadata: 0.25
@@ -244,6 +252,7 @@ reranking:
   top_k: 50
   # Share of the final score taken from the cross-encoder; the rest stays with
   # the four-signal scorer, which carries session, genre intent, and popularity.
+  # Must lie in [0, 1] (settings.py refuses to load otherwise).
   weight: 0.5
   # "Nothing suitable" gate: minimum raw cross-encoder score (rerank_score) a
   # candidate needs to reach the results. null = gate off, and it ships off

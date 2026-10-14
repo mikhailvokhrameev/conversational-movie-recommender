@@ -162,8 +162,22 @@ def _validate_sampling(llm: dict) -> None:
         raise ValueError(f"params.yaml: llm.seed must be an integer (got {seed!r}).")
 
 
+def _validate_explanation_description_chars(llm: dict) -> None:
+    """Fail at load if llm.explanation_description_chars is not a positive integer.
+
+    0 would hand the explanation prompt titles only, and the model would then
+    describe films from memory instead of from the catalog.
+    """
+    value = llm["explanation_description_chars"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"params.yaml: llm.explanation_description_chars must be an integer >= 1 (got {value!r})."
+        )
+
+
 _validate_num_ctx(_llm)
 _validate_sampling(_llm)
+_validate_explanation_description_chars(_llm)
 OLLAMA_BASE_URL = _llm["base_url"]
 OLLAMA_MODEL = _llm["model"]
 OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
@@ -171,6 +185,7 @@ OLLAMA_THINKING = _llm["thinking"]
 OLLAMA_NUM_CTX = _llm["num_ctx"]
 OLLAMA_TEMPERATURE = _llm["temperature"]
 OLLAMA_SEED = _llm["seed"]
+OLLAMA_EXPLANATION_DESCRIPTION_CHARS = _llm["explanation_description_chars"]
 
 def _validate_embedding_text(embedding: dict) -> None:
     """Fail at load if embedding.text.* is not a pair of positive integers.
@@ -224,7 +239,30 @@ LEXICAL_SEARCH_CONFIG = _retrieval["lexical"]["text_search_config"]
 LEXICAL_MIN_TERM_LENGTH = _retrieval["lexical"]["min_term_length"]
 LEXICAL_MAX_TERMS = _retrieval["lexical"]["max_terms"]
 
+def _validate_score_weights(weights: dict) -> None:
+    """Fail at load if scoring.weights has a negative entry or does not sum to 1.
+
+    The final score is a weighted sum of min-max normalized signals, so weights
+    that do not sum to 1.0 silently rescale every score (and with it the
+    meaning of reranking.weight and the rerank gate), and a negative weight
+    would reward the opposite of the signal.
+    """
+    if not isinstance(weights, dict) or not weights:
+        raise ValueError(f"params.yaml: scoring.weights must map signal names to weights (got {weights!r}).")
+    for name, value in weights.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(
+                f"params.yaml: scoring.weights.{name} must be a number >= 0 (got {value!r})."
+            )
+    total = sum(weights.values())
+    if abs(total - 1.0) > 1e-6:
+        raise ValueError(
+            f"params.yaml: scoring.weights must sum to 1.0 (got {total!r} from {weights!r})."
+        )
+
+
 _scoring = PARAMS["scoring"]
+_validate_score_weights(_scoring["weights"])
 SCORE_WEIGHTS = _scoring["weights"]
 NEUTRAL_SCORE = _scoring["neutral_score"]
 
@@ -249,8 +287,21 @@ def _validate_rerank_min_score(reranking: dict) -> None:
         )
 
 
+def _validate_rerank_weight(reranking: dict) -> None:
+    """Fail at load if reranking.weight is not a number in [0, 1].
+
+    It is the share of the final score taken from the cross-encoder; the scorer
+    gets the remaining 1 - weight, so a value outside [0, 1] would give one side
+    a negative share.
+    """
+    value = reranking["weight"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 1:
+        raise ValueError(f"params.yaml: reranking.weight must be a number in [0, 1] (got {value!r}).")
+
+
 _reranking = PARAMS["reranking"]
 _validate_rerank_min_score(_reranking)
+_validate_rerank_weight(_reranking)
 _validate_revision("reranking", _reranking)
 RERANKER_ENABLED = _reranking["enabled"]
 RERANKER_MODEL = _reranking["model"]
