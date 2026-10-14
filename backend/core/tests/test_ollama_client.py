@@ -24,6 +24,8 @@ from core.ollama_client import (
     astream_explanation_parts,
     check_explanation_titles,
     CATALOG_GENRES,
+    CLASSIFY_PARSE_SCHEMA,
+    INTENT_SCHEMA,
     MessageIntent,
     _extract_intent,
     _fallback_intent,
@@ -888,15 +890,15 @@ class TestOllamaOptions:
         payload = _stream_chat_payload([{"role": "user", "content": "hi"}])
         assert payload["options"] == self._generation(settings)
 
-    def test_chat_sync_picks_kind_from_json_mode(self, settings):
+    def test_chat_sync_picks_kind_from_schema(self, settings):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
         with patch("core.ollama_client.httpx.post", return_value=response) as post:
             assert _chat_sync([{"role": "user", "content": "hi"}]) == "ok"
-            _chat_sync([{"role": "user", "content": "hi"}], json_mode=True)
-        plain, json_call = post.call_args_list
+            _chat_sync([{"role": "user", "content": "hi"}], schema={"type": "object"})
+        plain, structured = post.call_args_list
         assert plain.kwargs["json"]["options"] == self._generation(settings)
-        assert json_call.kwargs["json"]["options"] == self._structured(settings)
+        assert structured.kwargs["json"]["options"] == self._structured(settings)
 
     def test_num_ctx_identical_across_kinds(self):
         assert _ollama_options("structured")["num_ctx"] == _ollama_options("generation")["num_ctx"]
@@ -949,3 +951,119 @@ class TestConversationalPromptGrounding:
         assert "Recommended movies" in CONVERSATIONAL_SYSTEM_PROMPT
         assert "source of truth" in CONVERSATIONAL_SYSTEM_PROMPT
         assert "not in your catalog data" in CONVERSATIONAL_SYSTEM_PROMPT
+
+
+class TestStructuredOutputSchema:
+    """`format` carries a JSON schema (Ollama structured outputs), not the bare
+    "json" mode. Pydantic validation and the repair retry still guard the reply."""
+
+    def test_classify_payload_carries_the_message_intent_schema(self):
+        payload = _classify_and_parse_payload("hi", [])
+        assert payload["format"] is CLASSIFY_PARSE_SCHEMA
+        assert payload["format"] != "json"
+
+    def test_schema_has_category_enum_and_every_field_required(self):
+        schema = CLASSIFY_PARSE_SCHEMA
+        assert schema["type"] == "object"
+        assert schema["properties"]["category"]["enum"] == [
+            "new_search", "follow_up", "refinement", "general_chat",
+        ]
+        assert set(schema["required"]) == set(MessageIntent.model_fields)
+        assert set(schema["properties"]) == set(MessageIntent.model_fields)
+
+    def test_schema_types_follow_the_model(self):
+        props = CLASSIFY_PARSE_SCHEMA["properties"]
+        assert props["genres"] == {"type": "array", "items": {"type": "string"}}
+        assert {"type": "null"} in props["min_vote_average"]["anyOf"]
+        assert {"type": "number"} in props["min_vote_average"]["anyOf"]
+        assert {"type": "integer"} in props["max_runtime"]["anyOf"]
+
+    def test_schema_uses_only_keywords_ollamas_grammar_handles(self):
+        def keys(node):
+            if isinstance(node, dict):
+                for key, value in node.items():
+                    yield key
+                    if key != "properties":
+                        yield from keys(value)
+                    else:
+                        for prop in value.values():
+                            yield from keys(prop)
+            elif isinstance(node, list):
+                for item in node:
+                    yield from keys(item)
+
+        assert set(keys(CLASSIFY_PARSE_SCHEMA)) <= {
+            "type", "properties", "required", "enum", "items", "anyOf",
+        }
+
+    def test_schema_is_json_serializable(self):
+        json.dumps(CLASSIFY_PARSE_SCHEMA)
+        json.dumps(INTENT_SCHEMA)
+
+    def test_intent_payload_schema_matches_what_extract_intent_reads(self):
+        payload = _intent_payload("a comedy")
+        assert payload["format"] is INTENT_SCHEMA
+        assert "category" not in INTENT_SCHEMA["properties"]
+        assert "semantic_query" not in INTENT_SCHEMA["properties"]
+        assert set(INTENT_SCHEMA["required"]) == set(_extract_intent({}))
+
+    def test_message_intent_validates_a_reply_shaped_by_the_schema(self):
+        reply = {
+            "category": "new_search", "semantic_query": "q", "genres": ["Comedy"], "mood": "",
+            "themes": [], "negations": [], "reference_films": [], "country_exclusions": [],
+            "country_inclusions": [], "min_vote_average": None, "min_release_year": None,
+            "max_release_year": None, "min_runtime": None, "max_runtime": 90,
+            "original_languages": [],
+        }
+        assert set(reply) == set(CLASSIFY_PARSE_SCHEMA["properties"])
+        assert MessageIntent.model_validate(reply).max_runtime == 90
+
+    @pytest.mark.asyncio
+    async def test_request_sends_the_schema_on_the_wire(self):
+        mock_client = _mock_ollama_responses('{"category": "new_search"}')
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            await aclassify_and_parse("hi")
+        assert mock_client.post.call_args.kwargs["json"]["format"] == CLASSIFY_PARSE_SCHEMA
+
+    @pytest.mark.asyncio
+    async def test_repair_retry_still_happens_with_the_schema(self):
+        mock_client = _mock_ollama_responses(
+            '{"category": "nonsense"}', '{"category": "follow_up", "semantic_query": "x"}'
+        )
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            intent = await aclassify_and_parse("tell me about it")
+        assert intent.category == "follow_up"
+        formats = [c.kwargs["json"]["format"] for c in mock_client.post.call_args_list]
+        assert formats == [CLASSIFY_PARSE_SCHEMA, CLASSIFY_PARSE_SCHEMA]
+
+    def test_chat_sync_sends_the_schema_as_format(self):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": "{}"}}
+        schema = {"type": "object", "properties": {"score": {"type": "integer"}}}
+        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+            _chat_sync([{"role": "user", "content": "hi"}], schema=schema)
+        assert post.call_args.kwargs["json"]["format"] == schema
+
+    def test_chat_sync_without_schema_sends_no_format(self):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": "ok"}}
+        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+            _chat_sync([{"role": "user", "content": "hi"}])
+        assert "format" not in post.call_args.kwargs["json"]
+
+    def test_parse_intent_sends_the_intent_schema(self):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": '{"genres": ["Comedy"]}'}}
+        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+            parse_intent("a comedy")
+        assert post.call_args.kwargs["json"]["format"] == INTENT_SCHEMA
+
+    def test_strip_think_still_runs_before_json_parsing(self):
+        response = MagicMock()
+        response.json.return_value = {
+            "message": {"content": '<think>hmm</think>{"genres": ["Comedy"]}'}
+        }
+        with patch("core.ollama_client.httpx.post", return_value=response), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            assert parse_intent("a comedy")["genres"] == ["Comedy"]
+

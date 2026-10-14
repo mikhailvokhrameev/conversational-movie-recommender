@@ -583,6 +583,36 @@ def _ollama_options(kind: Literal["structured", "generation"]) -> dict:
     }
 
 
+def _ollama_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dict:
+    """A Pydantic model's JSON schema, shaped for Ollama's `format` field.
+
+    Ollama turns the schema into a decoding grammar, so the model cannot emit
+    an off-schema category or a wrong-typed filter. Two adjustments to what
+    Pydantic emits: annotation-only keys (`title`, `default`) are dropped, since
+    the grammar has no use for them, and every property is made required, so
+    the model always returns the full shape the prompt examples show instead of
+    omitting fields (the optional ones are nullable, so "no filter" is still
+    expressible). `exclude` drops properties the caller does not want decoded.
+    Pydantic validation stays the guard on the other side: the schema constrains
+    the output, it does not replace validating it.
+    """
+    schema = model.model_json_schema()
+    assert "$defs" not in schema, "nested models would need $ref resolution"
+    properties = {
+        name: {k: v for k, v in prop.items() if k not in ("title", "default")}
+        for name, prop in schema["properties"].items()
+        if name not in exclude
+    }
+    return {"type": "object", "properties": properties, "required": list(properties)}
+
+
+# Built once: both are constant for the process.
+CLASSIFY_PARSE_SCHEMA = _ollama_schema(MessageIntent)
+# What `_extract_intent` reads: the classify+parse shape minus the two fields
+# only the combined call produces.
+INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=("category", "semantic_query"))
+
+
 def _intent_payload(query: str) -> dict:
     return {
         "model": settings.OLLAMA_MODEL,
@@ -591,7 +621,7 @@ def _intent_payload(query: str) -> dict:
                 query=query, genres=", ".join(CATALOG_GENRES)
             )},
         ],
-        "format": "json",
+        "format": INTENT_SCHEMA,
         "stream": False,
         "think": settings.OLLAMA_THINKING,
         "options": _ollama_options("structured"),
@@ -618,7 +648,7 @@ def _classify_and_parse_payload(
     return {
         "model": settings.OLLAMA_MODEL,
         "messages": messages,
-        "format": "json",
+        "format": CLASSIFY_PARSE_SCHEMA,
         "stream": False,
         "think": settings.OLLAMA_THINKING,
         "options": _ollama_options("structured"),
@@ -655,17 +685,26 @@ def _stream_chat_payload(messages: list[dict]) -> dict:
     }
 
 
-def _chat_sync(messages: list[dict], json_mode: bool = False, timeout: float = 60.0) -> str:
-    """Send a chat request to Ollama and return the response content string."""
+def _chat_sync(
+    messages: list[dict],
+    *,
+    schema: dict | None = None,
+    timeout: float = 60.0,
+) -> str:
+    """Send a chat request to Ollama and return the response content string.
+
+    `schema` is a JSON schema constraining the reply (Ollama `format`); passing
+    one also selects the structured sampling kind.
+    """
     payload = {
         "model": settings.OLLAMA_MODEL,
         "messages": messages,
         "stream": False,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("structured" if json_mode else "generation"),
+        "options": _ollama_options("structured" if schema else "generation"),
     }
-    if json_mode:
-        payload["format"] = "json"
+    if schema:
+        payload["format"] = schema
     response = httpx.post(
         f"{settings.OLLAMA_BASE_URL}/api/chat",
         json=payload,
@@ -683,7 +722,7 @@ def parse_intent(query: str) -> dict:
     try:
         content = _chat_sync(
             _intent_payload(query)["messages"],
-            json_mode=True,
+            schema=INTENT_SCHEMA,
             timeout=settings.OLLAMA_TIMEOUTS["intent"],
         )
         return _extract_intent(_parse_json_response(content))

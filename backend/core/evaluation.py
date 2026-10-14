@@ -37,6 +37,16 @@ logger = logging.getLogger(__name__)
 JUDGE_MIN_SCORE = 1
 JUDGE_MAX_SCORE = 5
 
+# Sent as Ollama's `format`, so decoding can only produce an integer on the
+# scale. llm_relevance_score still range-checks the parsed value.
+JUDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "score": {"type": "integer", "minimum": JUDGE_MIN_SCORE, "maximum": JUDGE_MAX_SCORE},
+    },
+    "required": ["score"],
+}
+
 LLM_JUDGE_PROMPT = """Rate how relevant this movie is to the user's query.
 
 User query: "{query}"
@@ -165,7 +175,7 @@ def llm_relevance_score(query: str, movie: dict) -> int | None:
     try:
         content = _chat_sync(
             [{"role": "user", "content": prompt}],
-            json_mode=True,
+            schema=JUDGE_SCHEMA,
             timeout=settings.EVAL_JUDGE_TIMEOUT_SECONDS,
         )
         score = _parse_json_response(content)["score"]

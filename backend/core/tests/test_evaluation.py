@@ -132,7 +132,19 @@ class TestLlmRelevanceScore:
         prompt = chat.call_args.args[0][0]["content"]
         assert "x" * 10 in prompt and "x" * 11 not in prompt
         assert chat.call_args.kwargs["timeout"] == 7.5
-        assert chat.call_args.kwargs["json_mode"] is True
+
+    def test_requests_an_integer_schema_on_the_judge_scale(self):
+        from core.evaluation import JUDGE_MAX_SCORE, JUDGE_MIN_SCORE, JUDGE_SCHEMA
+
+        with patch("core.evaluation._chat_sync", return_value='{"score": 3}') as chat:
+            llm_relevance_score("scary", self.MOVIE)
+        schema = chat.call_args.kwargs["schema"]
+        assert schema is JUDGE_SCHEMA
+        assert schema["required"] == ["score"]
+        assert schema["properties"]["score"] == {
+            "type": "integer", "minimum": JUDGE_MIN_SCORE, "maximum": JUDGE_MAX_SCORE,
+        }
+        assert (JUDGE_MIN_SCORE, JUDGE_MAX_SCORE) == (1, 5)
 
 
 class TestAggregate:
