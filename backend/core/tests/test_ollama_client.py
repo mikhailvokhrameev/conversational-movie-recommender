@@ -706,6 +706,28 @@ class TestHistoryLimitValidation:
         _validate_history_limits({"history_max_turns": 1, "history_max_chars_per_entry": 1})
 
 
+class TestNumCtxValidation:
+    """params.yaml llm.num_ctx must be a positive int at settings load: it is
+    sent as options.num_ctx on every call, so a bad value fails late or silently."""
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "6144", None, True])
+    def test_rejects_non_int_or_below_one(self, bad):
+        from recommender.settings import _validate_num_ctx
+
+        with pytest.raises(ValueError, match="llm.num_ctx"):
+            _validate_num_ctx({"num_ctx": bad})
+
+    def test_accepts_minimum_of_one(self):
+        from recommender.settings import _validate_num_ctx
+
+        _validate_num_ctx({"num_ctx": 1})
+
+    def test_accepts_configured_value(self):
+        from recommender.settings import _validate_num_ctx
+
+        _validate_num_ctx({"num_ctx": 6144})
+
+
 class TestOllamaOptions:
     """Every LLM call must carry the same options.num_ctx -- a differing value
     makes Ollama reload the model."""

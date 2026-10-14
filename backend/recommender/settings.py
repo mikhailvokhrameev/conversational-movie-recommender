@@ -120,6 +120,22 @@ REST_FRAMEWORK = {
 # --- point of that file is that it is the only place these can be changed.
 
 _llm = PARAMS["llm"]
+
+
+def _validate_num_ctx(llm: dict) -> None:
+    """Fail at load if llm.num_ctx is not a positive integer.
+
+    It is sent as options.num_ctx on every LLM call; a non-int or non-positive
+    value would reach Ollama and fail late or be silently mishandled.
+    """
+    value = llm["num_ctx"]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"params.yaml: llm.num_ctx must be an integer >= 1 (got {value!r})."
+        )
+
+
+_validate_num_ctx(_llm)
 OLLAMA_BASE_URL = _llm["base_url"]
 OLLAMA_MODEL = _llm["model"]
 OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
