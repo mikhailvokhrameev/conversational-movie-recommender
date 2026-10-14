@@ -234,6 +234,19 @@ session:
   # Minimum 1, enforced at settings load like history_max_turns.
   history_max_chars_per_entry: 1000
 
+evaluation:
+  # LLM-as-judge (manage.py evaluate_scoring --llm-judge). Same model family as
+  # the system it grades, so it is a secondary signal, not ground truth -- the
+  # golden-set metrics are primary.
+  #
+  # Characters of a movie's description shown to the judge. Enough for the
+  # premise of a TMDB overview; the full text adds prompt tokens per judged
+  # movie (k per query) without changing what the judge can tell.
+  judge_description_chars: 300
+  # One short JSON reply per call. A judge call that runs past this counts as
+  # a judge failure (no substitute score).
+  judge_timeout_seconds: 30
+
 intent:
   # Minimum cosine similarity for mapping an LLM-produced genre name onto a
   # catalog genre.

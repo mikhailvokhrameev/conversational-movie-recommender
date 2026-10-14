@@ -6,8 +6,8 @@ import yaml
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-def _load_params() -> dict:
-    """Load params.yaml, the single source of truth for model and tuning values.
+def _find_params() -> Path:
+    """Locate params.yaml, the single source of truth for model and tuning values.
 
     Searched in the container location first (mounted at /app/params.yaml),
     then the repo root for running outside Docker. PARAMS_PATH overrides both;
@@ -19,8 +19,7 @@ def _load_params() -> dict:
     ]
     for path in candidates:
         if path.is_file():
-            with open(path) as handle:
-                return yaml.safe_load(handle)
+            return path
     raise FileNotFoundError(
         "params.yaml not found in: "
         + ", ".join(str(c) for c in candidates)
@@ -28,7 +27,11 @@ def _load_params() -> dict:
     )
 
 
-PARAMS = _load_params()
+# The resolved path is kept so evaluation run records can hash the exact file
+# the run was configured from.
+PARAMS_FILE = _find_params()
+with open(PARAMS_FILE) as _params_handle:
+    PARAMS = yaml.safe_load(_params_handle)
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-insecure-key-do-not-use-in-prod")
 DEBUG = os.environ.get("DEBUG", "0") == "1"
@@ -223,6 +226,30 @@ SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
 
 GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
+
+
+def _validate_evaluation(evaluation: dict) -> None:
+    """Fail at load if an evaluation.* judge value is not positive.
+
+    A zero description cap would hand the judge titles only, and a zero
+    timeout would turn every judge call into a counted failure.
+    """
+    chars = evaluation["judge_description_chars"]
+    if isinstance(chars, bool) or not isinstance(chars, int) or chars < 1:
+        raise ValueError(
+            f"params.yaml: evaluation.judge_description_chars must be an integer >= 1 (got {chars!r})."
+        )
+    timeout = evaluation["judge_timeout_seconds"]
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
+        raise ValueError(
+            f"params.yaml: evaluation.judge_timeout_seconds must be a number > 0 (got {timeout!r})."
+        )
+
+
+_evaluation = PARAMS["evaluation"]
+_validate_evaluation(_evaluation)
+EVAL_JUDGE_DESCRIPTION_CHARS = _evaluation["judge_description_chars"]
+EVAL_JUDGE_TIMEOUT_SECONDS = _evaluation["judge_timeout_seconds"]
 
 _catalog = PARAMS["catalog"]
 IMPORT_BATCH_SIZE = _catalog["import_batch_size"]

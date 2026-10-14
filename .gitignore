@@ -59,6 +59,10 @@ coverage.xml
 # pytest
 .pytest_cache/
 
+# evaluate_scoring run records (written under the working directory)
+eval_runs/
+backend/eval_runs/
+
 # Vite
 frontend/dist/
 
