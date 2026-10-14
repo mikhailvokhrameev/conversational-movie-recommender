@@ -209,3 +209,62 @@ class TestSessionHistoryView:
         view = SessionHistoryView.as_view()
         response = await view(request, session_id=uuid.uuid4())
         assert response.status_code == 404
+
+
+@pytest.mark.django_db
+class TestAppendHistory:
+    @pytest.mark.asyncio
+    async def test_appends_entry_with_role_and_content(self):
+        from movies.models import ChatSession
+        from movies.views import _append_history
+        session = await ChatSession.objects.acreate()
+
+        await _append_history(session, "user", "hello")
+        await session.arefresh_from_db()
+
+        assert session.history == [{"role": "user", "content": "hello"}]
+
+    @pytest.mark.asyncio
+    async def test_assistant_entry_includes_movies_when_given(self):
+        from movies.models import ChatSession
+        from movies.views import _append_history
+        session = await ChatSession.objects.acreate()
+
+        await _append_history(session, "assistant", "Here you go", movies=["Film A", "Film B"])
+        await session.arefresh_from_db()
+
+        assert session.history == [{
+            "role": "assistant", "content": "Here you go",
+            "movies": ["Film A", "Film B"],
+        }]
+
+    @pytest.mark.asyncio
+    async def test_count_turn_false_does_not_increment_turn_count(self):
+        from movies.models import ChatSession
+        from movies.views import _append_history
+        session = await ChatSession.objects.acreate()
+
+        await _append_history(session, "user", "hello")
+        await session.arefresh_from_db()
+        assert session.turn_count == 1
+
+        await _append_history(session, "assistant", "hi back", count_turn=False)
+        await session.arefresh_from_db()
+        assert session.turn_count == 1
+        assert len(session.history) == 2
+
+
+@pytest.mark.django_db
+class TestSaveSessionHistoryEntry:
+    @pytest.mark.asyncio
+    async def test_user_entry_has_no_movies_key(self):
+        from movies.models import ChatSession
+        session = await ChatSession.objects.acreate()
+
+        await _save_session(
+            session, "q", {}, [0.1] * 1024,
+            [{"serial_name": "Test Film"}], category="new_search",
+        )
+        await session.arefresh_from_db()
+
+        assert session.history == [{"role": "user", "content": "q"}]

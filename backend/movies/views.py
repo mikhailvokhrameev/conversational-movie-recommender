@@ -79,21 +79,22 @@ def _save_session(session: ChatSession, query: str, intent: dict,
             alpha=alpha,
         )
         fresh.preferences = track_explicit_preferences(fresh.preferences, intent)
-        fresh.history = list(fresh.history) + [{
-            "role": "user",
-            "content": query,
-            "movies": [m["serial_name"] for m in movies],
-        }]
+        fresh.history = list(fresh.history) + [{"role": "user", "content": query}]
         fresh.turn_count += 1
         fresh.save()
 
 
 @sync_to_async(thread_sensitive=False)
-def _append_history(session: ChatSession, role: str, content: str):
+def _append_history(session: ChatSession, role: str, content: str,
+                    movies: list[str] | None = None, count_turn: bool = True):
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
-        fresh.history = list(fresh.history) + [{"role": role, "content": content}]
-        fresh.turn_count += 1
+        entry = {"role": role, "content": content}
+        if movies:
+            entry["movies"] = movies
+        fresh.history = list(fresh.history) + [entry]
+        if count_turn:
+            fresh.turn_count += 1
         fresh.save()
 
 
