@@ -52,7 +52,7 @@ from core.golden_set import (
     resolve_references,
     select_split,
 )
-from core.ollama_client import aclassify_and_parse
+from core.ollama_client import MessageIntent, aclassify_and_parse, ais_available
 from core.pipeline import generate_and_score
 from core.session_manager import update_preference_vector, vector_for_scoring
 from movies.models import Movie
@@ -113,6 +113,9 @@ class PreparedQuery:
     session_vector: list[float] | None
     category: str
     predicted_category: str | None
+    # e2e only (None in oracle): the parsed intent has exactly the shape
+    # aclassify_and_parse returns when it gives up -- see _is_fallback_shape.
+    possible_parse_fallback: bool | None
     grades: dict[int, int]
     unresolved: list[dict]
 
@@ -187,6 +190,15 @@ class Command(BaseCommand):
                 "the test split is held out for the final report."
             )
         intent_mode = options["intent"]
+        if intent_mode == "e2e" and not asyncio.run(ais_available()):
+            # aclassify_and_parse never raises -- on a failed request it returns
+            # the raw message with no filters -- so without this check an
+            # unreachable Ollama would produce a plausible-looking "e2e" run
+            # that never parsed anything.
+            raise CommandError(
+                f"--intent e2e needs Ollama, which is not reachable at {settings.OLLAMA_BASE_URL}. "
+                "Start it, or run --intent oracle to evaluate retrieval alone."
+            )
         use_llm = options["llm_judge"]
         weights = self._parse_weights(options["weights"])
 
@@ -260,12 +272,14 @@ class Command(BaseCommand):
             # golden set holds user messages only, so history is user turns.
             history = [{"role": "user", "content": message} for message in context]
             message_intent = asyncio.run(aclassify_and_parse(query, history))
+            possible_fallback = self._is_fallback_shape(message_intent, query)
             predicted = message_intent.category
             category = predicted
             query_embedding = encode_query(message_intent.semantic_query)
             intent = message_intent.model_dump(exclude={"category", "semantic_query"})
         else:
             predicted = None
+            possible_fallback = None
             category = entry.get("category", "new_search")
             query_embedding = encode_query(query)
             intent = dict(entry.get("oracle_intent", {}))
@@ -278,9 +292,19 @@ class Command(BaseCommand):
             session_vector=self._session_vector(context, query_embedding, category),
             category=category,
             predicted_category=predicted,
+            possible_parse_fallback=possible_fallback,
             grades=grades,
             unresolved=unresolved,
         )
+
+    @staticmethod
+    def _is_fallback_shape(intent: MessageIntent, query: str) -> bool:
+        """True when the parse is indistinguishable from aclassify_and_parse's
+        failure fallback: new_search, semantic_query == the raw message, no
+        filters. A genuine parse can look like this too (a vague query the
+        model left as-is), hence "possible" -- but a run where most entries
+        match is a run where parsing did not happen."""
+        return intent == MessageIntent(category="new_search", semantic_query=query)
 
     @staticmethod
     def _session_vector(context: list[str], query_embedding: list[float], category: str):
@@ -369,6 +393,7 @@ class Command(BaseCommand):
         if p.predicted_category is not None:
             result["predicted_category"] = p.predicted_category
             result["misclassified"] = p.misclassified
+            result["possible_parse_fallback"] = p.possible_parse_fallback
         if judge_scores is not None:
             result["judge_scores"] = judge_scores
             result["judge_failures"] = sum(1 for s in judge_scores if s is None)
@@ -387,6 +412,7 @@ class Command(BaseCommand):
             "unresolved_refs": sum(len(p.unresolved) for p in prepared),
             "judge_failures": sum(q.get("judge_failures", 0) for q in queries),
             "misclassified": sum(1 for p in prepared if p.misclassified),
+            "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
         }
         return {"queries": queries, "aggregate": aggregate, "counters": counters}
 
@@ -394,6 +420,12 @@ class Command(BaseCommand):
         self.stdout.write("COUNTERS:")
         for key, value in counters.items():
             self.stdout.write(f"  {key}: {value}")
+        if counters["possible_parse_fallbacks"]:
+            self.stdout.write(self.style.WARNING(
+                f"{counters['possible_parse_fallbacks']}/{counters['queries']} e2e intents match the "
+                "classify+parse failure fallback (raw query, no filters) -- check the Ollama logs "
+                "before trusting this as an e2e result."
+            ))
 
     def _run_eval(self, prepared, k, weights, use_llm) -> dict:
         self.stdout.write(
@@ -420,6 +452,8 @@ class Command(BaseCommand):
                 extras += f" neg={m['negation_violations']}"
             if q.get("misclassified"):
                 extras += f" MISCLASSIFIED({q['predicted_category']})"
+            if q.get("possible_parse_fallback"):
+                extras += " POSSIBLE_PARSE_FALLBACK"
             if q["unresolved_refs"]:
                 extras += f" unresolved={len(q['unresolved_refs'])}"
             self.stdout.write(f"  {q['id'][:32]:32s} {accuracy} Div={m.get('diversity', 0):.2f}{extras}")

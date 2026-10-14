@@ -393,7 +393,15 @@ In `e2e` the prior `context` messages are passed as user-role history entries
 (the shape `ChatSession.history` uses), and the predicted category is
 recorded per query. A golden query classified `follow_up`/`general_chat` is
 still searched, so it still gets metrics, but it counts in `misclassified`
--- in production it would have produced no recommendations. Comparing `e2e`
+-- in production it would have produced no recommendations.
+
+`aclassify_and_parse` never raises: on a failed request or an invalid reply
+it falls back to `new_search` with the raw message and no filters. So `e2e`
+refuses to start when Ollama is unreachable (`ais_available()`), and any
+parsed intent with exactly that fallback shape is flagged
+`possible_parse_fallback` and counted in `possible_parse_fallbacks` -- a
+vague query can genuinely parse that way, but a run where many do is a run
+where parsing failed. Comparing `e2e`
 against `oracle` on the same split separates parsing errors from retrieval
 errors (oracle intents are labels too, so they are only as good as the
 draft).
@@ -464,7 +472,7 @@ and of the golden set, the CLI options, intent mode, split, k, weights, a
 timestamp, per-query results (recommended ids/titles, hits, resolved and
 unresolved references, predicted category in `e2e`, judge scores), aggregate
 metrics, and counters (`unresolved_refs`, `unscorable_queries`,
-`judge_failures`, `misclassified`). A sweep records every configuration this
+`judge_failures`, `misclassified`, `possible_parse_fallbacks`). A sweep records every configuration this
 way, sorted best first. Stdout stays a human-readable summary.
 
 ### Running Evaluation

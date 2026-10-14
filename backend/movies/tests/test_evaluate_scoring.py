@@ -67,6 +67,7 @@ class _Run:
         self.encode = MagicMock(side_effect=_vec)
         self.resolve = _resolver(grades, unresolved)
         self.judge = MagicMock(side_effect=judge) if judge is not None else MagicMock(return_value=3)
+        self.available = AsyncMock(return_value=True)
 
     def __call__(self, *args):
         out = StringIO()
@@ -75,7 +76,8 @@ class _Run:
              patch(f"{MODULE}.encode_query", self.encode), \
              patch(f"{MODULE}.aclassify_and_parse", self.classify), \
              patch(f"{MODULE}.generate_and_score", self.pipeline), \
-             patch(f"{MODULE}.llm_relevance_score", self.judge):
+             patch(f"{MODULE}.llm_relevance_score", self.judge), \
+             patch(f"{MODULE}.ais_available", self.available):
             call_command(
                 "evaluate_scoring", "--golden-set", str(self.golden),
                 "--output", str(self.output), *args, stdout=out,
@@ -116,6 +118,49 @@ class TestE2eIntent:
         run.pipeline.assert_called_once()
         assert record["counters"]["misclassified"] == 1
         assert record["queries"][0]["misclassified"] is True
+
+
+class TestParseFallbackDetection:
+    """aclassify_and_parse never raises: on any failure it returns
+    new_search + the raw message + no filters. e2e must not pass that off as a
+    parse."""
+
+    def test_unreachable_ollama_refuses_e2e(self, tmp_path):
+        run = _Run(tmp_path, [_entry()])
+        run.available.return_value = False
+        with pytest.raises(CommandError, match="Ollama"):
+            run()
+        run.classify.assert_not_awaited()
+        run.pipeline.assert_not_called()
+
+    def test_oracle_does_not_need_ollama(self, tmp_path):
+        run = _Run(tmp_path, [_entry()])
+        run.available.return_value = False
+        run("--intent", "oracle")
+        run.available.assert_not_awaited()
+
+    def test_fallback_shaped_intent_is_counted(self, tmp_path):
+        fallback = MessageIntent(category="new_search", semantic_query="query q1")
+        run = _Run(tmp_path, [_entry()], intent=fallback)
+        record = run()
+        assert record["queries"][0]["possible_parse_fallback"] is True
+        assert record["counters"]["possible_parse_fallbacks"] == 1
+        assert "possible_parse_fallbacks: 1" in run.stdout
+
+    def test_real_parse_is_not_counted(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])()
+        assert record["queries"][0]["possible_parse_fallback"] is False
+        assert record["counters"]["possible_parse_fallbacks"] == 0
+
+    def test_raw_query_with_a_filter_is_not_counted(self, tmp_path):
+        parsed = MessageIntent(category="new_search", semantic_query="query q1", genres=["Drama"])
+        record = _Run(tmp_path, [_entry()], intent=parsed)()
+        assert record["counters"]["possible_parse_fallbacks"] == 0
+
+    def test_oracle_records_no_fallback_flag(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])("--intent", "oracle")
+        assert "possible_parse_fallback" not in record["queries"][0]
+        assert record["counters"]["possible_parse_fallbacks"] == 0
 
 
 class TestOracleIntent:
@@ -294,7 +339,8 @@ class TestRunRecord:
              patch(f"{MODULE}.resolve_references", _resolver()), \
              patch(f"{MODULE}.encode_query", side_effect=_vec), \
              patch(f"{MODULE}.aclassify_and_parse", AsyncMock(return_value=MessageIntent(category="new_search"))), \
-             patch(f"{MODULE}.generate_and_score", return_value=(movies, movies)):
+             patch(f"{MODULE}.generate_and_score", return_value=(movies, movies)), \
+             patch(f"{MODULE}.ais_available", AsyncMock(return_value=True)):
             call_command("evaluate_scoring", "--golden-set", str(golden), stdout=StringIO())
         written = list((tmp_path / "eval_runs").glob("*.json"))
         assert len(written) == 1
