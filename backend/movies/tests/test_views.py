@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 from unittest.mock import patch, AsyncMock
 
 import pytest
@@ -153,6 +155,45 @@ class TestSaveSession:
         assert list(session_new_search.preference_vector) == pytest.approx(expected_new_search)
         assert list(session_refinement.preference_vector) == pytest.approx(expected_refinement)
         assert list(session_new_search.preference_vector) != pytest.approx(list(session_refinement.preference_vector))
+
+
+class TestSaveSessionConcurrency:
+    @pytest.mark.django_db(transaction=True)
+    @pytest.mark.asyncio
+    async def test_concurrent_saves_both_apply_under_row_lock(self, monkeypatch):
+        """Two concurrent saves must compose (v0 -> e1 -> e2 in some order), not
+        overwrite each other. The slow wrapper below widens the read-modify-write
+        window so the test fails deterministically if the row lock is removed:
+        without it both threads read v0 and one update is lost."""
+        from movies.models import ChatSession
+
+        real_update = update_preference_vector
+
+        def _slow_update(*args, **kwargs):
+            result = real_update(*args, **kwargs)
+            time.sleep(0.2)
+            return result
+
+        monkeypatch.setattr("movies.views.update_preference_vector", _slow_update)
+
+        v0 = [0.1] * 1024
+        e1 = [0.9] + [0.0] * 1023
+        e2 = [0.0, 0.9] + [0.0] * 1022
+        session = await ChatSession.objects.acreate(preference_vector=v0)
+
+        await asyncio.gather(
+            _save_session(session, "q1", {}, e1, [], category="new_search"),
+            _save_session(session, "q2", {}, e2, [], category="new_search"),
+        )
+        await session.arefresh_from_db()
+
+        order_12 = real_update(real_update(v0, e1), e2)
+        order_21 = real_update(real_update(v0, e2), e1)
+        final = list(session.preference_vector)
+        assert final == pytest.approx(order_12) or final == pytest.approx(order_21)
+        assert {e["content"] for e in session.history if e["role"] == "user"} == {"q1", "q2"}
+        assert len(session.history) == 2
+        assert session.turn_count == 2
 
 
 @pytest.mark.django_db
