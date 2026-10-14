@@ -1,18 +1,28 @@
 import logging
 
 from django.conf import settings
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+from core.embedding_provenance import (
+    ProvenanceError,
+    compare_provenance,
+    current_provenance,
+    plan_generate,
+)
 from core.embedding_service import build_movie_embedding_text
-from movies.models import Movie
+from movies.models import EmbeddingIndex, Movie
 
 logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = "Generate embeddings for movies using sentence-transformers and store in pgvector"
+    help = (
+        "Generate embeddings for movies using sentence-transformers and store in pgvector, "
+        "recording which model and text template built the index"
+    )
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -21,14 +31,47 @@ class Command(BaseCommand):
             default=None,
             help="Number of descriptions to embed per batch (default: 64)",
         )
+        parser.add_argument(
+            "--all",
+            action="store_true",
+            help="Re-embed every movie, not only those without an embedding. Required "
+            "after changing the embedding model or text settings.",
+        )
+        parser.add_argument(
+            "--adopt",
+            action="store_true",
+            help="Record the current config as the provenance of the existing embeddings "
+            "without re-embedding. Only for an index built before provenance tracking, "
+            "and only if it was built with the current config.",
+        )
 
     def handle(self, *args, **options):
         batch_size = options["batch_size"] or settings.EMBEDDING_BATCH_SIZE
 
-        movies = list(
-            Movie.objects.filter(embedding__isnull=True)
-            .values_list("id", "serial_name", "genres", "description", "keywords")
-        )
+        current = current_provenance()
+        check = compare_provenance(EmbeddingIndex.stored(), current)
+        try:
+            action = plan_generate(
+                check,
+                Movie.objects.filter(embedding__isnull=False).exists(),
+                rebuild_all=options["all"],
+                adopt=options["adopt"],
+            )
+        except ProvenanceError as exc:
+            raise CommandError(str(exc)) from exc
+
+        if action == "adopt":
+            EmbeddingIndex.record(current)
+            self.stdout.write(self.style.SUCCESS(
+                "Recorded the current config as the embedding index provenance. "
+                "Vectors were not touched; run without --adopt to embed any movies still missing one."
+            ))
+            return
+
+        # --all re-embeds rows that already have a vector, so it must not filter
+        # on embedding IS NULL.
+        queryset = Movie.objects.all() if action == "embed_all" else Movie.objects.filter(embedding__isnull=True)
+        movies = list(queryset.values_list("id", "serial_name", "genres", "description", "keywords"))
 
         if not movies:
             self.stdout.write(self.style.SUCCESS("All movies already have embeddings"))
@@ -68,7 +111,11 @@ class Command(BaseCommand):
             movie.embedding = vector
             to_update.append(movie)
 
-        Movie.objects.bulk_update(to_update, ["embedding"], batch_size=500)
+        # One transaction: a failure cannot leave some rows on new vectors and
+        # the rest on old ones, nor a record that claims more than was stored.
+        with transaction.atomic():
+            Movie.objects.bulk_update(to_update, ["embedding"], batch_size=500)
+            EmbeddingIndex.record(current)
 
         embedded_count = Movie.objects.filter(embedding__isnull=False).count()
         total_count = Movie.objects.count()
