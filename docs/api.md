@@ -373,7 +373,7 @@ these can be changed -- no environment variable overrides them.
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
-| `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so the worst-case prompt fits `llm.num_ctx`. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
+| `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so a heavy-use prompt fits `llm.num_ctx` with room to spare. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |
 | `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |
 | `evaluation.judge_description_chars` | `300` | Description chars shown to the `evaluate_scoring --llm-judge` judge. Minimum 1 |

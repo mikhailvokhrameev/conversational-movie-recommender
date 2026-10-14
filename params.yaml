@@ -77,27 +77,40 @@ llm:
   # sync/evaluation path. It is set explicitly so the window is a known,
   # budgeted size rather than whatever the Ollama default happens to be.
   #
-  # Why 6144: a heavy-use prompt is system prompt ~1.2k tokens + history of
-  # session.history_max_turns (6) pairs at ~500 tokens/pair ~3.0k + current
-  # turn with movie context ~0.8k + generated answer ~0.5k = ~5.5k, which
-  # leaves ~0.6k of headroom. One unit throughout: tokens per user+assistant
-  # PAIR. ~500/pair is a short user turn (~50) plus an assistant reply near
-  # the session.history_max_chars_per_entry cap (~450 for Russian). It is NOT
-  # a hard worst case: if both entries of every pair hit the 1000-char cap
-  # (~1000 tokens/pair) history alone is ~6.0k and the prompt overflows.
+  # Why 6144 (re-derived for English text; the first figure here was a
+  # Russian estimate). ASSUMPTION: ~4 characters per token for English prose
+  # on Qwen-family tokenizers (Russian is ~2-2.5, which is why the old
+  # numbers were about twice these). One unit throughout: tokens per
+  # user+assistant PAIR of replayed history. A pair is a short user turn (~50)
+  # plus an assistant reply near the session.history_max_chars_per_entry cap
+  # (1000 chars ~250) plus the "(Recommended: ...)" titles line (~30) plus
+  # chat-template markers (~10) ~340. Heaviest call of a turn is classify+parse
+  # (the long system prompt, 4760 chars with the genre list ~1.2k):
+  # 1.2k system + 6 pairs ~2.0k + the latest set's facts block ~0.3k (see
+  # below) + current message ~0.05k + JSON reply ~0.2k = ~3.8k of 6144, ~2.3k
+  # of headroom. The explanation call is lighter (~3.3k: 0.23k system +
+  # history + facts + 5 movies x (~15 + 50) ~0.4k + ~0.3k answer).
+  # The window is generous now, but it is NOT a hard guarantee: if both
+  # entries of every pair hit the 1000-char cap a pair is ~540 tokens, history
+  # ~3.2k and classify+parse ~5.0k (~1.1k headroom); at 3.5 chars/token
+  # (titles, names and JSON tokenize worse than prose) that case is ~5.7k,
+  # inside the window but past the 90% context warning. The current message
+  # has no character cap. The per-call log (`Ollama call=... prompt_tokens=`)
+  # gives the measured figure: re-size from it, not from this estimate.
   #
-  # The ~5.5k above predates grounding follow-ups in the shown movies: the
-  # latest recommendation set is now also replayed as a facts block
-  # (session.history_movie_description_chars): 5 movies x ~(70 description +
-  # 15 meta) tokens ~0.4k, minus the ~0.05k titles-only line it replaces, so
-  # the real heavy-use total is ~5.9k with only ~0.25k headroom. Older sets
-  # stay titles-only precisely to keep this to ONE block; do not replay facts
-  # for every past set without raising this value.
+  # Facts block: the latest recommendation set is replayed to the model as
+  # facts (session.history_movie_description_chars): 5 movies x (200 chars ~50
+  # + ~15 title/year/genres/runtime) ~0.33k, minus the ~0.03k titles-only line
+  # it replaces, so ~+0.3k. Older sets stay titles-only precisely to keep this
+  # to ONE block; do not replay facts for every past set without re-checking
+  # this budget.
   #
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
   # of extra VRAM (see the budget in the header -- on estimate it is now over
-  # 11 GB).
+  # 11 GB). Each 1024 tokens of window is ~0.15 GB, so with the headroom above
+  # a smaller value is the first lever if the card does not fit; measure the
+  # prompt sizes first.
   #
   # Keep this ONE value for every call (structured and generation alike --
   # see temperature below). Ollama reloads the model whenever the
@@ -126,8 +139,8 @@ llm:
 
   # Characters of each movie's description put into the explanation prompt
   # (the `[[n]]` movie list the model writes its per-movie text from). Same
-  # size as session.history_movie_description_chars on purpose: ~50-70 tokens
-  # per movie, enough premise for the model to say why it fits without
+  # size as session.history_movie_description_chars on purpose: ~50 tokens
+  # per movie (English, ~4 chars/token), enough premise for the model to say why it fits without
   # inflating a prompt that is already budgeted against llm.num_ctx. Minimum 1.
   explanation_description_chars: 200
 
@@ -302,10 +315,14 @@ session:
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
-  # this bounds the prompt: 6 pairs is sized so a heavy-use prompt (~5.9k
-  # tokens, including the latest set's facts block -- see llm.num_ctx) fits
-  # the 6144-token window with ~0.25k headroom. If you raise this, raise
-  # llm.num_ctx too (and pay the extra KV-cache VRAM). Minimum 1: 0 does NOT
+  # this bounds the prompt: with 6 pairs a heavy-use prompt (~3.8k tokens
+  # for English text, including the latest set's facts block -- see
+  # llm.num_ctx for the derivation) fits the 6144-token window with ~2.3k
+  # headroom, and the all-entries-at-the-cap case (~5.0k) still fits. The
+  # window is roomy enough that a pair or two more would fit without touching
+  # llm.num_ctx (each pair is ~0.34k typical, ~0.54k at the cap); check the
+  # logged prompt_tokens first, and raise llm.num_ctx with it for more
+  # (paying the extra KV-cache VRAM). Minimum 1: 0 does NOT
   # mean unlimited, and settings.py refuses to load a value below 1.
   history_max_turns: 6
   # Second, independent safety net: caps a single history entry's replayed
@@ -317,9 +334,9 @@ session:
   # recommendation turn (title, year, genres, runtime, description). Only the
   # LATEST shown set is replayed to the model (older ones stay titles-only),
   # so this is paid once per prompt: diversification.top_n (5) x (~200 chars
-  # description ~50-70 tokens + ~15 tokens of title/year/genres/runtime) ~0.4k
+  # description ~50 tokens + ~15 tokens of title/year/genres/runtime) ~0.33k
   # tokens, which is why it is 200 and not the full TMDB overview (500+ chars
-  # would cost ~0.8k and eat the whole llm.num_ctx headroom). 200 chars is
+  # would cost ~0.7k and take a third of the llm.num_ctx headroom). 200 chars is
   # enough for a follow-up like "what is the second one about?" to be answered
   # from the catalog, not from the model's memory. This is a storage-time cap:
   # lowering it only affects turns stored afterwards. Minimum 1.

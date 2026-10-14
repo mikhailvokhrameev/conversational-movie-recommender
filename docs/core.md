@@ -145,7 +145,7 @@ rather than failing.
 forwards it) also receive the session's conversation `history` and build a native
 multi-turn Ollama `messages` array from it via `_build_chat_messages()` (system prompt +
 capped history window + the current turn), so short follow-ups like "another one" or
-"давай" resolve against what was actually said instead of a flattened summary. An
+"yes please" resolve against what was actually said instead of a flattened summary. An
 assistant entry for a recommendation turn carries `movies` (titles) and `movie_facts`
 (title, year, genres, runtime and a description cut to
 `session.history_movie_description_chars` = 200, built by
@@ -163,10 +163,13 @@ window is capped by `session.history_max_turns` (6 user/assistant pairs) and
 `session.history_max_chars_per_entry` (1000) in `params.yaml` (both minimum 1 --
 `settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and every
 Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived
-session's prompt stays bounded: a heavy-use prompt (system prompt + 6 history pairs at
-~500 tokens/pair + current turn with movie context + answer) is ~5.5k tokens, plus
-~0.4k for the latest facts block: ~5.9k, ~0.25k headroom. This is a budget, not a guard -- if a prompt ever did exceed `num_ctx`,
-Ollama silently truncates it from the start (dropping the system prompt and oldest turns
+session's prompt stays bounded. For English text (assumption: ~4 chars/token) the
+heaviest call, classify+parse, comes to ~3.8k tokens in heavy use (system prompt ~1.2k +
+6 history pairs at ~340 tokens/pair + ~0.3k for the latest facts block + current message
++ JSON reply), ~2.3k of headroom; with every history entry at the 1000-char cap it is
+~5.0k. The derivation is in the `llm.num_ctx` comment in `params.yaml`; the logged
+`prompt_tokens` (below) is the measured figure. This is a budget, not a guard -- if a
+prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start (dropping the system prompt and oldest turns
 first) with no error. All calls must use the same `num_ctx` (one helper,
 `_ollama_options(kind)`, feeds every payload), because a differing value makes Ollama
 reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
