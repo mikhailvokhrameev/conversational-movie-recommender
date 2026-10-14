@@ -33,6 +33,7 @@ Thumbs.db
 *.md
 !README.md
 !docs/*.md
+!docs/adr/*.md
 
 # Node
 node_modules/

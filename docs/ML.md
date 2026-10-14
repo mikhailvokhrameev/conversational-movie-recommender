@@ -4,6 +4,10 @@ This document explains the reasoning behind each ML decision in the
 recommendation pipeline. It covers what was chosen, what was considered,
 and what the evaluation results show.
 
+The decisions themselves are summarised, one short record each, in the
+[ADR index](adr/README.md). The catalog the system searches is described in the
+[catalog datasheet](datasheet.md).
+
 ## System Architecture
 
 This is a retrieval-augmented recommendation system, not standard RAG.
@@ -191,7 +195,7 @@ are not comparable quantities, and normalizing them against each other would
 be inventing a relationship that does not exist. RRF fuses by *rank*
 (`weight / (60 + rank)`), which is scale-free by construction. Note the
 contrast with hybrid scoring below, which uses min-max normalization instead:
-there, all three signals rank the same pool and their magnitudes are
+there, all four signals rank the same pool and their magnitudes are
 meaningful, so discarding magnitude would lose real information.
 
 **Channel weights**: semantic 1.0, lexical 0.7. Semantic carries signal for
@@ -199,7 +203,7 @@ every query; lexical only when the user names something. The weighting means
 lexical loses ties rather than being suppressed.
 
 **Interaction with reranking**: fusion decides which candidates enter the
-pool, not the final order -- the three-signal scorer has no lexical term, so
+pool, not the final order -- the four-signal scorer has no lexical term, so
 a movie retrieved purely on an exact title match would enter the pool and
 then rank low. The cross-encoder reranker closes that gap: it reads the query
 and the movie text together, so a literal title match scores highly on
@@ -238,7 +242,7 @@ by numerical noise. Pre-normalization values are retained per candidate under
 This is deliberately a different technique from the RRF used to fuse the two
 retrieval channels above. Retrieval fuses incomparable scores across
 independent systems, where only rank is trustworthy. Scoring ranks one shared
-pool with three commensurable signals, where magnitude is real information
+pool with four commensurable signals, where magnitude is real information
 worth keeping.
 
 **Weight tuning**: Pre-swap grid search (old Okko catalog, old embedder,
