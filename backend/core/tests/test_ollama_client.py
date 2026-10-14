@@ -13,6 +13,7 @@ from core.ollama_client import (
     _normalize_genres,
     _build_chat_messages,
     aclassify_and_parse,
+    astream_conversational,
     check_explanation_titles,
     CATALOG_GENRES,
     MessageIntent,
@@ -35,6 +36,39 @@ def _mock_ollama_responses(*contents):
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.post = AsyncMock(side_effect=responses)
+    return mock_client
+
+
+class _FakeStreamResponse:
+    def __init__(self, lines):
+        self._lines = lines
+        self.raise_for_status = MagicMock()
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeStreamContextManager:
+    def __init__(self, response):
+        self._response = response
+
+    async def __aenter__(self):
+        return self._response
+
+    async def __aexit__(self, *args):
+        return False
+
+
+def _mock_streaming_client(lines):
+    """Patch httpx.AsyncClient so client.stream(...) yields the given raw
+    NDJSON lines (each already a JSON string, matching Ollama's streaming
+    wire format)."""
+    response = _FakeStreamResponse(lines)
+    mock_client = AsyncMock()
+    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client.__aexit__ = AsyncMock(return_value=False)
+    mock_client.stream = MagicMock(return_value=_FakeStreamContextManager(response))
     return mock_client
 
 
@@ -510,4 +544,40 @@ class TestBuildChatMessages:
             {"role": "system", "content": "SYS"},
             {"role": "user", "content": "valid"},
             {"role": "user", "content": "now"},
+        ]
+
+
+class TestStreamConversationalHistory:
+    @pytest.mark.asyncio
+    async def test_history_included_in_streamed_request(self):
+        lines = [json.dumps({"message": {"content": "Sure thing"}})]
+        mock_client = _mock_streaming_client(lines)
+        history = [
+            {"role": "user", "content": "порекомендуй триллер"},
+            {"role": "assistant", "content": "Вот Прибытие", "movies": ["Прибытие"]},
+        ]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            tokens = [t async for t in astream_conversational("давай", history)]
+
+        assert "".join(tokens) == "Sure thing"
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert sent_messages[0]["role"] == "system"
+        assert sent_messages[1] == {"role": "user", "content": "порекомендуй триллер"}
+        assert sent_messages[2]["content"] == "Вот Прибытие\n\n(Recommended: Прибытие)"
+        assert sent_messages[-1] == {"role": "user", "content": "давай"}
+
+    @pytest.mark.asyncio
+    async def test_no_history_argument_defaults_to_empty(self):
+        lines = [json.dumps({"message": {"content": "Hi!"}})]
+        mock_client = _mock_streaming_client(lines)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            tokens = [t async for t in astream_conversational("hi")]
+
+        assert "".join(tokens) == "Hi!"
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert sent_messages == [
+            {"role": "system", "content": sent_messages[0]["content"]},
+            {"role": "user", "content": "hi"},
         ]

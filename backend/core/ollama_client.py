@@ -95,15 +95,13 @@ User: "a highly rated 90s Korean thriller"
 {{"category": "new_search", "semantic_query": "a thriller", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
 """
 
-CONVERSATIONAL_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
-{context}
+CONVERSATIONAL_SYSTEM_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
 
 Rules:
 - Always respond in English
 - If the user asks about anything unrelated to movies or cinema, politely redirect: say you are a movie assistant and suggest discussing films instead
 - Be concise, friendly, and knowledgeable about cinema
-
-User: "{message}"
+- Use the conversation history above to understand what the user is referring to, especially short replies like agreements or follow-up questions
 """
 
 INTENT_PROMPT = """You are a movie intent parser. Given a user query, return a JSON object.
@@ -555,6 +553,15 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
 # --- Low-level Ollama call (shared by ollama_client and evaluation) ---
 
 
+def _stream_chat_payload(messages: list[dict]) -> dict:
+    return {
+        "model": settings.OLLAMA_MODEL,
+        "messages": messages,
+        "stream": True,
+        "think": settings.OLLAMA_THINKING,
+    }
+
+
 def _chat_sync(messages: list[dict], json_mode: bool = False, timeout: float = 60.0) -> str:
     """Send a chat request to Ollama and return the response content string."""
     payload = {
@@ -703,23 +710,22 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     return intent
 
 
-async def astream_conversational(message: str, context: str = ""):
+async def astream_conversational(message: str, history: list[dict] | None = None):
     """Stream a conversational response (no movie search). Yields tokens."""
-    prompt = CONVERSATIONAL_PROMPT.format(
-        message=message,
-        context=context if context else "You are chatting casually. No movie context available.",
+    history = history or []
+    messages = _build_chat_messages(
+        history=history,
+        system_prompt=CONVERSATIONAL_SYSTEM_PROMPT,
+        current_content=message,
+        max_turns=settings.SESSION_HISTORY_MAX_TURNS,
+        max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
                 f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json={
-                    "model": settings.OLLAMA_MODEL,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": True,
-                    "think": settings.OLLAMA_THINKING,
-                },
+                json=_stream_chat_payload(messages),
                 timeout=settings.OLLAMA_TIMEOUTS["explanation"],
             ) as response:
                 response.raise_for_status()
