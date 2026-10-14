@@ -20,7 +20,9 @@ from core.ollama_client import (
 )
 from core.reranking import rerank_candidates
 from core.scoring import mmr_diversify, score_candidates
-from core.session_manager import track_explicit_preferences, update_preference_vector
+from core.session_manager import (
+    track_explicit_preferences, update_preference_vector, vector_for_scoring,
+)
 from .models import ChatSession, Movie
 
 logger = logging.getLogger(__name__)
@@ -69,15 +71,22 @@ async def _get_or_create_session(session_id: str | None, token: str) -> ChatSess
 
 @sync_to_async(thread_sensitive=False)
 def _save_session(session: ChatSession, query: str, intent: dict,
-                  query_embedding: list[float], movies: list[dict], category: str):
+                  query_embedding: list[float], movies: list[dict], category: str,
+                  preference_vector: list[float] | None = None):
+    """`preference_vector`, when given, is stored as-is: it is the vector the
+    turn was already scored with (see `vector_for_scoring`), so what is saved
+    can never diverge from what was scored. Otherwise the EMA is applied here."""
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
-        alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
-        fresh.preference_vector = update_preference_vector(
-            [float(x) for x in fresh.preference_vector] if fresh.preference_vector is not None else None,
-            query_embedding,
-            alpha=alpha,
-        )
+        if preference_vector is not None:
+            fresh.preference_vector = preference_vector
+        else:
+            alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
+            fresh.preference_vector = update_preference_vector(
+                [float(x) for x in fresh.preference_vector] if fresh.preference_vector is not None else None,
+                query_embedding,
+                alpha=alpha,
+            )
         fresh.preferences = track_explicit_preferences(fresh.preferences, intent)
         fresh.history = list(fresh.history) + [{"role": "user", "content": query}]
         fresh.turn_count += 1
@@ -149,7 +158,9 @@ class ChatView(View):
 
     async def _handle_search_like(self, session, message, intent, classify_parse_ms):
         """Handles both `new_search` and `refinement`: identical pipeline, differing
-        only in the EMA alpha `_save_session` picks based on `intent.category`."""
+        only in the preference vector used for scoring and saved (see
+        `vector_for_scoring`): a refinement scores against the already-updated
+        high-alpha vector, a new_search against the pre-turn one."""
         # Captured before _save_session/_append_history run below -- both write
         # via a separately-fetched row and never mutate this in-memory `session`,
         # so this deliberately reflects history *before* this turn: the current
@@ -162,14 +173,21 @@ class ChatView(View):
             embed_ms = (time.perf_counter() - t_embed) * 1000
 
             intent_dict = intent.model_dump(exclude={"category", "semantic_query"})
-            session_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
+            current_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
+            session_vector = vector_for_scoring(current_vector, query_embedding, intent.category)
 
             t_score = time.perf_counter()
             top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, session_vector, query_text=message)
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]
-            await _save_session(session, message, intent_dict, query_embedding, top_movies, category=intent.category)
+            # Only a refinement scores with an already-updated vector; store that
+            # exact one. A new_search scored with the pre-turn vector, so
+            # _save_session applies the regular EMA update afterwards.
+            await _save_session(
+                session, message, intent_dict, query_embedding, top_movies, category=intent.category,
+                preference_vector=session_vector if intent.category == "refinement" else None,
+            )
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)

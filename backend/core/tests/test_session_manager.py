@@ -1,7 +1,40 @@
 import numpy as np
 import pytest
 
-from core.session_manager import update_preference_vector, track_explicit_preferences
+from django.conf import settings
+
+from core.session_manager import (
+    track_explicit_preferences, update_preference_vector, vector_for_scoring,
+)
+
+
+def _cosine(a, b):
+    a, b = np.array(a), np.array(b)
+    return float(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+class TestVectorForScoring:
+    def test_refinement_applies_refinement_alpha_before_scoring(self):
+        current = [1.0, 0.0, 0.0]
+        query = [0.0, 1.0, 0.0]
+        result = vector_for_scoring(current, query, "refinement")
+        expected = update_preference_vector(current, query, alpha=settings.SESSION_ALPHA_REFINEMENT)
+        assert result == pytest.approx(expected)
+
+    def test_refinement_vector_is_closer_to_query_than_old_vector(self):
+        current = [1.0, 0.0, 0.0]
+        query = [0.0, 1.0, 0.0]
+        result = vector_for_scoring(current, query, "refinement")
+        assert _cosine(result, query) > _cosine(current, query)
+
+    def test_new_search_returns_current_vector_unchanged(self):
+        current = [1.0, 0.0, 0.0]
+        result = vector_for_scoring(current, [0.0, 1.0, 0.0], "new_search")
+        assert result == current
+
+    def test_first_turn_without_vector_stays_none(self):
+        assert vector_for_scoring(None, [0.0, 1.0], "new_search") is None
+        assert vector_for_scoring(None, [0.0, 1.0], "refinement") is None
 
 
 class TestUpdatePreferenceVector:

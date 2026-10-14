@@ -156,6 +156,68 @@ class TestSaveSession:
 
 
 @pytest.mark.django_db
+class TestPreferenceVectorUsedForScoring:
+    @staticmethod
+    async def _run_turn(category, existing_vector, query_embedding):
+        from core.ollama_client import MessageIntent
+        from movies.models import ChatSession
+
+        session = await ChatSession.objects.acreate(preference_vector=existing_vector)
+        intent = MessageIntent(category=category, semantic_query="q")
+
+        async def _classify(message, history=None):
+            return intent
+
+        generate = AsyncMock(return_value=([], []))
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "q", "session_id": str(session.session_id)}),
+            content_type="application/json",
+            headers={"X-Session-Token": session.session_token},
+        )
+
+        async def _no_parts(query, movies, history=None):
+            return
+            yield
+
+        with patch("movies.views.aclassify_and_parse", _classify), \
+             patch("movies.views.encode_query", return_value=query_embedding), \
+             patch("movies.views._generate_and_score", generate), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views.astream_explanation_parts", _no_parts):
+            response = await ChatView.as_view()(request)
+            async for _ in response.streaming_content:
+                pass
+
+        await session.arefresh_from_db()
+        return generate.await_args.args[2], session
+
+    @pytest.mark.asyncio
+    async def test_refinement_scores_with_updated_vector_and_saves_the_same(self):
+        existing = [0.1] * 1024
+        query = [0.9] + [0.0] * 1023
+
+        scored, session = await self._run_turn("refinement", existing, query)
+
+        expected = update_preference_vector(existing, query, alpha=settings.SESSION_ALPHA_REFINEMENT)
+        assert list(scored) == pytest.approx(expected)
+        assert list(session.preference_vector) == pytest.approx(list(scored))
+
+    @pytest.mark.asyncio
+    async def test_new_search_scores_with_pre_turn_vector(self):
+        existing = [0.1] * 1024
+        query = [0.9] + [0.0] * 1023
+
+        scored, session = await self._run_turn("new_search", existing, query)
+
+        assert list(scored) == pytest.approx(existing)
+        assert list(session.preference_vector) == pytest.approx(
+            update_preference_vector(existing, query, alpha=settings.SESSION_ALPHA)
+        )
+
+
+@pytest.mark.django_db
 class TestSessionHistoryView:
     @pytest.mark.asyncio
     async def test_missing_token_returns_401(self):

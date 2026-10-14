@@ -302,13 +302,28 @@ then L2-normalized.
 
 **alpha_refinement = 0.92** (`session.alpha_refinement`): used instead of
 `alpha` on turns classified `refinement` ("something funnier?", "no horror").
-Hard
-filters (negations, exclusions) already drop disallowed genres from the
+Hard filters (negations, exclusions) already drop disallowed genres from the
 candidate pool outright, but the EMA vector still feeds the `session`
 scoring signal on whatever survives those filters -- at alpha=0.7, 30% of a
 strongly-aligned prior-turn direction could still bias that signal back
 toward what the user just corrected away from. The higher alpha makes an
 explicit refinement dominate the vector instead of blending.
+
+**Which vector scores the current turn**: `vector_for_scoring()`
+(`core/session_manager.py`) decides. On a `refinement` turn the high-alpha
+update is applied *before* scoring, so the `session` signal of that very turn
+already points at the correction -- applying it only when saving would have
+fixed the *next* turn and left this one scored against the stale direction.
+The saved vector is that same one (one formula, no divergence between what was
+scored and what was stored). On a `new_search` turn the pre-turn vector is used
+for scoring and the regular `alpha` update is applied afterwards when saving:
+the current query is already in the `semantic` signal, so folding it into the
+`session` signal as well would count it twice. On the first turn there is no
+vector yet, so the `session` signal is absent.
+
+**What feeds the vector**: only the `semantic_query` embedding of `new_search`
+and `refinement` turns. Movies shown or accepted, and `follow_up` /
+`general_chat` turns, do not change it.
 
 **Why EMA over simple averaging**: Simple averaging gives equal weight to all
 turns. An early exploratory query permanently dilutes the signal from a later

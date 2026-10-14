@@ -38,6 +38,27 @@ def update_preference_vector(
     return updated.tolist()
 
 
+def vector_for_scoring(
+    current_vector: list[float] | None,
+    query_embedding: list[float],
+    category: str,
+) -> list[float] | None:
+    """Preference vector the `session` scoring signal should use on this turn.
+
+    A refinement ("no horror", "something funnier") must steer the very turn it
+    is issued on, so the high-alpha EMA update is applied *before* scoring
+    rather than only afterwards. A new_search keeps the pre-turn vector: the
+    current query is already in the semantic signal, so folding it into the
+    session signal too would count it twice. With no vector yet (first turn)
+    there is nothing stale to correct, so None stays None.
+    """
+    if category != "refinement" or current_vector is None:
+        return current_vector
+    return update_preference_vector(
+        current_vector, query_embedding, alpha=settings.SESSION_ALPHA_REFINEMENT,
+    )
+
+
 def track_explicit_preferences(
     current_preferences: dict,
     intent: dict,
