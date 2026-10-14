@@ -5,14 +5,14 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from django.test import AsyncRequestFactory
 
-from core.ollama_client import MessageIntent, astream_explanation_parts
+from core.ollama_client import MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import ChatView, _generate_and_score
 
 
 def _mock_classify_and_parse(category, semantic_query="", **filters):
     intent = MessageIntent(category=category, semantic_query=semantic_query, **filters)
 
-    async def _classify(msg):
+    async def _classify(message, history=None):
         return intent
     return _classify
 
@@ -66,7 +66,7 @@ async def _empty_stream(*args, **kwargs):
     yield
 
 
-async def _empty_parts_stream(query, movies):
+async def _empty_parts_stream(query, movies, history=None):
     """Stand-in for astream_explanation_parts: same (slot, text) contract, no output."""
     return
     yield
@@ -74,7 +74,7 @@ async def _empty_parts_stream(query, movies):
 
 def _mock_explanation_parts(*parts):
     """Stand-in for astream_explanation_parts yielding the given (slot, text) pairs."""
-    async def _stream(query, movies):
+    async def _stream(query, movies, history=None):
         for part in parts:
             yield part
     return _stream
@@ -93,6 +93,14 @@ class TestMockContracts:
         assert list(mock.parameters) == list(real.parameters), (
             "_mock_generate_and_score is out of sync with movies.views."
             "_generate_and_score — update the mock to match the real signature"
+        )
+
+    def test_classify_and_parse_mock_matches_real_signature(self):
+        real = inspect.signature(aclassify_and_parse)
+        mock = inspect.signature(_mock_classify_and_parse("new_search"))
+        assert list(mock.parameters) == list(real.parameters), (
+            "_mock_classify_and_parse is out of sync with core.ollama_client."
+            "aclassify_and_parse — update the mock to match the real signature"
         )
 
     @pytest.mark.parametrize("mock", [_empty_parts_stream, _mock_explanation_parts()])
@@ -115,10 +123,12 @@ class TestChatSSENewSearch:
             content_type="application/json",
         )
 
+        append_history_mock = AsyncMock()
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
              patch("movies.views.encode_query", return_value=[0.1] * 1024), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
              patch("movies.views.astream_explanation_parts", _empty_parts_stream):
 
             view = ChatView.as_view()
@@ -136,6 +146,12 @@ class TestChatSSENewSearch:
             assert "event: done" in text
             assert "Test Film" in text
 
+        append_history_mock.assert_awaited_once()
+        call = append_history_mock.await_args
+        assert call.args[1] == "assistant"
+        assert call.kwargs["movies"] == ["Test Film"]
+        assert call.kwargs["count_turn"] is False
+
     @pytest.mark.asyncio
     async def test_embeds_semantic_query_not_raw_message(self):
         factory = AsyncRequestFactory()
@@ -150,6 +166,7 @@ class TestChatSSENewSearch:
              patch("movies.views.encode_query", encode_mock), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", AsyncMock()), \
              patch("movies.views.astream_explanation_parts", _empty_parts_stream):
 
             view = ChatView.as_view()
@@ -175,11 +192,13 @@ class TestChatSSENewSearch:
             (0, "Про первый фильм."),
             (1, "Про второй фильм."),
         )
+        append_history_mock = AsyncMock()
 
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
              patch("movies.views.encode_query", return_value=[0.1] * 1024), \
              patch("movies.views._generate_and_score", _mock_generate_and_score(_two_movies())), \
              patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
              patch("movies.views.astream_explanation_parts", parts):
 
             view = ChatView.as_view()
@@ -199,6 +218,44 @@ class TestChatSSENewSearch:
         ]
         assert "error" not in [e for e, _ in events]
 
+        # Stored as paragraphs (intro, then each description in slot order),
+        # not the raw concatenation of chunks.
+        append_history_mock.assert_awaited_once()
+        call = append_history_mock.await_args
+        assert call.args[1] == "assistant"
+        assert call.args[2] == "Вот подборка комедий.\n\nПро первый фильм.\n\nПро второй фильм."
+        assert call.kwargs["movies"] == ["Film 1", "Film 2"]
+
+    @pytest.mark.asyncio
+    async def test_assistant_turn_joins_intro_and_descriptions_with_blank_lines(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "хочу комедию"}),
+            content_type="application/json",
+        )
+        append_history_mock = AsyncMock()
+
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score()), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
+             patch("movies.views.astream_explanation_parts",
+                   _mock_explanation_parts((None, "Intro."), (0, "Desc one."))):
+
+            view = ChatView.as_view()
+            response = await view(request)
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+            events = _parse_sse(body.decode())
+
+        assert [d["text"] for e, d in events if e == "token"] == ["Intro."]
+        assert [(d["index"], d["text"]) for e, d in events if e == "blurb"] == [(0, "Desc one.")]
+        append_history_mock.assert_awaited_once()
+        assert append_history_mock.await_args.args[2] == "Intro.\n\nDesc one."
+
 
 @pytest.mark.django_db
 class TestChatSSEConversational:
@@ -211,8 +268,9 @@ class TestChatSSEConversational:
             content_type="application/json",
         )
 
+        append_history_mock = AsyncMock()
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("follow_up", semantic_query="расскажи подробнее")), \
-             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
              patch("movies.views.astream_conversational", _empty_stream):
 
             view = ChatView.as_view()
@@ -228,6 +286,13 @@ class TestChatSSEConversational:
             assert "event: done" in text
             assert "event: movies" not in text
 
+        assert append_history_mock.await_count == 2
+        user_call, assistant_call = append_history_mock.await_args_list
+        assert user_call.args[1] == "user"
+        assert user_call.args[2] == "расскажи подробнее"
+        assert assistant_call.args[1] == "assistant"
+        assert assistant_call.kwargs == {"count_turn": False}
+
     @pytest.mark.asyncio
     async def test_general_chat_returns_text_only(self):
         factory = AsyncRequestFactory()
@@ -237,8 +302,9 @@ class TestChatSSEConversational:
             content_type="application/json",
         )
 
+        append_history_mock = AsyncMock()
         with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("general_chat", semantic_query="привет")), \
-             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
              patch("movies.views.astream_conversational", _empty_stream):
 
             view = ChatView.as_view()
@@ -252,6 +318,8 @@ class TestChatSSEConversational:
             text = body.decode()
             assert "event: session" in text
             assert "event: movies" not in text
+
+        assert append_history_mock.await_count == 2
 
 
 @pytest.mark.django_db
@@ -269,6 +337,7 @@ class TestChatSSERefinement:
              patch("movies.views.encode_query", return_value=[0.1] * 1024), \
              patch("movies.views._generate_and_score", _mock_generate_and_score()), \
              patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", AsyncMock()), \
              patch("movies.views.astream_explanation_parts", _empty_parts_stream):
 
             view = ChatView.as_view()

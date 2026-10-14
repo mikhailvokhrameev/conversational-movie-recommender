@@ -118,14 +118,6 @@ def _log_turn_latency(category, **stage_ms):
     )
 
 
-def _last_movies_context(session: ChatSession) -> str:
-    for entry in reversed(session.history):
-        movies = entry.get("movies")
-        if movies:
-            return "Recently recommended movies: " + ", ".join(movies) + "."
-    return ""
-
-
 class ChatView(View):
     async def post(self, request):
         try:
@@ -144,7 +136,7 @@ class ChatView(View):
             token = request.headers.get("X-Session-Token", "")
             session = await _get_or_create_session(session_id, token)
             t0 = time.perf_counter()
-            intent = await aclassify_and_parse(message)
+            intent = await aclassify_and_parse(message, session.history)
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
             logger.exception("ChatView classification error")
@@ -158,6 +150,12 @@ class ChatView(View):
     async def _handle_search_like(self, session, message, intent, classify_parse_ms):
         """Handles both `new_search` and `refinement`: identical pipeline, differing
         only in the EMA alpha `_save_session` picks based on `intent.category`."""
+        # Captured before _save_session/_append_history run below -- both write
+        # via a separately-fetched row and never mutate this in-memory `session`,
+        # so this deliberately reflects history *before* this turn: the current
+        # message/movies are added as the final turn by astream_explanation_parts
+        # itself, and including them here too would duplicate them.
+        history = session.history
         try:
             t_embed = time.perf_counter()
             query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
@@ -192,20 +190,35 @@ class ChatView(View):
             })
             has_tokens = False
             explanation_parts = []
+            intro_parts = []
+            slot_parts = {}
             t_explain = time.perf_counter()
             # The opening line keeps the plain "token" wire format so it streams
             # live under the existing caret; each per-movie description goes out
             # as a "blurb" addressed to the card it belongs to.
-            async for slot, text in astream_explanation_parts(message, movies_for_llm):
+            async for slot, text in astream_explanation_parts(message, movies_for_llm, history):
                 has_tokens = True
                 explanation_parts.append(text)
                 if slot is None:
+                    intro_parts.append(text)
                     yield _sse_event("token", {"text": text})
                 else:
+                    slot_parts.setdefault(slot, []).append(text)
                     yield _sse_event("blurb", {"index": slot, "text": text})
             explain_ms = (time.perf_counter() - t_explain) * 1000
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
+
+            # Intro and each per-movie description are joined with blank lines
+            # (in slot order) so the stored turn reads as separate paragraphs
+            # rather than blurbs glued together.
+            assistant_blocks = ["".join(intro_parts)] + [
+                "".join(slot_parts[slot]) for slot in sorted(slot_parts)
+            ]
+            await _append_history(
+                session, "assistant", "\n\n".join(b for b in assistant_blocks if b),
+                movies=top_titles, count_turn=False,
+            )
 
             suspicious = check_explanation_titles("".join(explanation_parts), top_titles, candidate_titles)
             if suspicious:
@@ -223,18 +236,22 @@ class ChatView(View):
         )
 
     async def _handle_conversational(self, session, message, category, classify_parse_ms):
-        context = ""
-        if category == "follow_up":
-            context = _last_movies_context(session)
+        # See the matching comment in _handle_search_like: captured before the
+        # user-turn _append_history call below, which writes via a separately-
+        # fetched row and doesn't mutate this in-memory `session`.
+        history = session.history
 
         await _append_history(session, "user", message)
 
         async def event_stream():
             yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
             t_explain = time.perf_counter()
-            async for token in astream_conversational(message, context):
+            reply_parts = []
+            async for token in astream_conversational(message, history):
+                reply_parts.append(token)
                 yield _sse_event("token", {"text": token})
             explain_ms = (time.perf_counter() - t_explain) * 1000
+            await _append_history(session, "assistant", "".join(reply_parts), count_turn=False)
             _log_turn_latency(category, classify_parse_ms=classify_parse_ms, explain_ms=explain_ms)
             yield _sse_event("done", {})
 
