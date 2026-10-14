@@ -48,13 +48,15 @@ CATALOG_GENRES = [
     "Romance", "Science Fiction", "TV Movie", "Thriller", "War", "Western",
 ]
 
-CLASSIFY_AND_PARSE_PROMPT = """You are a message classifier and intent parser for a movie recommendation chatbot. Given a user message, return ONE JSON object with all of the fields below.
+CLASSIFY_AND_PARSE_SYSTEM_PROMPT = """You are a message classifier and intent parser for a movie recommendation chatbot. Given the conversation so far and the user's latest message, return ONE JSON object with all of the fields below.
 
 Categories (put the best match in "category"):
 - "new_search": user wants movie recommendations (e.g. "I want a comedy", "show me thrillers", "what should I watch")
 - "follow_up": user asks about previously recommended movies (e.g. "tell me about the first one", "who directed that?", "what's it about?")
 - "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
 - "general_chat": greetings, thanks, questions about the bot (e.g. "hi", "thanks", "how do you work?")
+
+The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the conversation history above it, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
 
 ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
@@ -91,9 +93,6 @@ User: "hi"
 Example:
 User: "a highly rated 90s Korean thriller"
 {{"category": "new_search", "semantic_query": "a thriller", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
-
-Now parse this message:
-User: "{message}"
 """
 
 CONVERSATIONAL_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
@@ -511,18 +510,26 @@ def _intent_payload(query: str) -> dict:
     }
 
 
-def _classify_and_parse_payload(message: str, repair_note: str | None = None) -> dict:
-    content = CLASSIFY_AND_PARSE_PROMPT.format(
-        message=message, genres=", ".join(CATALOG_GENRES)
-    )
+def _classify_and_parse_payload(
+    message: str, history: list[dict], repair_note: str | None = None
+) -> dict:
+    system_prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(genres=", ".join(CATALOG_GENRES))
+    current_content = message
     if repair_note:
-        content += (
+        current_content += (
             f"\n\nYour previous response was invalid: {repair_note}\n"
             "Return ONLY a single valid JSON object matching the schema above."
         )
+    messages = _build_chat_messages(
+        history=history,
+        system_prompt=system_prompt,
+        current_content=current_content,
+        max_turns=settings.SESSION_HISTORY_MAX_TURNS,
+        max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
+    )
     return {
         "model": settings.OLLAMA_MODEL,
-        "messages": [{"role": "user", "content": content}],
+        "messages": messages,
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
@@ -638,11 +645,13 @@ def is_available() -> bool:
 # --- Async API (for Django async views) ---
 
 
-async def _request_classify_and_parse(message: str, repair_note: str | None = None) -> dict:
+async def _request_classify_and_parse(
+    message: str, history: list[dict], repair_note: str | None = None
+) -> dict:
     async with httpx.AsyncClient() as client:
         response = await client.post(
             f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json=_classify_and_parse_payload(message, repair_note=repair_note),
+            json=_classify_and_parse_payload(message, history, repair_note=repair_note),
             timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
         )
         response.raise_for_status()
@@ -653,7 +662,7 @@ def _fallback_message_intent(message: str) -> MessageIntent:
     return MessageIntent(category="new_search", semantic_query=message)
 
 
-async def aclassify_and_parse(message: str) -> MessageIntent:
+async def aclassify_and_parse(message: str, history: list[dict] | None = None) -> MessageIntent:
     """Classify the message and extract structured intent in a single call.
 
     Replaces the old two-call aclassify_message + aparse_intent sequence used
@@ -667,8 +676,9 @@ async def aclassify_and_parse(message: str) -> MessageIntent:
     category="new_search" with empty filters, same as the old classify
     default -- semantic search still works without parsed intent.
     """
+    history = history or []
     try:
-        raw = await _request_classify_and_parse(message)
+        raw = await _request_classify_and_parse(message, history)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Classify+parse request failed, using fallback: {e}")
         return _fallback_message_intent(message)
@@ -678,7 +688,7 @@ async def aclassify_and_parse(message: str) -> MessageIntent:
     except ValidationError as e:
         logger.warning(f"Classify+parse validation failed, retrying with repair: {e}")
         try:
-            repaired = await _request_classify_and_parse(message, repair_note=str(e))
+            repaired = await _request_classify_and_parse(message, history, repair_note=str(e))
             intent = MessageIntent.model_validate(repaired)
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValidationError) as e2:
             logger.warning(f"Classify+parse repair failed, using fallback: {e2}")

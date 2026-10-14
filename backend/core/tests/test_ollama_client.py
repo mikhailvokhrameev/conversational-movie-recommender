@@ -146,6 +146,41 @@ class TestClassifyAndParse:
         assert result.negations == ["ХОРРОР"]
 
 
+    @pytest.mark.asyncio
+    async def test_history_is_included_in_request_messages(self):
+        content = json.dumps({"category": "follow_up", "semantic_query": "давай"})
+        mock_client = _mock_ollama_responses(content)
+        history = [
+            {"role": "user", "content": "порекомендуй триллер"},
+            {"role": "assistant", "content": "Вот Прибытие", "movies": ["Прибытие"]},
+        ]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            await aclassify_and_parse("давай", history)
+
+        sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
+        assert sent_messages[0]["role"] == "system"
+        assert sent_messages[1] == {"role": "user", "content": "порекомендуй триллер"}
+        assert sent_messages[2]["content"] == "Вот Прибытие\n\n(Recommended: Прибытие)"
+        assert sent_messages[-1] == {"role": "user", "content": "давай"}
+
+    @pytest.mark.asyncio
+    async def test_no_history_argument_defaults_to_empty(self):
+        content = json.dumps({"category": "new_search", "semantic_query": "q"})
+        mock_client = _mock_ollama_responses(content)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("q")
+
+        sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
+        assert sent_messages[0]["role"] == "system"
+        assert sent_messages[1] == {"role": "user", "content": "q"}
+        assert len(sent_messages) == 2
+        assert result.category == "new_search"
+
+
 class TestCheckExplanationTitles:
     def test_no_suspicious_titles_when_only_top_titles_mentioned(self):
         explanation = "Рекомендую Фильм А, отличная драма."
