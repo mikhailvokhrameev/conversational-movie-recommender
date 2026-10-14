@@ -58,6 +58,57 @@ class Movie(models.Model):
         return self.serial_name
 
 
+class EmbeddingIndex(models.Model):
+    """What built the vectors in Movie.embedding: a single row, pk always 1.
+
+    Same-width vectors from another model or another movie text are not
+    comparable with query vectors and nothing in the data shows it, so
+    generate_embeddings writes this row and check_embedding_index compares it
+    with params.yaml (see core.embedding_provenance). The columns mirror
+    current_provenance(); a new recorded field is a column here plus a key there.
+    """
+
+    SINGLETON_PK = 1
+
+    model_name = models.CharField(max_length=255)
+    dimensions = models.PositiveIntegerField()
+    text_version = models.PositiveIntegerField()
+    text_config = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(pk=1), name="embedding_index_single_row"
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.pk = self.SINGLETON_PK
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def stored(cls) -> dict | None:
+        """The recorded provenance in current_provenance()'s shape, or None."""
+        row = cls.objects.filter(pk=cls.SINGLETON_PK).first()
+        if row is None:
+            return None
+        return {
+            "model_name": row.model_name,
+            "dimensions": row.dimensions,
+            "text_version": row.text_version,
+            "text_config": row.text_config,
+        }
+
+    @classmethod
+    def record(cls, provenance: dict) -> None:
+        """Create or overwrite the single row with `provenance`."""
+        cls.objects.update_or_create(pk=cls.SINGLETON_PK, defaults=provenance)
+
+    def __str__(self):
+        return f"{self.model_name} ({self.dimensions}d, text v{self.text_version})"
+
+
 class ChatSession(models.Model):
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     session_token = models.CharField(max_length=64, default=generate_token, db_index=True)
