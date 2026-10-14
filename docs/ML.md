@@ -54,6 +54,14 @@ mix vector spaces); `--all` re-embeds the whole catalog and refreshes the record
 built before the record existed is "legacy": `generate_embeddings --adopt` records the
 current config without re-embedding (you assert the vectors were built with it).
 
+`embedding.revision` (the Hugging Face commit the weights are downloaded at) is part of
+the record too, with one difference from the other fields: a revision is compared only
+when both the recorded and the configured value are set. A null on either side (an index
+recorded before pinning existed, or `revision: null` = unpinned) is reported as a warning
+by `check_embedding_index` and does not stop start-up or `generate_embeddings`; two
+different pins are a mismatch like any other. `generate_embeddings --all` records the
+configured revision.
+
 > **Changing `embedding.model` or `embedding.dimensions` is not a config tweak.**
 > `dimensions` is baked into the `Movie.embedding` and `ChatSession.preference_vector`
 > pgvector columns, so either change requires a schema migration *and* a full
@@ -89,7 +97,9 @@ Ollama build that ignores the flag degrades to slower rather than broken.
    returns the message category plus genres, mood, themes, negations, reference
    films, country exclusions/inclusions, min vote average, min/max release year,
    min/max runtime, and original languages, validated against a Pydantic schema
-   with a repair retry on invalid JSON. Uses JSON mode for structured output.
+   with a repair retry on invalid JSON. Sends a JSON schema derived from the Pydantic
+   model as Ollama's `format` (structured outputs), so decoding is constrained to the
+   schema; validation and the repair retry stay as the guard.
 2. **Explanation generation**: writes explanations of why each recommended
    movie matches the query (RAG pattern).
 
@@ -98,6 +108,13 @@ Ollama build that ignores the flag degrades to slower rather than broken.
 maps LLM output to exact catalog genre names (TMDB's 19-genre taxonomy) by
 cosine similarity. Threshold is `intent.genre_match_threshold` in `params.yaml`
 (default 0.5).
+
+**Observability**: each Ollama call logs token counts, Ollama's own prompt/eval
+timings and (streamed calls) the client-side time to first token, and the digest of
+the served model is logged once per process -- the `qwen3:8b` tag is mutable and cannot
+be pinned by digest in `ollama pull`. A warning fires when a prompt reaches 90% of
+`llm.num_ctx`. Details in [core.md](core.md); what is and is not pinned in
+[infrastructure.md](infrastructure.md#reproducibility).
 
 **Fallback**: When Ollama is unavailable, `aclassify_and_parse` falls back to
 an empty intent. Semantic search via embeddings still works without parsed
@@ -238,7 +255,9 @@ must sum to 1.0. That file is the only place they can be changed.
 ## Cross-Encoder Reranking
 
 **Choice**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 50 scored
-candidates, blended 50/50 with the scorer total.
+candidates, blended 50/50 with the scorer total. The weights are downloaded at the
+commit pinned in `reranking.revision`, so a re-download cannot change the scores the
+blend and the `min_score` gate were calibrated on.
 
 **Why rerank at all**: the scorer is a bi-encoder comparison -- query vector
 against movie vector, each computed without ever seeing the other. A

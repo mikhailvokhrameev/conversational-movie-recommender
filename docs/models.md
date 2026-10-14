@@ -51,6 +51,7 @@ The row's pk is always 1 (`save()` forces it and a check constraint enforces it)
 |-------|------|-------|
 | `model_name` | CharField(255) | `embedding.model` at embed time |
 | `dimensions` | PositiveIntegerField | `embedding.dimensions` at embed time |
+| `revision` | CharField(64) | nullable; `embedding.revision` (Hugging Face commit) at embed time. Null = built unpinned or before this was recorded; a null on either side of the comparison is a warning, not a mismatch |
 | `text_version` | PositiveIntegerField | `EMBEDDING_TEXT_VERSION` of the text template |
 | `text_config` | JSONField | `embedding.text` values (`description_chars`, `max_keywords`) |
 | `updated_at` | DateTimeField | Auto-updated |

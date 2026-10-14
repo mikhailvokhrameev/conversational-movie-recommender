@@ -32,7 +32,9 @@ The system runs as 4 Docker services via `docker compose up`:
 
 ### ollama (LLM inference)
 
-- **Image**: custom, built from `ollama/Dockerfile`
+- **Image**: custom, built from `ollama/Dockerfile` on top of `ollama/ollama:0.34.2`
+  (pinned; the server version decides which API features exist -- `think`, JSON-schema
+  `format` -- see Reproducibility)
 - **Port**: 11434 (Ollama default)
 - **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
   readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
@@ -41,8 +43,13 @@ The system runs as 4 Docker services via `docker compose up`:
   default qwen3:8b, Q4_K_M)
 - **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
   Profiles for running without one
-- **Health check**: `ollama --version`
-- **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on entrypoint for Windows compatibility
+- **Health check**: `ollama/healthcheck.sh` -- healthy only once `ollama show` finds the
+  model named by `llm.model` (read from the mounted `params.yaml` by the same
+  `llm_model.sh` helper the entrypoint uses), not merely once the server answers. The
+  backend waits for `healthy`, so it no longer starts while the first pull is still
+  running. `start_period` is 900s so a slow first download does not exhaust the retries;
+  a warm model volume turns healthy on the first passing check.
+- **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on the shell scripts for Windows compatibility
 
 ### backend (Django REST Framework)
 
@@ -85,12 +92,12 @@ overridable by an environment variable -- change the file and restart.
 
 | Section | Covers |
 |---------|--------|
-| `llm` | Ollama model, base URL, context window (`num_ctx`), sampling (`temperature`, `seed`), per-call timeouts |
-| `embedding` | Embedding model and vector dimensions |
+| `llm` | Ollama model, base URL, context window (`num_ctx`), sampling (`temperature`, `seed`), explanation description cap, per-call timeouts |
+| `embedding` | Embedding model, its Hugging Face revision, and vector dimensions |
 | `retrieval` | Candidate count, RRF constants, lexical search settings |
-| `scoring` | Signal weights, neutral score |
+| `scoring` | Signal weights (non-negative, sum to 1.0, checked at load), neutral score |
 | `diversification` | MMR top_n and lambda |
-| `reranking` | Cross-encoder model, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
+| `reranking` | Cross-encoder model and revision, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
 | `session` | EMA alpha, session TTL, LLM history replay caps |
 | `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
 | `intent` | Genre-match threshold |
@@ -127,6 +134,24 @@ substitution like `DB_PASSWORD`/`SECRET_KEY`/`DEBUG` use. Setting either in
 `docker-compose.yml` directly.
 
 Copy `.env.example` to `.env` and set a real `SECRET_KEY` before first run.
+
+### Reproducibility
+
+What is pinned, and what is not:
+
+| Piece | Pinned how |
+|-------|-----------|
+| Ollama server | Exact image tag in `ollama/Dockerfile` (`ollama/ollama:0.34.2`, the newest stable release more than four weeks old on 2026-10-15). Bump deliberately and re-run the eval |
+| Embedder weights | `embedding.revision` -- a Hugging Face commit SHA passed as `revision=` on every load. Recorded in the `EmbeddingIndex` row (see ML.md, Index provenance) |
+| Reranker weights | `reranking.revision`, same mechanism; nothing is stored in the DB for it |
+| LLM weights | **Not pinnable.** The `qwen3:8b` tag is mutable and `ollama pull` cannot take a digest. The digest actually served is logged once per backend process (`Ollama model qwen3:8b digest sha256:..`), so a run can be traced afterwards |
+| Python packages | **Not pinned.** No lock file; `requirements.txt` holds ranges (for example `sentence-transformers>=2.6,<3.0`) and only `torch` is exact in the backend `Dockerfile`. A rebuild can bring newer minor versions |
+| Sampling | `llm.temperature.*` and `llm.seed` in `params.yaml`; reproducible on the same Ollama build and hardware |
+
+A `revision` of `null` means unpinned (the model's default branch at download time). To
+move a pin, look up the new commit SHA at
+`https://huggingface.co/api/models/<model>` (`sha`), put it in `params.yaml`, and for the
+embedder re-run `generate_embeddings --all`.
 
 ## Hardware Requirements and Manual Configuration
 
@@ -266,4 +291,8 @@ availability:
 `docker compose exec backend python -c "import torch; print(torch.cuda.is_available())"`
 
 **Ollama model not pulling**: Check logs: `docker compose logs ollama`.
-The entrypoint waits for the server to be ready before pulling.
+The entrypoint waits for the server to be ready before pulling. The container stays
+`starting` (and the backend waits) until the model is present; if the pull takes
+longer than the health check's 900s `start_period` plus its ten 10s retries, the
+service is marked unhealthy -- re-run `docker compose up` (Ollama resumes an
+interrupted pull).

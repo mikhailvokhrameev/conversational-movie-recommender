@@ -93,11 +93,17 @@ below; sync counterparts exist for code that runs outside the ASGI event loop
 (the `evaluate_scoring` judge uses `_chat_sync`; its intent parsing runs the async
 `aclassify_and_parse` so it evaluates the production call).
 
-**Classification + intent parsing** (`aclassify_and_parse`): One combined JSON-mode
-call replaces what used to be two separate classify/parse requests. Sends the
-user query with a structured prompt requesting JSON output; Ollama's
-`format: "json"` mode forces valid JSON, and the result is validated against
-the `MessageIntent` Pydantic schema (one retry-with-repair on invalid category).
+**Classification + intent parsing** (`aclassify_and_parse`): One combined
+structured-output call replaces what used to be two separate classify/parse
+requests. Sends the user query with a structured prompt requesting JSON output;
+the request's `format` is a JSON schema derived from `MessageIntent`
+(`CLASSIFY_PARSE_SCHEMA`: the category enum, typed/nullable filters, every field
+required), which Ollama (>= 0.5) compiles into a decoding grammar, so the model
+cannot emit an off-schema category or a wrong-typed filter. The result is still
+validated against the `MessageIntent` Pydantic model (one retry-with-repair on
+invalid category) -- the schema constrains decoding, validation remains the guard.
+The sync `parse_intent` sends `INTENT_SCHEMA` (the same schema minus `category` and
+`semantic_query`), and the eval judge sends `{"score": integer 1..5}`.
 Extracts the routing category plus genres, mood, themes, negations, reference
 films, country exclusions/inclusions, min vote average, min/max release year,
 min/max runtime, and original languages. All of the latter are hard
@@ -110,7 +116,9 @@ intent -- it just loses metadata filtering.
 
 **Explanation generation** (`astream_explanation`, `stream_explanation`): RAG pattern.
 Movie metadata and descriptions are injected as context by `_build_movies_context`,
-which prefixes each movie with a 1-based `[[n]]` marker. `EXPLANATION_PROMPT` asks for
+which prefixes each movie with a 1-based `[[n]]` marker and the first
+`llm.explanation_description_chars` (200) characters of its description.
+`EXPLANATION_PROMPT` asks for
 an opening line that names no titles, followed by one `[[n]]`-marked block per movie
 explaining the match. The streaming variant yields raw tokens for progressive frontend
 display.
@@ -172,11 +180,25 @@ and still builds a single-message prompt. `evaluate_scoring` does not use
 
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
-| `aclassify_and_parse(message, history)` | `POST /api/chat` (JSON mode) | 45s | `_fallback_message_intent()` |
+| `aclassify_and_parse(message, history)` | `POST /api/chat` (JSON schema) | 45s | `_fallback_message_intent()` |
 | `astream_explanation(query, movies, history)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `astream_explanation_parts(query, movies, history)` | none -- wraps `astream_explanation` | inherited (120s) | All text in the intro slot |
 | `astream_conversational(message, history)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `ais_available()` | `GET /` | 5s | Returns `False` |
+
+**Call logging**: every Ollama call logs one INFO line, `Ollama call=<type>
+prompt_tokens=.. eval_tokens=.. prompt_eval_ms=.. eval_ms=.. ttft_ms=..`, with
+`<type>` one of `classify_parse`, `intent`, `explanation`, `conversational`,
+`judge`. Counts and durations come from Ollama's response (the non-streamed body,
+or the final `done: true` chunk of a stream; nanoseconds converted to ms);
+`ttft_ms` is the client-side time to the first content chunk and exists for
+streamed calls only. A field Ollama does not send shows as `n/a`. A WARNING is
+logged when `prompt_eval_count` reaches 90% of `llm.num_ctx`: history is capped in
+characters (`session.history_max_*`), not tokens, so this is the signal that a prompt
+is close to being truncated. The digest of the served model is logged once per
+process, on the first LLM call (`Ollama model qwen3:8b digest sha256:..`, from
+`/api/tags`; one attempt, a failure only logs a warning), because the `qwen3:8b` tag
+is mutable.
 
 ### `candidate_generation.py` -- Hard Filters + Hybrid Retrieval
 
@@ -234,7 +256,8 @@ neutral 0.5. Pre-normalization values are kept per candidate under
 Scoring is set-level (`score_candidates`) rather than per-movie, because
 normalization needs the full candidate pool to know each signal's range.
 
-Weights live in `params.yaml` under `scoring.weights`. Must sum to 1.0.
+Weights live in `params.yaml` under `scoring.weights`. They must be non-negative and
+sum to 1.0 (within 1e-6); `settings.py` refuses to load otherwise.
 Evaluated via `manage.py evaluate_scoring` and documented in `docs/ML.md`.
 
 **MMR diversification** (Carbonell & Goldstein, 1998):

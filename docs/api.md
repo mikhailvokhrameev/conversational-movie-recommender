@@ -350,21 +350,24 @@ these can be changed -- no environment variable overrides them.
 | `llm.num_ctx` | `6144` | Context window sent as `options.num_ctx` on every LLM call (one value for all calls -- a change between requests makes Ollama reload the model); costs ~0.9 GB of KV-cache VRAM |
 | `llm.temperature.*` | 0.0 / 0.7 | Sampling temperature (structured / generation): 0.0 for every JSON-mode call (classify+parse, intent, eval judge) so parsing is reproducible; 0.7 for explanations and conversational replies. Validated in [0, 2] at settings load |
 | `llm.seed` | `42` | Fixed `options.seed` on every LLM call, for reproducible outputs. Must be an int |
+| `llm.explanation_description_chars` | `200` | Description chars per movie in the explanation prompt (`_build_movies_context`). Minimum 1 |
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | `BAAI/bge-m3` | Embedding model |
 | `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |
+| `embedding.revision` | pinned commit SHA | Hugging Face commit the embedder is downloaded at; `null` = unpinned. Recorded in the index provenance; a change needs `generate_embeddings --all`, but a null on either side of the comparison is only a warning |
 | `embedding.text.description_chars` / `max_keywords` | 500 / 10 | Truncation of the embedded movie text; part of the index provenance, changing needs `generate_embeddings --all` |
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
-| `scoring.weights.*` | 0.35 / 0.25 / 0.25 / 0.15 | Signal weights (semantic / metadata / session / popularity) |
+| `scoring.weights.*` | 0.35 / 0.25 / 0.25 / 0.15 | Signal weights (semantic / metadata / session / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
 | `diversification.top_n` | `5` | Results returned |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
 | `reranking.enabled` | `true` | Cross-encoder reranking on/off |
 | `reranking.model` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |
+| `reranking.revision` | pinned commit SHA | Hugging Face commit the cross-encoder is downloaded at; `null` = unpinned |
 | `reranking.device` | `auto` | `auto` / `cuda` / `cpu` (see ML.md before pinning) |
 | `reranking.top_k` | `50` | Candidates sent to the cross-encoder |
-| `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
+| `reranking.weight` | `0.5` | Share of final score from the cross-encoder. Must lie in [0, 1] |
 | `reranking.min_score` | `null` | "Nothing suitable" gate: minimum `rerank_score` (strictly between 0 and 1) to keep a candidate; `null` = off. Uncalibrated, so off (see ML.md) |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
