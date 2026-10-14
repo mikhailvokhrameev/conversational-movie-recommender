@@ -124,12 +124,12 @@ forwards it) also receive the session's conversation `history` and build a nativ
 multi-turn Ollama `messages` array from it via `_build_chat_messages()` (system prompt +
 capped history window + the current turn), so short follow-ups like "another one" or
 "давай" resolve against what was actually said instead of a flattened summary. The
-window is capped by `session.history_max_turns` (8 user/assistant pairs) and
+window is capped by `session.history_max_turns` (6 user/assistant pairs) and
 `session.history_max_chars_per_entry` (1000) in `params.yaml` (both minimum 1 --
 `settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and
 every Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived session's
-prompt stays bounded: the worst case (system prompt + 8 history pairs + current turn
-with movie context + answer) is ~5.1k tokens. This is a budget, not a guard -- if a
+prompt stays bounded: the worst case (system prompt + 6 history pairs + current turn
+with movie context + answer) is ~5.5k tokens (~0.6k headroom). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start
 (dropping the system prompt and oldest turns first) with no error. All calls must
 use the same `num_ctx` (one helper, `_ollama_options()`, feeds every payload),

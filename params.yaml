@@ -78,9 +78,10 @@ llm:
   # budgeted size rather than whatever the Ollama default happens to be.
   #
   # Why 6144: worst-case prompt is system prompt ~1.2k tokens + history of
-  # session.history_max_turns (8) pairs at ~330 tokens/pair (1000-char answer
-  # limit) ~2.6k + current turn with movie context ~0.8k + generated answer
-  # ~0.5k = ~5.1k, which fits with headroom.
+  # session.history_max_turns (6) pairs at ~500 tokens/pair (Russian runs
+  # ~350-500 tokens per 1000-char entry) ~3.0k + current turn with movie
+  # context ~0.8k + generated answer ~0.5k = ~5.5k, which leaves ~0.6k of
+  # headroom.
   #
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
@@ -199,11 +200,11 @@ session:
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
-  # this bounds the prompt: 8 pairs is sized so the worst case fits the
-  # 6144-token window. If you raise this, raise llm.num_ctx too (and pay the
-  # extra KV-cache VRAM). Minimum 1: 0 does NOT mean unlimited, and
-  # settings.py refuses to load a value below 1.
-  history_max_turns: 8
+  # this bounds the prompt: 6 pairs is sized so the worst case (~5.5k tokens)
+  # fits the 6144-token window with ~0.6k headroom. If you raise this, raise
+  # llm.num_ctx too (and pay the extra KV-cache VRAM). Minimum 1: 0 does NOT
+  # mean unlimited, and settings.py refuses to load a value below 1.
+  history_max_turns: 6
   # Second, independent safety net: caps a single history entry's replayed
   # content by character count, so one abnormally long past message (e.g. a
   # long explanation) can't blow up the prompt even within the turn cap.
