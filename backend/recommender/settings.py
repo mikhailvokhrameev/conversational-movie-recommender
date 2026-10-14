@@ -135,12 +135,39 @@ def _validate_num_ctx(llm: dict) -> None:
         )
 
 
+def _validate_sampling(llm: dict) -> None:
+    """Fail at load if llm.temperature / llm.seed are malformed.
+
+    Both kinds of temperature must be present and numeric in [0, 2] (above 2 sampling
+    is effectively noise); seed must be an int. A bad value would otherwise reach
+    Ollama on every call and be rejected or silently ignored there.
+    """
+    temperature = llm["temperature"]
+    if not isinstance(temperature, dict):
+        raise ValueError(
+            "params.yaml: llm.temperature must map structured and generation "
+            f"to a temperature (got {temperature!r})."
+        )
+    for kind in ("structured", "generation"):
+        value = temperature.get(kind)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 <= value <= 2:
+            raise ValueError(
+                f"params.yaml: llm.temperature.{kind} must be a number in [0, 2] (got {value!r})."
+            )
+    seed = llm["seed"]
+    if isinstance(seed, bool) or not isinstance(seed, int):
+        raise ValueError(f"params.yaml: llm.seed must be an integer (got {seed!r}).")
+
+
 _validate_num_ctx(_llm)
+_validate_sampling(_llm)
 OLLAMA_BASE_URL = _llm["base_url"]
 OLLAMA_MODEL = _llm["model"]
 OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
 OLLAMA_THINKING = _llm["thinking"]
 OLLAMA_NUM_CTX = _llm["num_ctx"]
+OLLAMA_TEMPERATURE = _llm["temperature"]
+OLLAMA_SEED = _llm["seed"]
 
 _embedding = PARAMS["embedding"]
 EMBEDDING_MODEL = _embedding["model"]

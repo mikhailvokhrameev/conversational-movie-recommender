@@ -16,6 +16,7 @@ from core.ollama_client import (
     _classify_and_parse_payload,
     _explanation_payload,
     _intent_payload,
+    _ollama_options,
     _stream_chat_payload,
     aclassify_and_parse,
     astream_conversational,
@@ -730,29 +731,102 @@ class TestNumCtxValidation:
 
 class TestOllamaOptions:
     """Every LLM call must carry the same options.num_ctx -- a differing value
-    makes Ollama reload the model."""
+    makes Ollama reload the model -- plus the fixed seed and the temperature
+    for its kind of call: structured (JSON) calls are deterministic,
+    generation calls keep some variety."""
 
-    def test_intent_payload_has_num_ctx(self, settings):
-        assert _intent_payload("a thriller")["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+    @staticmethod
+    def _structured(settings):
+        return {
+            "num_ctx": settings.OLLAMA_NUM_CTX,
+            "seed": settings.OLLAMA_SEED,
+            "temperature": settings.OLLAMA_TEMPERATURE["structured"],
+        }
 
-    def test_classify_and_parse_payload_has_num_ctx(self, settings):
+    @staticmethod
+    def _generation(settings):
+        return {
+            "num_ctx": settings.OLLAMA_NUM_CTX,
+            "seed": settings.OLLAMA_SEED,
+            "temperature": settings.OLLAMA_TEMPERATURE["generation"],
+        }
+
+    def test_options_by_kind(self, settings):
+        settings.OLLAMA_NUM_CTX = 4096
+        settings.OLLAMA_SEED = 7
+        settings.OLLAMA_TEMPERATURE = {"structured": 0.0, "generation": 0.7}
+        assert _ollama_options("structured") == {"num_ctx": 4096, "seed": 7, "temperature": 0.0}
+        assert _ollama_options("generation") == {"num_ctx": 4096, "seed": 7, "temperature": 0.7}
+
+    def test_rejects_unknown_kind(self):
+        with pytest.raises(KeyError):
+            _ollama_options("creative")
+
+    def test_intent_payload_is_structured(self, settings):
+        assert _intent_payload("a thriller")["options"] == self._structured(settings)
+
+    def test_classify_and_parse_payload_is_structured(self, settings):
         payload = _classify_and_parse_payload("hi", [])
-        assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+        assert payload["options"] == self._structured(settings)
 
-    def test_explanation_payload_has_num_ctx(self, settings):
+    def test_explanation_payload_is_generation(self, settings):
         for stream in (False, True):
             payload = _explanation_payload("q", [], stream=stream)
-            assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+            assert payload["options"] == self._generation(settings)
 
-    def test_stream_chat_payload_has_num_ctx(self, settings):
+    def test_stream_chat_payload_is_generation(self, settings):
         payload = _stream_chat_payload([{"role": "user", "content": "hi"}])
-        assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+        assert payload["options"] == self._generation(settings)
 
-    def test_chat_sync_payload_has_num_ctx(self, settings):
+    def test_chat_sync_picks_kind_from_json_mode(self, settings):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
         with patch("core.ollama_client.httpx.post", return_value=response) as post:
             assert _chat_sync([{"role": "user", "content": "hi"}]) == "ok"
             _chat_sync([{"role": "user", "content": "hi"}], json_mode=True)
-        for call in post.call_args_list:
-            assert call.kwargs["json"]["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+        plain, json_call = post.call_args_list
+        assert plain.kwargs["json"]["options"] == self._generation(settings)
+        assert json_call.kwargs["json"]["options"] == self._structured(settings)
+
+    def test_num_ctx_identical_across_kinds(self):
+        assert _ollama_options("structured")["num_ctx"] == _ollama_options("generation")["num_ctx"]
+
+
+class TestSamplingValidation:
+    """llm.temperature / llm.seed are checked at settings load, like num_ctx."""
+
+    @staticmethod
+    def _llm(**overrides):
+        llm = {"temperature": {"structured": 0.0, "generation": 0.7}, "seed": 42}
+        llm.update(overrides)
+        return llm
+
+    def test_accepts_configured_values(self):
+        from recommender.settings import _validate_sampling
+
+        _validate_sampling(self._llm())
+        _validate_sampling(self._llm(temperature={"structured": 0, "generation": 2}))
+
+    @pytest.mark.parametrize("bad", [-0.1, 2.1, "0.7", None, True])
+    @pytest.mark.parametrize("kind", ["structured", "generation"])
+    def test_rejects_temperature_out_of_range_or_non_number(self, kind, bad):
+        from recommender.settings import _validate_sampling
+
+        temperature = {"structured": 0.0, "generation": 0.7}
+        temperature[kind] = bad
+        with pytest.raises(ValueError, match=f"llm.temperature.{kind}"):
+            _validate_sampling(self._llm(temperature=temperature))
+
+    @pytest.mark.parametrize("temperature", [{"structured": 0.0}, {"generation": 0.7}, 0.7])
+    def test_rejects_missing_temperature_kind(self, temperature):
+        from recommender.settings import _validate_sampling
+
+        with pytest.raises(ValueError, match="llm.temperature"):
+            _validate_sampling(self._llm(temperature=temperature))
+
+    @pytest.mark.parametrize("bad", [4.2, "42", None, True])
+    def test_rejects_non_int_seed(self, bad):
+        from recommender.settings import _validate_sampling
+
+        with pytest.raises(ValueError, match="llm.seed"):
+            _validate_sampling(self._llm(seed=bad))

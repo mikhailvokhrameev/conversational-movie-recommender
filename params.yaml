@@ -91,10 +91,30 @@ llm:
   # of extra VRAM (see the budget in the header -- on estimate it is now over
   # 11 GB).
   #
-  # Keep this ONE value for every call. Ollama reloads the model whenever the
+  # Keep this ONE value for every call (structured and generation alike --
+  # see temperature below). Ollama reloads the model whenever the
   # requested num_ctx differs from the loaded instance's, so mixing values
   # between requests means a multi-second reload on every switch.
   num_ctx: 6144
+
+  # Sampling, sent as options.temperature / options.seed alongside num_ctx.
+  # Unlike num_ctx these do not make Ollama reload the model, so they can
+  # differ per call kind.
+  #
+  # structured: every JSON-mode call -- classify+parse, the sync intent call,
+  # and the evaluation judge. These feed parsers and metrics, so the same
+  # input should give the same output: 0.0 is greedy decoding, which makes
+  # intent parsing reproducible and an eval run repeatable.
+  # generation: free text the user reads -- explanations and conversational
+  # replies. 0.7 keeps some variety in the wording; it is Qwen3's recommended
+  # temperature for non-thinking mode (llm.thinking is false above).
+  temperature:
+    structured: 0.0
+    generation: 0.7
+  # Fixed so a generation call at 0.7 is also reproducible for a given
+  # prompt (on the same Ollama build and hardware). Any int works; it is
+  # pinned, not tuned.
+  seed: 42
 
   timeout_seconds:
     # Combined classify+intent call used by the live chat view (aclassify_and_parse).

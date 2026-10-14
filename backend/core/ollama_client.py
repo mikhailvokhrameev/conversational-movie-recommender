@@ -526,10 +526,20 @@ def _extract_intent(parsed: dict) -> dict:
     }
 
 
-def _ollama_options() -> dict:
+def _ollama_options(kind: Literal["structured", "generation"]) -> dict:
     """Ollama `options` sent with EVERY request. All calls must use the same
-    num_ctx: a differing value makes Ollama reload the model."""
-    return {"num_ctx": settings.OLLAMA_NUM_CTX}
+    num_ctx: a differing value makes Ollama reload the model.
+
+    `kind` picks the temperature: "structured" for JSON-mode calls whose output
+    is parsed (deterministic, so intent parsing and the eval judge are
+    reproducible), "generation" for user-facing free text. The seed is fixed
+    for both.
+    """
+    return {
+        "num_ctx": settings.OLLAMA_NUM_CTX,
+        "seed": settings.OLLAMA_SEED,
+        "temperature": settings.OLLAMA_TEMPERATURE[kind],
+    }
 
 
 def _intent_payload(query: str) -> dict:
@@ -543,7 +553,7 @@ def _intent_payload(query: str) -> dict:
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options(),
+        "options": _ollama_options("structured"),
     }
 
 
@@ -570,7 +580,7 @@ def _classify_and_parse_payload(
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options(),
+        "options": _ollama_options("structured"),
     }
 
 
@@ -587,7 +597,7 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
         ],
         "stream": stream,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options(),
+        "options": _ollama_options("generation"),
     }
 
 
@@ -600,7 +610,7 @@ def _stream_chat_payload(messages: list[dict]) -> dict:
         "messages": messages,
         "stream": True,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options(),
+        "options": _ollama_options("generation"),
     }
 
 
@@ -611,7 +621,7 @@ def _chat_sync(messages: list[dict], json_mode: bool = False, timeout: float = 6
         "messages": messages,
         "stream": False,
         "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options(),
+        "options": _ollama_options("structured" if json_mode else "generation"),
     }
     if json_mode:
         payload["format"] = "json"

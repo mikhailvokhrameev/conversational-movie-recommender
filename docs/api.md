@@ -321,6 +321,8 @@ these can be changed -- no environment variable overrides them.
 | `llm.model` | `qwen3:8b` | Model for classification, intent parsing, explanations |
 | `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
 | `llm.num_ctx` | `6144` | Context window sent as `options.num_ctx` on every LLM call (one value for all calls -- a change between requests makes Ollama reload the model); costs ~0.9 GB of KV-cache VRAM |
+| `llm.temperature.*` | 0.0 / 0.7 | Sampling temperature (structured / generation): 0.0 for every JSON-mode call (classify+parse, intent, eval judge) so parsing is reproducible; 0.7 for explanations and conversational replies. Validated in [0, 2] at settings load |
+| `llm.seed` | `42` | Fixed `options.seed` on every LLM call, for reproducible outputs. Must be an int |
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | `BAAI/bge-m3` | Embedding model |
 | `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |

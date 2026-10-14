@@ -85,7 +85,7 @@ overridable by an environment variable -- change the file and restart.
 
 | Section | Covers |
 |---------|--------|
-| `llm` | Ollama model, base URL, context window (`num_ctx`), per-call timeouts |
+| `llm` | Ollama model, base URL, context window (`num_ctx`), sampling (`temperature`, `seed`), per-call timeouts |
 | `embedding` | Embedding model and vector dimensions |
 | `retrieval` | Candidate count, RRF constants, lexical search settings |
 | `scoring` | Signal weights, neutral score |

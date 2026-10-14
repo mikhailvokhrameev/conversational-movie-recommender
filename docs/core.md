@@ -142,8 +142,11 @@ session's prompt stays bounded: a heavy-use prompt (system prompt + 6 history pa
 headroom). This is a budget, not a guard -- if a prompt ever did exceed `num_ctx`,
 Ollama silently truncates it from the start (dropping the system prompt and oldest turns
 first) with no error. All calls must use the same `num_ctx` (one helper,
-`_ollama_options()`, feeds every payload), because a differing value makes Ollama reload
-the model. The sync API (`parse_intent`, `generate_explanation`, `stream_explanation`),
+`_ollama_options(kind)`, feeds every payload), because a differing value makes Ollama
+reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
+call's kind: `llm.temperature.structured` (0.0) for every JSON-mode call
+(classify+parse, `parse_intent`, the eval judge) so their output is reproducible,
+`llm.temperature.generation` (0.7) for explanations and conversational replies. The sync API (`parse_intent`, `generate_explanation`, `stream_explanation`),
 used by management commands and evaluation, is unaffected and still builds a
 single-message prompt.
 
