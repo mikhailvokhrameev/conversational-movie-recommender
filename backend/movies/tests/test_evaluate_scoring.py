@@ -299,6 +299,8 @@ class TestSplits:
         assert record["mode"] == "sweep"
         assert record["configs"]
         assert record["best_weights"] == record["configs"][0]["weights"]
+        for config in record["configs"]:
+            assert sum(config["weights"].values()) == pytest.approx(1.0, abs=1e-9)
         assert {q["id"] for q in record["configs"][0]["queries"]} == {"d1", "d2"}
 
     @pytest.mark.parametrize("split", ["test", "all"])
@@ -386,6 +388,25 @@ class TestEmptyResults:
         assert record["queries"][0]["pool_max_rerank_score"] is None
 
 
+class TestScoringWeights:
+    """Swept and --weights values must sum to 1.0 so a winner can go into params.yaml."""
+
+    @pytest.mark.parametrize("triple", [(0.7, 0.2, 0.1), (0.3, 0.4, 0.3), (0.5, 0.3, 0.2), (3, 1, 1)])
+    def test_sums_to_one_with_popularity_held(self, triple, settings):
+        from movies.management.commands.evaluate_scoring import _scoring_weights
+        from recommender.settings import _validate_score_weights
+        weights = _scoring_weights(*triple)
+        assert weights["popularity"] == settings.SCORE_WEIGHTS["popularity"]
+        assert sum(weights.values()) == pytest.approx(1.0, abs=1e-9)
+        _validate_score_weights(weights)
+
+    def test_keeps_the_proportions(self):
+        from movies.management.commands.evaluate_scoring import _scoring_weights
+        weights = _scoring_weights(0.6, 0.2, 0.2)
+        assert weights["semantic"] / weights["metadata"] == pytest.approx(3.0, rel=1e-3)
+        assert weights["metadata"] == pytest.approx(weights["session"], abs=1e-3)
+
+
 class TestRunRecord:
     def test_contains_provenance_and_counters(self, tmp_path, settings):
         run = _Run(tmp_path, [_entry()])
@@ -395,8 +416,10 @@ class TestRunRecord:
         assert set(record["git"]) == {"commit", "dirty"}
         assert record["k"] == 2
         assert record["options"]["weights"] == "0.5,0.3,0.2"
-        assert record["weights"]["semantic"] == 0.5
-        assert record["weights"]["popularity"] == settings.SCORE_WEIGHTS["popularity"]
+        pop = settings.SCORE_WEIGHTS["popularity"]
+        assert record["weights"]["semantic"] == pytest.approx(0.5 * (1 - pop), abs=1e-4)
+        assert record["weights"]["popularity"] == pop
+        assert sum(record["weights"].values()) == pytest.approx(1.0, abs=1e-9)
         assert record["timestamp"]
         assert set(record["counters"]) >= {"unresolved_refs", "judge_failures", "misclassified"}
         query = record["queries"][0]

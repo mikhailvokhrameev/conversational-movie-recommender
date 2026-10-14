@@ -82,6 +82,27 @@ def _catalog_stats() -> tuple[dict[str, float], int]:
     return compute_genre_frequency(catalog_genres), len(catalog_genres)
 
 
+def _scoring_weights(semantic: float, metadata: float, session: float) -> dict:
+    """Full scoring weights from the three signals this command varies.
+
+    The three are taken as relative proportions and scaled to `1 - popularity`,
+    with popularity held at its configured value, so the result sums to 1.0 and
+    can be pasted into params.yaml as-is (settings refuses weights that do not
+    sum to 1). Session takes the rounding remainder to keep the sum exact.
+    """
+    popularity = settings.SCORE_WEIGHTS.get("popularity", 0.0)
+    total = semantic + metadata + session
+    if total <= 0:
+        raise CommandError("weights must have a positive sum")
+    scale = (1.0 - popularity) / total
+    sem, met = round(semantic * scale, 4), round(metadata * scale, 4)
+    return {
+        "semantic": sem, "metadata": met,
+        "session": round(1.0 - popularity - sem - met, 4),
+        "popularity": popularity,
+    }
+
+
 def _git_state() -> dict:
     """Commit sha and dirty flag of the code that ran, or nulls when git or the
     repository is unavailable (e.g. inside the Docker image, which has no .git)."""
@@ -177,7 +198,11 @@ class Command(BaseCommand):
             "--weights",
             type=str,
             default=None,
-            help="Custom weights as comma-separated values: semantic,metadata,session",
+            help=(
+                "Custom weights as comma-separated values: semantic,metadata,session. "
+                "Taken as proportions and scaled to 1 - popularity (popularity stays at "
+                "its params.yaml value), so the result sums to 1."
+            ),
         )
         parser.add_argument(
             "--llm-judge",
@@ -284,10 +309,8 @@ class Command(BaseCommand):
             raise CommandError("--weights needs three numbers: semantic,metadata,session")
         # popularity is held at its configured value -- --weights only varies
         # the three signals it always has, so it doesn't silently zero popularity.
-        return {
-            "semantic": parts[0], "metadata": parts[1], "session": parts[2],
-            "popularity": settings.SCORE_WEIGHTS.get("popularity", 0.0),
-        }
+        # The three are scaled to 1 - popularity so the weights stay pasteable.
+        return _scoring_weights(*parts)
 
     # --- Per-entry preparation (weight-independent) ---
 
@@ -574,12 +597,12 @@ class Command(BaseCommand):
 
         configs = []
         for i, (sem, met, ses) in enumerate(grid):
-            weights = {
-                "semantic": sem, "metadata": met, "session": ses,
-                "popularity": settings.SCORE_WEIGHTS.get("popularity", 0.0),
-            }
+            weights = _scoring_weights(sem, met, ses)
             if use_llm:
-                self.stdout.write(f"  Config {i+1}/{len(grid)}: sem={sem} met={met} ses={ses}...")
+                self.stdout.write(
+                    f"  Config {i+1}/{len(grid)}: sem={weights['semantic']} "
+                    f"met={weights['metadata']} ses={weights['session']}..."
+                )
             configs.append({"weights": weights, **self._evaluate(prepared, k, weights, use_llm)})
 
         # Ranked by golden-set nDCG, never by the judge: the judge is the same

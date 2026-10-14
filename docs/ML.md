@@ -536,6 +536,10 @@ and timeout are `evaluation.judge_description_chars` /
 **Known limitation (circularity)**: the judge is the same model family that
 parses intent and writes explanations, so it shares the system's blind
 spots. `--sweep` ranks configurations by golden-set nDCG, never by the judge.
+The swept semantic, metadata and session weights (and `--weights`) are scaled to
+`1 - popularity`, with popularity held at its configured value, so every printed or
+recorded configuration sums to 1.0 and the best one can be pasted into
+`scoring.weights`.
 
 ### Determinism
 
