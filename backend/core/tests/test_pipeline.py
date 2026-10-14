@@ -40,3 +40,87 @@ class TestGenerateAndScore:
         assert len(top) == 3
         assert s.call_args.kwargs["weights"] == weights
         m.assert_called_once_with(pool, top_n=3)
+
+
+def _scored(id_, rerank_score):
+    return {"id": id_, "total": 0.5, "rerank_score": rerank_score}
+
+
+class TestRelevanceGate:
+    """`reranking.min_score`: drop candidates the cross-encoder scored below it
+    (and the ones it never scored) before diversification."""
+
+    def _run(self, pool, top_n=5):
+        gen = patch("core.pipeline.generate_candidates", return_value=pool)
+        score = patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c)
+        rerank = patch("core.pipeline.rerank_candidates", side_effect=lambda q, c: c)
+        mmr = patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n])
+        with gen, score, rerank, mmr as m:
+            top, reranked = generate_and_score([0.1], {}, None, query_text="q", top_n=top_n)
+        return top, reranked, m
+
+    def test_off_by_default_leaves_output_unchanged(self, settings):
+        settings.RERANK_MIN_SCORE = None
+        pool = [_scored(1, 0.01), _scored(2, 0.9), {"id": 3, "total": 0.1}]
+        top, reranked, _ = self._run(pool)
+        assert top == pool
+        assert reranked == pool
+
+    def test_drops_below_threshold_and_unscored_before_mmr(self, settings):
+        settings.RERANK_MIN_SCORE = 0.3
+        pool = [_scored(1, 0.9), _scored(2, 0.29), _scored(3, 0.3), {"id": 4, "total": 0.1}]
+        top, reranked, mmr = self._run(pool)
+        assert [m["id"] for m in top] == [1, 3]
+        # MMR saw only the gated list, so a dropped candidate cannot be picked.
+        assert [c["id"] for c in mmr.call_args.args[0]] == [1, 3]
+        # The returned pool stays the full reranked pool (hallucination check).
+        assert reranked == pool
+
+    def test_all_below_threshold_gives_empty_top(self, settings):
+        settings.RERANK_MIN_SCORE = 0.5
+        top, reranked, _ = self._run([_scored(1, 0.1), _scored(2, 0.2)])
+        assert top == []
+        assert len(reranked) == 2
+
+    def test_gate_skipped_with_warning_when_reranker_did_not_score(self, settings, caplog):
+        settings.RERANK_MIN_SCORE = 0.5
+        pool = [{"id": 1, "total": 0.9}, {"id": 2, "total": 0.8}]  # no rerank_score
+        with caplog.at_level("WARNING", logger="core.pipeline"):
+            top, _, _ = self._run(pool)
+        assert top == pool
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warnings) == 1
+        assert "gate skipped" in warnings[0].getMessage()
+
+    def test_gate_skipped_when_model_unavailable(self, settings, caplog):
+        """Through the real rerank_candidates: get_model() is None -> the
+        pool comes back unscored -> the gate must fail open."""
+        settings.RERANK_MIN_SCORE = 0.5
+        settings.RERANKER_ENABLED = True
+        settings.RERANK_TOP_K = 10
+        pool = [{"id": 1, "total": 0.9}, {"id": 2, "total": 0.8}]
+        with patch("core.pipeline.generate_candidates", return_value=pool), \
+             patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c), \
+             patch("core.reranking.get_model", return_value=None), \
+             patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]), \
+             caplog.at_level("WARNING", logger="core.pipeline"):
+            top, _ = generate_and_score([0.1], {}, None, query_text="q", top_n=5)
+        assert [m["id"] for m in top] == [1, 2]
+        assert any("gate skipped" in r.getMessage() for r in caplog.records)
+
+    def test_no_warning_when_there_is_nothing_to_gate(self, settings, caplog):
+        settings.RERANK_MIN_SCORE = 0.5
+        with caplog.at_level("WARNING", logger="core.pipeline"):
+            top, _, _ = self._run([])
+        assert top == []
+        assert not caplog.records
+
+    def test_apply_gate_false_bypasses_it_for_calibration(self, settings):
+        settings.RERANK_MIN_SCORE = 0.5
+        pool = [_scored(1, 0.1)]
+        with patch("core.pipeline.generate_candidates", return_value=pool), \
+             patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c), \
+             patch("core.pipeline.rerank_candidates", side_effect=lambda q, c: c), \
+             patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]):
+            top, _ = generate_and_score([0.1], {}, None, query_text="q", apply_gate=False)
+        assert top == pool

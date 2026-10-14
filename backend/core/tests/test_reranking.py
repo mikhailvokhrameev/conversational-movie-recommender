@@ -204,3 +204,27 @@ class TestMovieText:
     def test_truncates_long_description(self):
         text = _movie_text({"serial_name": "Ф", "description": "я" * 1000})
         assert len(text) < 500
+
+
+class TestMinScoreValidation:
+    """params.yaml reranking.min_score is null (gate off) or a number strictly
+    inside (0, 1), the range of the sigmoid-scaled cross-encoder score; anything
+    else fails at settings load rather than silently gating nothing or everything."""
+
+    @pytest.mark.parametrize("ok", [None, 0.001, 0.3, 0.999, 0.5])
+    def test_accepts_null_and_values_inside_the_range(self, ok):
+        from recommender.settings import _validate_rerank_min_score
+
+        _validate_rerank_min_score({"min_score": ok})
+
+    @pytest.mark.parametrize("bad", [0, 0.0, 1, 1.0, -0.1, 1.5, 5, "0.3", True, False, [0.3]])
+    def test_rejects_out_of_range_or_non_number(self, bad):
+        from recommender.settings import _validate_rerank_min_score
+
+        with pytest.raises(ValueError, match="reranking.min_score"):
+            _validate_rerank_min_score({"min_score": bad})
+
+    def test_shipped_params_leave_the_gate_off(self):
+        from django.conf import settings
+
+        assert settings.RERANK_MIN_SCORE is None

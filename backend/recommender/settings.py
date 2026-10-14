@@ -192,12 +192,31 @@ _diversification = PARAMS["diversification"]
 TOP_N = _diversification["top_n"]
 MMR_LAMBDA = _diversification["lambda"]
 
+def _validate_rerank_min_score(reranking: dict) -> None:
+    """Fail at load if reranking.min_score is neither null nor inside (0, 1).
+
+    rerank_score is a sigmoid output in [0, 1] (see the params.yaml comment).
+    0 gates nothing and 1 gates everything, and a typo like 5 or 30 (a logit-
+    scale habit) would silently empty every answer, so both fail loudly.
+    """
+    value = reranking["min_score"]
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0 < value < 1:
+        raise ValueError(
+            f"params.yaml: reranking.min_score must be null (gate off) or a number strictly "
+            f"between 0 and 1, the range of the sigmoid-scaled cross-encoder score (got {value!r})."
+        )
+
+
 _reranking = PARAMS["reranking"]
+_validate_rerank_min_score(_reranking)
 RERANKER_ENABLED = _reranking["enabled"]
 RERANKER_MODEL = _reranking["model"]
 RERANKER_DEVICE = _reranking["device"]
 RERANK_TOP_K = _reranking["top_k"]
 RERANK_WEIGHT = _reranking["weight"]
+RERANK_MIN_SCORE = _reranking["min_score"]
 RERANK_MAX_LENGTH = _reranking["max_length"]
 RERANK_DESCRIPTION_CHARS = _reranking["description_chars"]
 

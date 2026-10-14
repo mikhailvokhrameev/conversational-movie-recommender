@@ -211,6 +211,33 @@ reranking:
   # Share of the final score taken from the cross-encoder; the rest stays with
   # the four-signal scorer, which carries session, genre intent, and popularity.
   weight: 0.5
+  # "Nothing suitable" gate: minimum raw cross-encoder score (rerank_score) a
+  # candidate needs to reach the results. null = gate off, and it ships off
+  # on purpose. When set, candidates below it -- and candidates the reranker
+  # never scored (they ranked below the top_k head) -- are dropped before MMR,
+  # so a reply can be shorter than diversification.top_n, or empty; an empty
+  # one makes the chat answer "nothing matched" instead of padding with top-5.
+  # The gate only acts on a request the reranker actually scored; with the
+  # reranker disabled, not loaded, or failing, it is skipped (fail open, with
+  # a warning) -- an infrastructure fault must not turn into zero results.
+  # Range: sentence-transformers (pinned <3; read in 2.7.0, CrossEncoder
+  # default_activation_function) applies Sigmoid to a single-label model's
+  # logits in predict(), and bge-reranker-v2-m3 is single-label, so scores
+  # are in [0, 1]; the value must lie strictly inside (0, 1). The model
+  # itself could not be downloaded to confirm on the build host, so the
+  # calibration run below also prints the observed min/max -- check they are
+  # within [0, 1].
+  # Uncalibrated: no number is shipped because an eyeballed threshold is the
+  # exact defect the audit flagged for intent.genre_match_threshold -- a gate
+  # set too high silently empties answerable queries, too low gates nothing.
+  # Calibrate on the golden set's dev split, on the GPU box (the scores come
+  # from the real reranker):
+  #   python manage.py evaluate_scoring --intent oracle --gate-report
+  # It prints hit vs non-hit rerank_score distributions and, per candidate
+  # threshold, the share of hits it would drop and of queries it would empty.
+  # Pick the value by hand and judge it on the test split; the report never
+  # writes this file.
+  min_score: null
   max_length: 256
   # Characters of description passed to the cross-encoder. The model truncates
   # to its own max_length anyway; this keeps tokenizer work bounded.
