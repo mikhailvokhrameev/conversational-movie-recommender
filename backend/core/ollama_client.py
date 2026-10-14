@@ -168,6 +168,34 @@ Output exactly this shape, with nothing before, between, or after it:
 
 Do not add headings, bullet points, numbering, or a closing remark."""
 
+EXPLANATION_SYSTEM_PROMPT = """You are a movie recommendation assistant.
+
+Use the conversation history above for context on what the user has been asking for across turns, especially on a refinement of an earlier search.
+
+Answer in English, in two parts.
+
+PART 1 -- an opening line of one or two short sentences confirming the request and
+saying what this set has in common. Do NOT name any film title in the opening line.
+
+PART 2 -- for EACH movie above, in the same order, write its marker ([[1]], [[2]], ...)
+alone on a line, then two or three sentences about that one film: what it is about,
+and why it fits the request. Write about that film only, and never mention another one.
+
+Output exactly this shape, with nothing before, between, or after it:
+
+<opening line>
+[[1]]
+<description of movie 1>
+[[2]]
+<description of movie 2>
+
+Do not add headings, bullet points, numbering, or a closing remark."""
+
+EXPLANATION_TURN_TEMPLATE = """The user asked: "{query}"
+
+Movies:
+{movies_context}"""
+
 
 _THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
@@ -745,14 +773,24 @@ async def astream_conversational(message: str, history: list[dict] | None = None
         logger.warning(f"Conversational streaming failed: {e}")
 
 
-async def astream_explanation(query: str, movies: list[dict]):
+async def astream_explanation(query: str, movies: list[dict], history: list[dict] | None = None):
     """Async streaming variant of generate_explanation. Yields tokens as they arrive."""
+    history = history or []
+    messages = _build_chat_messages(
+        history=history,
+        system_prompt=EXPLANATION_SYSTEM_PROMPT,
+        current_content=EXPLANATION_TURN_TEMPLATE.format(
+            query=query, movies_context=_build_movies_context(movies)
+        ),
+        max_turns=settings.SESSION_HISTORY_MAX_TURNS,
+        max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
+    )
     try:
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
                 f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json=_explanation_payload(query, movies, stream=True),
+                json=_stream_chat_payload(messages),
                 timeout=settings.OLLAMA_TIMEOUTS["explanation"],
             ) as response:
                 response.raise_for_status()
@@ -772,8 +810,9 @@ async def astream_explanation(query: str, movies: list[dict]):
         logger.warning(f"Async explanation streaming failed: {e}")
 
 
-async def astream_explanation_parts(query: str, movies: list[dict]):
+async def astream_explanation_parts(query: str, movies: list[dict], history: list[dict] | None = None):
     """Stream the explanation already routed into slots. Yields `(slot, text)`.
+    `history` is forwarded to `astream_explanation` for conversation context.
 
     `slot` is None for the opening line and a 0-based index into `movies` for
     each per-movie description -- see `ExplanationSplitter`. `astream_explanation`
@@ -781,7 +820,7 @@ async def astream_explanation_parts(query: str, movies: list[dict]):
     testable on its own, without an HTTP stream in the way.
     """
     splitter = ExplanationSplitter(len(movies))
-    async for token in astream_explanation(query, movies):
+    async for token in astream_explanation(query, movies, history):
         for part in splitter.feed(token):
             yield part
     for part in splitter.flush():

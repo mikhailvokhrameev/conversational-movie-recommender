@@ -14,6 +14,8 @@ from core.ollama_client import (
     _build_chat_messages,
     aclassify_and_parse,
     astream_conversational,
+    astream_explanation,
+    astream_explanation_parts,
     check_explanation_titles,
     CATALOG_GENRES,
     MessageIntent,
@@ -581,3 +583,80 @@ class TestStreamConversationalHistory:
             {"role": "system", "content": sent_messages[0]["content"]},
             {"role": "user", "content": "hi"},
         ]
+
+
+class TestStreamExplanationHistory:
+    @pytest.mark.asyncio
+    async def test_history_included_in_streamed_request(self):
+        lines = [json.dumps({"message": {"content": "Great pick"}})]
+        mock_client = _mock_streaming_client(lines)
+        history = [
+            {"role": "user", "content": "хочу триллер"},
+            {"role": "assistant", "content": "Вот несколько триллеров", "movies": ["Прибытие"]},
+        ]
+        movies = [{"serial_name": "Семь", "genres": ["Thriller"], "description": "A detective story"}]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            tokens = [t async for t in astream_explanation("хочу еще триллер", movies, history)]
+
+        assert "".join(tokens) == "Great pick"
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert sent_messages[0]["role"] == "system"
+        assert sent_messages[1] == {"role": "user", "content": "хочу триллер"}
+        assert sent_messages[2]["content"] == "Вот несколько триллеров\n\n(Recommended: Прибытие)"
+        assert 'The user asked: "хочу еще триллер"' in sent_messages[-1]["content"]
+        assert "Семь" in sent_messages[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_no_history_argument_defaults_to_empty(self):
+        lines = [json.dumps({"message": {"content": "OK"}})]
+        mock_client = _mock_streaming_client(lines)
+        movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            tokens = [t async for t in astream_explanation("q", movies)]
+
+        assert "".join(tokens) == "OK"
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert sent_messages[0]["role"] == "system"
+        assert sent_messages[1]["role"] == "user"
+        assert len(sent_messages) == 2
+
+    @pytest.mark.asyncio
+    async def test_system_message_carries_two_part_marker_format(self):
+        lines = [json.dumps({"message": {"content": "x"}})]
+        mock_client = _mock_streaming_client(lines)
+        movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            _ = [t async for t in astream_explanation("q", movies)]
+
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert "PART 1" in sent_messages[0]["content"]
+        assert "PART 2" in sent_messages[0]["content"]
+        assert "[[" in sent_messages[0]["content"]
+        assert "[[1]]" in sent_messages[-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_parts_stream_yields_slots_with_history_in_request(self):
+        lines = [
+            json.dumps({"message": {"content": "Here are some thrillers.\n"}}),
+            json.dumps({"message": {"content": "[[1]]\n"}}),
+            json.dumps({"message": {"content": "A tense detective story."}}),
+        ]
+        mock_client = _mock_streaming_client(lines)
+        history = [
+            {"role": "user", "content": "хочу триллер"},
+            {"role": "assistant", "content": "Вот триллеры", "movies": ["Прибытие"]},
+        ]
+        movies = [{"serial_name": "Семь", "genres": ["Thriller"], "description": "A detective story"}]
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            parts = [p async for p in astream_explanation_parts("q", movies, history)]
+
+        sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
+        assert sent_messages[1] == {"role": "user", "content": "хочу триллер"}
+        assert parts
+        assert all(isinstance(slot, (int, type(None))) and isinstance(text, str) for slot, text in parts)
+        assert "Here are some thrillers." in "".join(t for s, t in parts if s is None)
+        assert "A tense detective story." in "".join(t for s, t in parts if s == 0)
