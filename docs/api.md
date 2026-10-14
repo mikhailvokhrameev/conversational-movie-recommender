@@ -292,7 +292,10 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
    reply has finished streaming, an `assistant` entry with the reply text.
    For search and refinement turns the assistant entry also carries the
    recommended movie titles (`movies`), and its text is the opening line plus
-   the per-movie descriptions joined by blank lines. Every live-chat LLM call
+   the per-movie descriptions joined by blank lines. If the explanation comes
+   back empty (or fails) after the cards were shown, the entry is still stored
+   with empty `content` plus `movies`, and replays to the model as
+   "(Recommended: ...)". Every live-chat LLM call
    (classification, conversational reply, explanation) replays this history,
    capped by `session.history_max_turns` / `session.history_max_chars_per_entry`
    in `params.yaml`, so the model sees real multi-turn context rather than

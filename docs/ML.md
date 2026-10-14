@@ -314,8 +314,9 @@ explicit refinement dominate the vector instead of blending.
 update is applied *before* scoring, so the `session` signal of that very turn
 already points at the correction -- applying it only when saving would have
 fixed the *next* turn and left this one scored against the stale direction.
-The saved vector is that same one (one formula, no divergence between what was
-scored and what was stored). On a `new_search` turn the pre-turn vector is used
+The saved vector is recomputed from the row-locked session in `_save_session`
+(same formula, `alpha_refinement` for a refinement), so it equals the scored one
+outside a concurrent-turn race and can differ from it during one. On a `new_search` turn the pre-turn vector is used
 for scoring and the regular `alpha` update is applied afterwards when saving:
 the current query is already in the `semantic` signal, so folding it into the
 `session` signal as well would count it twice. On the first turn there is no
