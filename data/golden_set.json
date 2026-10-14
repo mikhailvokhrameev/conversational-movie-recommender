@@ -301,7 +301,7 @@
       "negated_genres": ["Family"],
       "oracle_intent": {"genres": ["Animation"], "negations": ["Family"]},
       "relevant": [
-        {"title": "Perfect Blue", "year": 1997, "grade": 2},
+        {"title": "Perfect Blue", "year": 1998, "grade": 2},
         {"title": "Akira", "year": 1988, "grade": 2},
         {"title": "Waltz with Bashir", "year": 2008},
         {"title": "Persepolis", "year": 2007},
