@@ -31,6 +31,11 @@ candidate_generation.generate_candidates(query_vec, intent, query_text)
   |        lexical  -- Postgres full-text over title/original_title/keywords, top-100
   |   3. Fuse the two rankings via RRF -> top-100 candidates
   v
+session_manager.vector_for_scoring()      ──> session vector this turn is scored with:
+  |                                             refinement -> EMA with alpha_refinement,
+  |                                               applied before scoring
+  |                                             new_search -> pre-turn vector, unchanged
+  v
 scoring.score_candidates() over the whole candidate set
   |   min-max normalize each signal across the set, then:
   |   semantic:    cosine_sim(query_vec, movie_vec)   * 0.35
@@ -54,7 +59,10 @@ ollama_client.astream_explanation()       ──> streamed RAG explanation (raw 
 ollama_client.astream_explanation_parts() ──> same stream split into (slot, text) pairs
   |                                             slot None = intro, 0..N-1 = movie index
   v
-session_manager.update_preference_vector()  ──> EMA blend into session vector
+session_manager.update_preference_vector()  ──> EMA blend into session vector, saved
+  |                                               under the row lock (new_search: alpha,
+  |                                               after scoring; refinement: the same
+  |                                               alpha_refinement vector scored with)
 session_manager.track_explicit_preferences() ──> accumulate liked/disliked genres
 ```
 
@@ -257,6 +265,19 @@ With `alpha=0.7`, the most recent query contributes 70% of the signal. Turns
 classified `refinement` use `alpha_refinement=0.92` instead, so an explicit
 correction dominates the vector rather than blending with the turn before it
 (see Design Decisions).
+
+**Which vector scores the turn** (`vector_for_scoring(current_vector, query_embedding,
+category)`): returns the vector the `session` scoring signal uses on this turn. For a
+`refinement` it applies the `alpha_refinement` update *before* scoring, so the turn
+that carries the correction is already scored against it, and the vector saved
+afterwards is that same already-updated one. For a `new_search` it returns the pre-turn
+vector unchanged and the regular `alpha` update is applied afterwards, when saving --
+the current query is already in the `semantic` signal, so blending it into the
+`session` signal too would count it twice. With no vector yet (first turn) it returns
+`None`. It is scoring-only: `_save_session` in `movies/views.py` recomputes the stored
+vector from the row-locked session (with `alpha_refinement` for a refinement), which
+equals the scoring-time vector outside a concurrent-turn race and keeps concurrent
+turns from overwriting each other.
 
 **Explicit preferences**: Accumulates liked genres, disliked genres, themes, and
 reference films extracted from parsed intent.
