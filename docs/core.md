@@ -18,6 +18,12 @@ ollama_client.aclassify_and_parse()   ──> category + structured intent (one 
 embedding_service.encode_query()      ──> 1024-dim query vector (BGE-M3)
   |
   v
+session_manager.vector_for_scoring()  ──> session vector this turn is scored with
+  |                                         (consumed later by scoring.score_candidates()):
+  |                                         refinement -> EMA with alpha_refinement,
+  |                                           applied before scoring
+  |                                         new_search -> pre-turn vector, unchanged
+  v
 candidate_generation.generate_candidates(query_vec, intent, query_text)
   |   1. HARD FILTERS (SQL WHERE, not scoring signals):
   |        - exclude movies matching negated genres
@@ -30,11 +36,6 @@ candidate_generation.generate_candidates(query_vec, intent, query_text)
   |        semantic -- exact cosine distance, top-100
   |        lexical  -- Postgres full-text over title/original_title/keywords, top-100
   |   3. Fuse the two rankings via RRF -> top-100 candidates
-  v
-session_manager.vector_for_scoring()      ──> session vector this turn is scored with:
-  |                                             refinement -> EMA with alpha_refinement,
-  |                                               applied before scoring
-  |                                             new_search -> pre-turn vector, unchanged
   v
 scoring.score_candidates() over the whole candidate set
   |   min-max normalize each signal across the set, then:
@@ -134,16 +135,17 @@ capped history window + the current turn), so short follow-ups like "another one
 "давай" resolve against what was actually said instead of a flattened summary. The
 window is capped by `session.history_max_turns` (6 user/assistant pairs) and
 `session.history_max_chars_per_entry` (1000) in `params.yaml` (both minimum 1 --
-`settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and
-every Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived session's
-prompt stays bounded: a heavy-use prompt (system prompt + 6 history pairs at ~500 tokens/pair + current turn
-with movie context + answer) is ~5.5k tokens (~0.6k headroom). This is a budget, not a guard -- if a
-prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start
-(dropping the system prompt and oldest turns first) with no error. All calls must
-use the same `num_ctx` (one helper, `_ollama_options()`, feeds every payload),
-because a differing value makes Ollama reload the model. The sync API (`parse_intent`, `generate_explanation`,
-`stream_explanation`), used by management commands and evaluation, is unaffected and
-still builds a single-message prompt.
+`settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and every
+Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived
+session's prompt stays bounded: a heavy-use prompt (system prompt + 6 history pairs at
+~500 tokens/pair + current turn with movie context + answer) is ~5.5k tokens (~0.6k
+headroom). This is a budget, not a guard -- if a prompt ever did exceed `num_ctx`,
+Ollama silently truncates it from the start (dropping the system prompt and oldest turns
+first) with no error. All calls must use the same `num_ctx` (one helper,
+`_ollama_options()`, feeds every payload), because a differing value makes Ollama reload
+the model. The sync API (`parse_intent`, `generate_explanation`, `stream_explanation`),
+used by management commands and evaluation, is unaffected and still builds a
+single-message prompt.
 
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
