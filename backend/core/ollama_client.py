@@ -754,11 +754,24 @@ _DIGEST_LOOKUP_TIMEOUT_SECONDS = 5.0
 
 
 def _model_digest(tags) -> str | None:
-    """The digest of the configured model in an `/api/tags` body, if listed."""
+    """The digest of the configured model in an `/api/tags` body, if listed.
+
+    Type-defensive: the body comes from the network, and this runs on the first
+    request of a process, so a malformed shape must yield None, not an exception.
+    """
+    if not isinstance(tags, dict):
+        return None
+    models = tags.get("models")
+    if not isinstance(models, list):
+        return None
     wanted = {settings.OLLAMA_MODEL, f"{settings.OLLAMA_MODEL}:latest"}
-    for entry in tags.get("models", []):
-        if entry.get("name") in wanted:
-            return entry.get("digest")
+    for entry in models:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name")
+        if isinstance(name, str) and name in wanted:
+            digest = entry.get("digest")
+            return digest if isinstance(digest, str) else None
     return None
 
 
@@ -781,7 +794,7 @@ def _log_model_digest_once() -> None:
         )
         response.raise_for_status()
         _report_model_digest(response.json())
-    except (httpx.HTTPError, ValueError, AttributeError) as e:
+    except Exception as e:  # logging must never fail a request
         logger.warning("Could not read the Ollama model digest: %s", e)
 
 
@@ -797,7 +810,7 @@ async def _alog_model_digest_once(client: httpx.AsyncClient) -> None:
         )
         response.raise_for_status()
         _report_model_digest(response.json())
-    except (httpx.HTTPError, ValueError, AttributeError) as e:
+    except Exception as e:  # logging must never fail a request
         logger.warning("Could not read the Ollama model digest: %s", e)
 
 

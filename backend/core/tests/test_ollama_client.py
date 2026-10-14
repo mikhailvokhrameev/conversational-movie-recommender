@@ -1298,6 +1298,28 @@ class TestModelDigestLogging:
         with patch("core.ollama_client.httpx.get", return_value=response):
             _log_model_digest_once()
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"models": None},
+            ["not", "a", "dict"],
+            {"models": "qwen3:8b"},
+            {"models": ["qwen3:8b", None, 3]},
+            {"models": [{"name": 7, "digest": "sha256:zzz"}, {"name": None}]},
+        ],
+    )
+    def test_malformed_tags_bodies_never_raise(self, body, caplog):
+        response = MagicMock()
+        response.json.return_value = body
+        with patch("core.ollama_client.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_model_digest_once()
+        assert any("digest unknown" in r.getMessage() for r in caplog.records)
+
+    def test_any_exception_in_the_lookup_is_swallowed(self):
+        with patch("core.ollama_client.httpx.get", side_effect=TypeError("boom")):
+            _log_model_digest_once()
+
     def test_model_missing_from_tags_is_reported(self, caplog, settings):
         settings.OLLAMA_MODEL = "absent:1b"
         response = MagicMock()
@@ -1332,6 +1354,23 @@ class TestModelDigestLogging:
         client = AsyncMock()
         client.get.side_effect = httpx.ConnectError("down")
         await _alog_model_digest_once(client)
+
+    @pytest.mark.asyncio
+    async def test_async_any_exception_in_the_lookup_is_swallowed(self):
+        client = AsyncMock()
+        client.get.side_effect = TypeError("boom")
+        await _alog_model_digest_once(client)
+
+    @pytest.mark.asyncio
+    async def test_classify_still_parses_when_the_digest_lookup_blows_up(self):
+        mock_client = _mock_ollama_responses('{"category": "general_chat"}')
+        mock_client.get = AsyncMock(
+            return_value=MagicMock(json=MagicMock(return_value={"models": None}))
+        )
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            result = await aclassify_and_parse("hi")
+        assert result is not None
+        assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_first_chat_request_triggers_the_lookup(self):
