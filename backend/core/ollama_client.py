@@ -56,7 +56,7 @@ Categories (put the best match in "category"):
 - "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
 - "general_chat": greetings, thanks, questions about the bot (e.g. "hi", "thanks", "how do you work?")
 
-The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the conversation history above it, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
+The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the earlier messages of this conversation, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
 
 ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
@@ -101,7 +101,7 @@ Rules:
 - Always respond in English
 - If the user asks about anything unrelated to movies or cinema, politely redirect: say you are a movie assistant and suggest discussing films instead
 - Be concise, friendly, and knowledgeable about cinema
-- Use the conversation history above to understand what the user is referring to, especially short replies like agreements or follow-up questions
+- Use the earlier messages in this conversation to understand what the user is referring to, especially short replies like agreements or follow-up questions
 """
 
 INTENT_PROMPT = """You are a movie intent parser. Given a user query, return a JSON object.
@@ -170,14 +170,14 @@ Do not add headings, bullet points, numbering, or a closing remark."""
 
 EXPLANATION_SYSTEM_PROMPT = """You are a movie recommendation assistant.
 
-Use the conversation history above for context on what the user has been asking for across turns, especially on a refinement of an earlier search.
+Use the earlier messages in this conversation for context on what the user has been asking for across turns, especially on a refinement of an earlier search.
 
 Answer in English, in two parts.
 
 PART 1 -- an opening line of one or two short sentences confirming the request and
 saying what this set has in common. Do NOT name any film title in the opening line.
 
-PART 2 -- for EACH movie above, in the same order, write its marker ([[1]], [[2]], ...)
+PART 2 -- for EACH movie listed in the user's latest message, in the same order, write its marker ([[1]], [[2]], ...)
 alone on a line, then two or three sentences about that one film: what it is about,
 and why it fits the request. Write about that film only, and never mention another one.
 
