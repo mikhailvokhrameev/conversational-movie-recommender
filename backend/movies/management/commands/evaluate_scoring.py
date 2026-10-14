@@ -7,6 +7,7 @@ Usage:
   python manage.py evaluate_scoring --llm-judge            # + LLM judge (secondary signal)
   python manage.py evaluate_scoring --sweep                # weight grid search, dev split only
   python manage.py evaluate_scoring --weights 0.5,0.3,0.2  # custom weights
+  python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -21,6 +22,10 @@ What makes this an honest measurement:
   - Multi-turn entries get a session vector built the way production builds it.
   - `--sweep` only ever selects on the dev split; the plain eval defaults to
     the held-out test split.
+  - `--gate-report` runs with the relevance gate off and prints how rerank_score
+    separates labelled hits from the rest, plus what each candidate threshold
+    would drop. It informs a human choice of reranking.min_score and never
+    writes params.yaml.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
@@ -43,6 +48,7 @@ from core.evaluation import (
     compute_genre_frequency,
     coverage,
     evaluate_query,
+    gate_report,
     llm_relevance_score,
 )
 from core.golden_set import (
@@ -65,7 +71,9 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # metrics) but counted as misclassified -- in production it would have
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat")
-OWN_OPTIONS = ("golden_set", "split", "intent", "k", "sweep", "weights", "llm_judge", "output")
+OWN_OPTIONS = (
+    "golden_set", "split", "intent", "k", "sweep", "gate_report", "weights", "llm_judge", "output",
+)
 
 
 def _catalog_stats() -> tuple[dict[str, float], int]:
@@ -159,6 +167,13 @@ class Command(BaseCommand):
             help="Run grid search over weight space (dev split only)",
         )
         parser.add_argument(
+            "--gate-report",
+            action="store_true",
+            help="Calibration report for reranking.min_score: with the gate off, the "
+                 "rerank_score of hits vs non-hits and the effect of candidate thresholds "
+                 "(dev split only)",
+        )
+        parser.add_argument(
             "--weights",
             type=str,
             default=None,
@@ -183,10 +198,18 @@ class Command(BaseCommand):
         if k < 1:
             raise CommandError("--k must be at least 1")
         sweep = options["sweep"]
-        split = options["split"] or ("dev" if sweep else "test")
+        report_gate = options["gate_report"]
+        if sweep and report_gate:
+            raise CommandError("--sweep and --gate-report are separate runs; pick one.")
+        split = options["split"] or ("dev" if sweep or report_gate else "test")
         if sweep and split != "dev":
             raise CommandError(
                 f"--sweep selects weights, so it only runs on the dev split (got --split {split}); "
+                "the test split is held out for the final report."
+            )
+        if report_gate and split != "dev":
+            raise CommandError(
+                f"--gate-report picks a threshold, so it only runs on the dev split (got --split {split}); "
                 "the test split is held out for the final report."
             )
         intent_mode = options["intent"]
@@ -218,7 +241,7 @@ class Command(BaseCommand):
 
         record = {
             "timestamp": started.isoformat(),
-            "mode": "sweep" if sweep else "eval",
+            "mode": "sweep" if sweep else "gate_report" if report_gate else "eval",
             "git": _git_state(),
             "params_file": str(settings.PARAMS_FILE),
             "params_sha256": _sha256(settings.PARAMS_FILE),
@@ -236,7 +259,12 @@ class Command(BaseCommand):
             record["best_weights"] = record["configs"][0]["weights"]
         else:
             record["weights"] = weights
-            record.update(self._run_eval(prepared, k, weights, use_llm))
+            # The report needs every returned movie's score, including the ones
+            # the gate would drop, so its run is ungated.
+            record.update(self._run_eval(prepared, k, weights, use_llm, apply_gate=not report_gate))
+            if report_gate:
+                record["gate_report"] = gate_report(record["queries"])
+                self._write_gate_report(record["gate_report"])
 
         output = Path(options["output"]) if options["output"] else (
             Path("eval_runs") / f"{record['mode']}-{started.strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -340,11 +368,13 @@ class Command(BaseCommand):
         # judge sees the conversation the system saw.
         return " -> ".join([*entry.get("context", []), entry["query"]])
 
-    def _score_query(self, p: PreparedQuery, k: int, weights: dict, use_llm: bool) -> dict:
+    def _score_query(
+        self, p: PreparedQuery, k: int, weights: dict, use_llm: bool, apply_gate: bool = True,
+    ) -> dict:
         entry = p.entry
-        top, _ = generate_and_score(
+        top, pool = generate_and_score(
             p.query_embedding, p.intent, p.session_vector,
-            query_text=entry["query"], weights=weights, top_n=k,
+            query_text=entry["query"], weights=weights, top_n=k, apply_gate=apply_gate,
         )
         recommended_ids = [m["tmdb_id"] for m in top]
 
@@ -381,9 +411,20 @@ class Command(BaseCommand):
             "category": p.category,
             "intent": p.intent,
             "recommended": [
-                {"tmdb_id": m["tmdb_id"], "title": m["serial_name"], "release_date": m.get("release_date")}
+                {
+                    "tmdb_id": m["tmdb_id"], "title": m["serial_name"],
+                    "release_date": m.get("release_date"),
+                    # None when the reranker did not score this request.
+                    "rerank_score": m.get("rerank_score"),
+                    "hit": m["tmdb_id"] in p.grades,
+                }
                 for m in top
             ],
+            # Best cross-encoder score in the whole reranked pool: with the
+            # gate on, a query is empty exactly when this is below min_score.
+            "pool_max_rerank_score": max(
+                (c["rerank_score"] for c in pool if c.get("rerank_score") is not None), default=None,
+            ),
             "hits": [tmdb_id for tmdb_id in recommended_ids if tmdb_id in p.grades],
             "resolved_refs": len(p.grades),
             "unresolved_refs": [reference_label(ref) for ref in p.unresolved],
@@ -399,8 +440,11 @@ class Command(BaseCommand):
             result["judge_failures"] = sum(1 for s in judge_scores if s is None)
         return result
 
-    def _evaluate(self, prepared: list[PreparedQuery], k: int, weights: dict, use_llm: bool) -> dict:
-        queries = [self._score_query(p, k, weights, use_llm) for p in prepared]
+    def _evaluate(
+        self, prepared: list[PreparedQuery], k: int, weights: dict, use_llm: bool,
+        apply_gate: bool = True,
+    ) -> dict:
+        queries = [self._score_query(p, k, weights, use_llm, apply_gate) for p in prepared]
         aggregate = aggregate_metrics([q["metrics"] for q in queries])
         aggregate["coverage"] = coverage(
             [[r["tmdb_id"] for r in q["recommended"]] for q in queries], self.catalog_size,
@@ -411,6 +455,7 @@ class Command(BaseCommand):
             "unscorable_queries": sum(1 for q in queries if q["unscorable"]),
             "unresolved_refs": sum(len(p.unresolved) for p in prepared),
             "judge_failures": sum(q.get("judge_failures", 0) for q in queries),
+            "empty_results": sum(1 for q in queries if not q["recommended"]),
             "misclassified": sum(1 for p in prepared if p.misclassified),
             "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
         }
@@ -427,12 +472,12 @@ class Command(BaseCommand):
                 "before trusting this as an e2e result."
             ))
 
-    def _run_eval(self, prepared, k, weights, use_llm) -> dict:
+    def _run_eval(self, prepared, k, weights, use_llm, apply_gate=True) -> dict:
         self.stdout.write(
             f"Weights: semantic={weights['semantic']}, metadata={weights['metadata']}, "
             f"session={weights['session']}, popularity={weights['popularity']}"
         )
-        result = self._evaluate(prepared, k, weights, use_llm)
+        result = self._evaluate(prepared, k, weights, use_llm, apply_gate)
 
         for q in result["queries"]:
             m = q["metrics"]
@@ -464,6 +509,45 @@ class Command(BaseCommand):
             self.stdout.write(f"  {key}: {value:.4f}")
         self._write_counters(result["counters"])
         return result
+
+    def _write_gate_report(self, report: dict) -> None:
+        self.stdout.write("\n" + "=" * 70)
+        self.stdout.write(
+            "GATE CALIBRATION (reranking.min_score; gate off for this run, dev split)"
+        )
+        considered = report["queries_considered"]
+        self.stdout.write(
+            f"  queries: {considered} with scores, {report['queries_unscorable']} unscorable "
+            f"(no resolved labels), {report['queries_without_scores']} without rerank scores"
+        )
+        if not considered:
+            self.stdout.write(self.style.WARNING(
+                "No rerank scores were collected -- the reranker is disabled, failed to load, "
+                "or failed to predict. Fix that before calibrating anything."
+            ))
+            return
+        self.stdout.write(f"\n  {'rerank_score':14s} {'count':>6} {'min':>8} {'q1':>8} {'median':>8} {'q3':>8} {'max':>8}")
+        for label, key in (("hits", "hits"), ("non-hits", "non_hits")):
+            d = report[key]
+            cells = "".join(f" {d[c]:>8.4f}" if d[c] is not None else f" {'-':>8}" for c in ("min", "q1", "median", "q3", "max"))
+            self.stdout.write(f"  {label:14s} {d['count']:>6}{cells}")
+
+        def pct(share):
+            return f"{share:>7.1%}" if share is not None else f"{'-':>7}"
+
+        self.stdout.write(
+            f"\n  {'min_score':>9} {'hits dropped':>13} {'non-hits dropped':>17} {'queries emptied':>16}"
+        )
+        for row in report["thresholds"]:
+            self.stdout.write(
+                f"  {row['min_score']:>9.3f} {pct(row['hits_dropped_share']):>13} "
+                f"{pct(row['non_hits_dropped_share']):>17} {pct(row['queries_emptied_share']):>16}"
+            )
+        self.stdout.write(
+            "\nPick a value by hand (a threshold that drops few hits but many non-hits), set "
+            "reranking.min_score in params.yaml, and judge it on the test split. This command "
+            "never writes params.yaml."
+        )
 
     def _run_sweep(self, prepared, k, use_llm) -> list[dict]:
         if use_llm:

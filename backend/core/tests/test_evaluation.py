@@ -9,6 +9,7 @@ import pytest
 from core.evaluation import (
     aggregate_metrics,
     evaluate_query,
+    gate_report,
     judge_ndcg,
     llm_relevance_score,
     ndcg_at_k,
@@ -162,3 +163,89 @@ class TestEvaluationSettingsValidation:
 
         _validate_evaluation({"judge_description_chars": 300, "judge_timeout_seconds": 30})
         _validate_evaluation({"judge_description_chars": 1, "judge_timeout_seconds": 0.5})
+
+
+def _gq(returned, pool_max, unscorable=False):
+    """A per-query result as evaluate_scoring records it: `returned` is a list
+    of (rerank_score, is_hit)."""
+    return {
+        "unscorable": unscorable,
+        "recommended": [{"rerank_score": score, "hit": hit} for score, hit in returned],
+        "pool_max_rerank_score": pool_max,
+    }
+
+
+class TestGateReport:
+    """Pure function: which hits / queries a candidate min_score would remove."""
+
+    def test_distributions_split_hits_from_non_hits(self):
+        queries = [
+            _gq([(0.9, True), (0.5, False), (0.1, False)], 0.9),
+            _gq([(0.7, True), (0.3, False)], 0.7),
+        ]
+        report = gate_report(queries, thresholds=[0.5])
+        assert report["hits"] == {"count": 2, "min": 0.7, "q1": 0.75, "median": 0.8, "q3": 0.85, "max": 0.9}
+        assert report["non_hits"]["count"] == 3
+        assert report["non_hits"]["min"] == 0.1
+        assert report["non_hits"]["median"] == 0.3
+        assert report["non_hits"]["max"] == 0.5
+
+    def test_threshold_row_shares(self):
+        queries = [
+            _gq([(0.9, True), (0.2, True), (0.1, False)], 0.9),
+            _gq([(0.3, True), (0.05, False)], 0.3),
+            _gq([(0.04, False)], 0.04),
+        ]
+        report = gate_report(queries, thresholds=[0.25, 0.5])
+        low, high = report["thresholds"]
+        assert low["min_score"] == 0.25
+        # hits 0.9 / 0.2 / 0.3: only 0.2 is below 0.25
+        assert low["hits_dropped_share"] == pytest.approx(1 / 3)
+        # non-hits 0.1 / 0.05 / 0.04 all below
+        assert low["non_hits_dropped_share"] == 1.0
+        # a query empties when even its best pool score is below the threshold
+        assert low["queries_emptied_share"] == pytest.approx(1 / 3)
+        assert high["hits_dropped_share"] == pytest.approx(2 / 3)
+        assert high["queries_emptied_share"] == pytest.approx(2 / 3)
+
+    def test_threshold_is_inclusive_like_the_gate(self):
+        report = gate_report([_gq([(0.5, True)], 0.5)], thresholds=[0.5])
+        row = report["thresholds"][0]
+        assert row["hits_dropped_share"] == 0.0
+        assert row["queries_emptied_share"] == 0.0
+
+    def test_empty_pool_max_uses_pool_not_returned_list(self):
+        # The gate runs on the whole pool before MMR, so a query is empty iff the
+        # pool's best score is below the threshold, whatever MMR returned.
+        report = gate_report([_gq([(0.2, False)], 0.8)], thresholds=[0.5])
+        assert report["thresholds"][0]["queries_emptied_share"] == 0.0
+
+    def test_unscorable_and_unscored_queries_are_excluded_and_counted(self):
+        queries = [
+            _gq([(0.9, True)], 0.9),
+            _gq([(0.1, False)], 0.1, unscorable=True),
+            _gq([(None, False)], None),  # reranker produced no scores
+        ]
+        report = gate_report(queries, thresholds=[0.5])
+        assert report["queries_considered"] == 1
+        assert report["queries_without_scores"] == 1
+        assert report["queries_unscorable"] == 1
+        assert report["non_hits"]["count"] == 0
+        assert report["thresholds"][0]["queries_emptied_share"] == 0.0
+
+    def test_unscored_movies_inside_a_scored_query_are_skipped(self):
+        report = gate_report([_gq([(0.9, True), (None, False)], 0.9)], thresholds=[0.5])
+        assert report["non_hits"]["count"] == 0
+
+    def test_no_data_gives_null_shares_not_zero_division(self):
+        report = gate_report([], thresholds=[0.5])
+        assert report["hits"]["count"] == 0
+        assert report["hits"]["min"] is None
+        row = report["thresholds"][0]
+        assert row["hits_dropped_share"] is None
+        assert row["queries_emptied_share"] is None
+
+    def test_default_grid_is_sorted_and_inside_the_sigmoid_range(self):
+        grid = [row["min_score"] for row in gate_report([])["thresholds"]]
+        assert grid == sorted(grid)
+        assert all(0 < t < 1 for t in grid)

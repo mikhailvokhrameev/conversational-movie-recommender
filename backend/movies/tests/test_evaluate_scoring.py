@@ -313,6 +313,79 @@ class TestSplits:
         assert run.pipeline.call_count == 2 * len(record["configs"])
 
 
+class TestGateReport:
+    """--gate-report: dev-split calibration of reranking.min_score with the gate
+    off for the run."""
+
+    def _entries(self):
+        return [_entry("d1", "dev"), _entry("d2", "dev"), _entry("t1", "test")]
+
+    @staticmethod
+    def _scored_movies():
+        movies = [_movie(1), _movie(2), _movie(3)]
+        for movie, score in zip(movies, (0.9, 0.2, 0.05)):
+            movie["rerank_score"] = score
+        return movies
+
+    def test_defaults_to_dev_and_records_the_report(self, tmp_path):
+        run = _Run(tmp_path, self._entries(), movies=self._scored_movies(), grades={1: 2})
+        record = run("--gate-report", "--intent", "oracle")
+
+        assert record["mode"] == "gate_report"
+        assert record["split"] == "dev"
+        assert {q["id"] for q in record["queries"]} == {"d1", "d2"}
+        report = record["gate_report"]
+        assert report["queries_considered"] == 2
+        # tmdb 1 is the only labelled movie: one hit (0.9), two non-hits per query
+        assert report["hits"]["count"] == 2 and report["hits"]["min"] == 0.9
+        assert report["non_hits"]["count"] == 4 and report["non_hits"]["max"] == 0.2
+        assert all("hits_dropped_share" in row for row in report["thresholds"])
+        assert record["queries"][0]["pool_max_rerank_score"] == 0.9
+        assert [r["rerank_score"] for r in record["queries"][0]["recommended"]] == [0.9, 0.2, 0.05]
+        assert "queries emptied" in run.stdout
+
+    def test_runs_the_pipeline_with_the_gate_disabled(self, tmp_path):
+        run = _Run(tmp_path, self._entries(), movies=self._scored_movies())
+        run("--gate-report", "--intent", "oracle")
+        assert all(call.kwargs["apply_gate"] is False for call in run.pipeline.call_args_list)
+
+    def test_plain_eval_keeps_the_gate_on(self, tmp_path):
+        run = _Run(tmp_path, self._entries())
+        run("--intent", "oracle")
+        assert all(call.kwargs["apply_gate"] is True for call in run.pipeline.call_args_list)
+
+    @pytest.mark.parametrize("split", ["test", "all"])
+    def test_refuses_anything_but_dev(self, tmp_path, split):
+        with pytest.raises(CommandError, match="dev"):
+            _Run(tmp_path, self._entries())("--gate-report", "--split", split)
+
+    def test_cannot_combine_with_sweep(self, tmp_path):
+        with pytest.raises(CommandError, match="sweep"):
+            _Run(tmp_path, self._entries())("--gate-report", "--sweep")
+
+    def test_warns_when_the_reranker_produced_no_scores(self, tmp_path):
+        run = _Run(tmp_path, self._entries())  # movies carry no rerank_score
+        record = run("--gate-report", "--intent", "oracle")
+        assert record["gate_report"]["queries_considered"] == 0
+        assert "no rerank scores" in run.stdout.lower()
+
+    def test_does_not_touch_params_yaml(self, tmp_path):
+        from django.conf import settings
+
+        before = settings.PARAMS_FILE.read_bytes()
+        _Run(tmp_path, self._entries(), movies=self._scored_movies())("--gate-report", "--intent", "oracle")
+        assert settings.PARAMS_FILE.read_bytes() == before
+
+
+class TestEmptyResults:
+    def test_counts_queries_the_gate_left_empty(self, tmp_path):
+        run = _Run(tmp_path, [_entry()], movies=[])
+        record = run("--intent", "oracle")
+        assert record["counters"]["empty_results"] == 1
+        assert record["queries"][0]["recommended"] == []
+        assert record["queries"][0]["pool_max_rerank_score"] is None
+
+
 class TestRunRecord:
     def test_contains_provenance_and_counters(self, tmp_path, settings):
         run = _Run(tmp_path, [_entry()])
@@ -327,7 +400,10 @@ class TestRunRecord:
         assert record["timestamp"]
         assert set(record["counters"]) >= {"unresolved_refs", "judge_failures", "misclassified"}
         query = record["queries"][0]
-        assert query["recommended"][0] == {"tmdb_id": 1, "title": "Film 1", "release_date": "2000-01-01"}
+        assert query["recommended"][0] == {
+            "tmdb_id": 1, "title": "Film 1", "release_date": "2000-01-01",
+            "rerank_score": None, "hit": True,
+        }
         assert "ndcg_at_k" in record["aggregate"]
         assert record["aggregate"]["coverage"] == 2 / 100
 

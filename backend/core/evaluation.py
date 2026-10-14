@@ -5,6 +5,9 @@ Three categories of metrics:
   Beyond-accuracy: diversity, novelty, coverage
   LLM-as-judge:    graded relevance scoring via Ollama (opt-in, slow)
 
+plus `gate_report`, the calibration aid for the reranking.min_score relevance
+gate (it informs a human choice of threshold; it measures no ranking quality).
+
 Relevance is membership in the golden set's resolved movie ids, with optional
 grades -- never genre overlap: the `metadata` scoring signal *is* genre
 overlap with the intent, so a genre-defined "hit" would score the ranker
@@ -174,6 +177,79 @@ def llm_relevance_score(query: str, movie: dict) -> int | None:
     except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
         logger.warning(f"LLM judge failed for '{movie.get('serial_name', '')}': {e}")
         return None
+
+
+# Candidate thresholds for the gate calibration report. rerank_score is a
+# sigmoid output in [0, 1] and bge-reranker scores are heavily skewed toward
+# 0, so the low end is finer. A report grid, not a tuning knob.
+GATE_REPORT_THRESHOLDS = (
+    0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9,
+)
+
+
+def _distribution(values: list[float]) -> dict:
+    keys = ("min", "q1", "median", "q3", "max")
+    if not values:
+        return {"count": 0, **dict.fromkeys(keys)}
+    stats = np.percentile(values, [0, 25, 50, 75, 100])
+    return {"count": len(values), **{key: round(float(v), 6) for key, v in zip(keys, stats)}}
+
+
+def _share(part: int, whole: int) -> float | None:
+    return part / whole if whole else None
+
+
+def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
+    """What a candidate `reranking.min_score` would do, from an ungated run.
+
+    `queries` are per-query results of a run with the gate off, each with
+    `unscorable`, `pool_max_rerank_score`, and `recommended` entries carrying
+    `rerank_score` and `hit` (membership in the golden labels). Unscorable
+    queries have no ground truth to call anything a hit or non-hit, and queries
+    with no rerank scores (reranker unavailable) have nothing to threshold, so
+    both are left out and counted.
+
+    For each threshold: the share of returned hits and non-hits scoring below
+    it (the gate keeps `>=`), and the share of queries that would become empty.
+    Emptiness uses the best score in the whole reranked pool, not the returned
+    list: the gate runs before MMR on the full pool, so a query empties exactly
+    when nothing in the pool reaches the threshold. A share is None when its
+    denominator is zero.
+    """
+    considered = [
+        q for q in queries
+        if not q["unscorable"] and q.get("pool_max_rerank_score") is not None
+    ]
+    hit_scores, non_hit_scores = [], []
+    for q in considered:
+        for movie in q["recommended"]:
+            score = movie.get("rerank_score")
+            if score is not None:
+                (hit_scores if movie["hit"] else non_hit_scores).append(score)
+
+    rows = [
+        {
+            "min_score": threshold,
+            "hits_dropped_share": _share(sum(s < threshold for s in hit_scores), len(hit_scores)),
+            "non_hits_dropped_share": _share(
+                sum(s < threshold for s in non_hit_scores), len(non_hit_scores),
+            ),
+            "queries_emptied_share": _share(
+                sum(q["pool_max_rerank_score"] < threshold for q in considered), len(considered),
+            ),
+        }
+        for threshold in thresholds
+    ]
+    return {
+        "queries_considered": len(considered),
+        "queries_unscorable": sum(1 for q in queries if q["unscorable"]),
+        "queries_without_scores": sum(
+            1 for q in queries if not q["unscorable"] and q.get("pool_max_rerank_score") is None
+        ),
+        "hits": _distribution(hit_scores),
+        "non_hits": _distribution(non_hit_scores),
+        "thresholds": rows,
+    }
 
 
 def evaluate_query(
