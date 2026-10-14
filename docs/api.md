@@ -317,6 +317,7 @@ these can be changed -- no environment variable overrides them.
 | `llm.base_url` | `http://ollama:11434` | Ollama server URL |
 | `llm.model` | `qwen3:8b` | Model for classification, intent parsing, explanations |
 | `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
+| `llm.num_ctx` | `6144` | Context window sent as `options.num_ctx` on every LLM call (one value for all calls -- a change between requests makes Ollama reload the model); costs ~0.9 GB of KV-cache VRAM |
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | `BAAI/bge-m3` | Embedding model |
 | `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |
@@ -335,7 +336,7 @@ these can be changed -- no environment variable overrides them.
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
-| `session.history_max_turns` | `20` | Max past user/assistant pairs replayed to the LLM |
+| `session.history_max_turns` | `8` | Max past user/assistant pairs replayed to the LLM; sized so the worst-case prompt fits `llm.num_ctx` |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
 

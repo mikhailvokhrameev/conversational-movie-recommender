@@ -124,6 +124,7 @@ OLLAMA_BASE_URL = _llm["base_url"]
 OLLAMA_MODEL = _llm["model"]
 OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
 OLLAMA_THINKING = _llm["thinking"]
+OLLAMA_NUM_CTX = _llm["num_ctx"]
 
 _embedding = PARAMS["embedding"]
 EMBEDDING_MODEL = _embedding["model"]

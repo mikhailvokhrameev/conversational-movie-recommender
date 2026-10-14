@@ -85,7 +85,7 @@ overridable by an environment variable -- change the file and restart.
 
 | Section | Covers |
 |---------|--------|
-| `llm` | Ollama model, base URL, per-call timeouts |
+| `llm` | Ollama model, base URL, context window (`num_ctx`), per-call timeouts |
 | `embedding` | Embedding model and vector dimensions |
 | `retrieval` | Candidate count, RRF constants, lexical search settings |
 | `scoring` | Signal weights, neutral score |
@@ -150,17 +150,24 @@ VRAM with everything resident:
 
 ```
 qwen3:8b, Q4_K_M                 ~5.0 GB
+LLM KV cache (llm.num_ctx 6144)  ~0.9 GB
 bge-reranker-v2-m3, fp32         ~2.2 GB
 bge-m3 embedder, fp32            ~2.2 GB
 CUDA context + activations       ~1.0-1.5 GB
                                  --------
-                                 ~10.4-10.9 GB of 11 GB
+                                 ~11.3-11.8 GB of 11 GB
 ```
 
-Noticeably tighter than the old mpnet embedder's ~1.1GB -- BGE-M3 is in the
-same XLM-RoBERTa-large size class as the reranker. The reranker also loads
-fp32, not fp16 (sentence-transformers does not downcast it automatically).
-If it doesn't fit: a smaller `llm.model`, or `reranking.device: cpu`.
+On this estimate the budget is **exceeded**. The figure was already at the
+limit (~10.4-10.9 GB) before `llm.num_ctx` was set explicitly; the 6144-token
+KV cache (~0.147 MB/token for qwen3:8b) adds ~0.9 GB. These are estimates, not
+measurements -- check `nvidia-smi` with all three models loaded. The reranker
+also loads fp32, not fp16 (sentence-transformers does not downcast it
+automatically). If it doesn't fit, in order of preference: a smaller
+`llm.num_ctx` (lower `session.history_max_turns` with it so the prompt still
+fits), or a smaller `llm.model`. `reranking.device: cpu` is not an acceptable
+mitigation -- the reranker on CPU takes seconds per request, which misses the
+latency goals.
 
 ### Running without a GPU (manual hand-edit)
 

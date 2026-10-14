@@ -522,6 +522,12 @@ def _extract_intent(parsed: dict) -> dict:
     }
 
 
+def _ollama_options() -> dict:
+    """Ollama `options` sent with EVERY request. All calls must use the same
+    num_ctx: a differing value makes Ollama reload the model."""
+    return {"num_ctx": settings.OLLAMA_NUM_CTX}
+
+
 def _intent_payload(query: str) -> dict:
     return {
         "model": settings.OLLAMA_MODEL,
@@ -533,6 +539,7 @@ def _intent_payload(query: str) -> dict:
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
+        "options": _ollama_options(),
     }
 
 
@@ -559,6 +566,7 @@ def _classify_and_parse_payload(
         "format": "json",
         "stream": False,
         "think": settings.OLLAMA_THINKING,
+        "options": _ollama_options(),
     }
 
 
@@ -575,6 +583,7 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
         ],
         "stream": stream,
         "think": settings.OLLAMA_THINKING,
+        "options": _ollama_options(),
     }
 
 
@@ -587,6 +596,7 @@ def _stream_chat_payload(messages: list[dict]) -> dict:
         "messages": messages,
         "stream": True,
         "think": settings.OLLAMA_THINKING,
+        "options": _ollama_options(),
     }
 
 
@@ -597,6 +607,7 @@ def _chat_sync(messages: list[dict], json_mode: bool = False, timeout: float = 6
         "messages": messages,
         "stream": False,
         "think": settings.OLLAMA_THINKING,
+        "options": _ollama_options(),
     }
     if json_mode:
         payload["format"] = "json"

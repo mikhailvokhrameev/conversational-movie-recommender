@@ -12,6 +12,11 @@ from core.ollama_client import (
     _strip_think,
     _normalize_genres,
     _build_chat_messages,
+    _chat_sync,
+    _classify_and_parse_payload,
+    _explanation_payload,
+    _intent_payload,
+    _stream_chat_payload,
     aclassify_and_parse,
     astream_conversational,
     astream_explanation,
@@ -660,3 +665,33 @@ class TestStreamExplanationHistory:
         assert all(isinstance(slot, (int, type(None))) and isinstance(text, str) for slot, text in parts)
         assert "Here are some thrillers." in "".join(t for s, t in parts if s is None)
         assert "A tense detective story." in "".join(t for s, t in parts if s == 0)
+
+
+class TestOllamaOptions:
+    """Every LLM call must carry the same options.num_ctx -- a differing value
+    makes Ollama reload the model."""
+
+    def test_intent_payload_has_num_ctx(self, settings):
+        assert _intent_payload("a thriller")["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+
+    def test_classify_and_parse_payload_has_num_ctx(self, settings):
+        payload = _classify_and_parse_payload("hi", [])
+        assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+
+    def test_explanation_payload_has_num_ctx(self, settings):
+        for stream in (False, True):
+            payload = _explanation_payload("q", [], stream=stream)
+            assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+
+    def test_stream_chat_payload_has_num_ctx(self, settings):
+        payload = _stream_chat_payload([{"role": "user", "content": "hi"}])
+        assert payload["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}
+
+    def test_chat_sync_payload_has_num_ctx(self, settings):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": "ok"}}
+        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+            assert _chat_sync([{"role": "user", "content": "hi"}]) == "ok"
+            _chat_sync([{"role": "user", "content": "hi"}], json_mode=True)
+        for call in post.call_args_list:
+            assert call.kwargs["json"]["options"] == {"num_ctx": settings.OLLAMA_NUM_CTX}

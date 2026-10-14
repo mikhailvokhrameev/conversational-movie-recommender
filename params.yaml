@@ -15,16 +15,30 @@
 # swap below -- re-measure after the swap and adjust this comment):
 #
 #   qwen3:8b, Q4_K_M                     ~5.0 GB
+#   LLM KV cache at llm.num_ctx 6144     ~0.9 GB
 #   bge-reranker-v2-m3, fp32             ~2.2 GB
 #   bge-m3 embedder, fp32                ~2.2 GB
 #   CUDA context + activations           ~1.0-1.5 GB
 #                                        --------
-#                                        ~10.4-10.9 GB of 11 GB
+#                                        ~11.3-11.8 GB of 11 GB
 #
-# This is noticeably tighter than the old mpnet embedder's ~1.1GB left --
-# bge-m3 is XLM-RoBERTa-large-based, the same size class as the reranker.
-# If it doesn't fit, the mitigations are the same as below: a smaller
-# llm.model, or reranking.device: cpu.
+# HONEST READ OF THAT TABLE: on this estimate the budget is EXCEEDED. The
+# pre-num_ctx figure (~10.4-10.9 GB) was already at the limit; the KV cache
+# for a 6144-token window (see llm.num_ctx) adds ~0.9 GB on top. These are
+# estimates, not measurements -- the real footprint may come in lower, but do
+# not assume it. Re-measure on the card (nvidia-smi with all three models
+# loaded) before relying on this profile. If it does not fit, the
+# mitigations, in order of preference:
+#   1. a smaller llm.num_ctx (KV cache scales linearly, ~0.147 MB/token),
+#      with session.history_max_turns lowered to match so the prompt still
+#      fits the window;
+#   2. a smaller llm.model.
+# reranking.device: cpu is NOT an acceptable mitigation: this reranker on CPU
+# takes seconds per request (see the reranking block), which does not meet
+# the latency goals.
+#
+# bge-m3 is XLM-RoBERTa-large-based, the same size class as the reranker, so
+# it is noticeably heavier than the old mpnet embedder (~1.1GB).
 #
 # The reranker loads fp32, not fp16 -- sentence-transformers does not
 # downcast bge-reranker-v2-m3 automatically. Budget for the larger figure.
@@ -57,6 +71,26 @@ llm:
   #
   # Set true only to experiment with reasoning quality on the explanation step.
   thinking: false
+
+  # Context window (tokens) sent to Ollama as options.num_ctx on EVERY LLM
+  # call -- classification, conversational replies, explanations, and the
+  # sync/evaluation path. It is set explicitly so the window is a known,
+  # budgeted size rather than whatever the Ollama default happens to be.
+  #
+  # Why 6144: worst-case prompt is system prompt ~1.2k tokens + history of
+  # session.history_max_turns (8) pairs at ~330 tokens/pair (1000-char answer
+  # limit) ~2.6k + current turn with movie context ~0.8k + generated answer
+  # ~0.5k = ~5.1k, which fits with headroom.
+  #
+  # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
+  # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
+  # of extra VRAM (see the budget in the header -- on estimate it is now over
+  # 11 GB).
+  #
+  # Keep this ONE value for every call. Ollama reloads the model whenever the
+  # requested num_ctx differs from the loaded instance's, so mixing values
+  # between requests means a multi-second reload on every switch.
+  num_ctx: 6144
 
   timeout_seconds:
     # Combined classify+intent call used by the live chat view (aclassify_and_parse).
@@ -161,13 +195,14 @@ session:
   # bias ranking among the movies that survive the filters.
   alpha_refinement: 0.92
   ttl_hours: 24
-  # Soft cap on how much conversation history gets replayed into every LLM
-  # call (classification, conversational replies, explanations) as native
-  # multi-turn `messages`. Full session history is used up to this many
-  # user+assistant turn-pairs; older turns are dropped, not summarized. Keeps
-  # a long-lived session (up to `ttl_hours` above) from growing the prompt
-  # sent to the local qwen3:8b without bound.
-  history_max_turns: 20
+  # Cap on how much conversation history gets replayed into every LLM call
+  # (classification, conversational replies, explanations) as native
+  # multi-turn `messages`. The last this-many user+assistant turn-pairs are
+  # used; older turns are dropped, not summarized. Together with llm.num_ctx
+  # this bounds the prompt: 8 pairs is sized so the worst case fits the
+  # 6144-token window. If you raise this, raise llm.num_ctx too (and pay the
+  # extra KV-cache VRAM).
+  history_max_turns: 8
   # Second, independent safety net: caps a single history entry's replayed
   # content by character count, so one abnormally long past message (e.g. a
   # long explanation) can't blow up the prompt even within the turn cap.
