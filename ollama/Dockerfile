@@ -6,7 +6,7 @@
 # "Reproducibility" in docs/infrastructure.md.
 FROM ollama/ollama:0.34.2
 
-COPY entrypoint.sh /entrypoint.sh
-RUN sed -i 's/\r$//' /entrypoint.sh && chmod +x /entrypoint.sh
+COPY entrypoint.sh healthcheck.sh llm_model.sh /
+RUN sed -i 's/\r$//' /entrypoint.sh /healthcheck.sh /llm_model.sh && chmod +x /entrypoint.sh /healthcheck.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

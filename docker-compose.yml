@@ -45,11 +45,18 @@ services:
     ports:
       - "11434:11434"
     healthcheck:
-      test: ["CMD-SHELL", "ollama --version && exit 0 || exit 1"]
+      # Healthy means the model from params.yaml is pulled, not just that the
+      # binary runs: the backend waits on this, and the first start downloads
+      # several GB before the model exists. See ollama/healthcheck.sh.
+      test: ["CMD", "/healthcheck.sh"]
       interval: 10s
       timeout: 10s
       retries: 10
-      start_period: 30s
+      # Failures inside this window do not count against `retries`. It has to
+      # cover the first pull of the model (~5GB for qwen3:8b), which on a slow
+      # link takes many minutes; a pass during it still marks the container
+      # healthy at once, so a warm volume is not delayed.
+      start_period: 900s
 
   backend:
     build: ./backend
