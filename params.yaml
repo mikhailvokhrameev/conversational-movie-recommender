@@ -59,8 +59,8 @@ llm:
 
   # Qwen3 8B is a HYBRID REASONING model: left to itself it emits a
   # <think>...</think> block before its answer. That is actively harmful
-  # here. Classification, intent parsing, and explanation run in JSON mode
-  # (the first two share one call) and expect a bare object, and the
+  # here. Classification and intent parsing run on a JSON schema (they share
+  # one call) and expect a bare object, and the
   # reasoning pass costs seconds per call on top of already-sequential LLM
   # calls per turn.
   #
@@ -96,7 +96,10 @@ llm:
   # (titles, names and JSON tokenize worse than prose) that case is ~5.7k,
   # inside the window but past the 90% context warning. The current message
   # has no character cap. The per-call log (`Ollama call=... prompt_tokens=`)
-  # gives the measured figure: re-size from it, not from this estimate.
+  # gives the measured figure: re-size from it, not from this estimate. Caveat:
+  # Ollama's prompt_eval_count may count only the tokens it newly evaluated
+  # when it reuses a cached prompt prefix, so it can under-report a repeated
+  # prompt; read it from a cold call (first request after a model load).
   #
   # Facts block: the latest recommendation set is replayed to the model as
   # facts (session.history_movie_description_chars): 5 movies x (200 chars ~50
@@ -122,7 +125,7 @@ llm:
   # Unlike num_ctx these do not make Ollama reload the model, so they can
   # differ per call kind.
   #
-  # structured: every JSON-mode call -- classify+parse, the sync intent call,
+  # structured: every schema-constrained call -- classify+parse, the sync intent call,
   # and the evaluation judge. These feed parsers and metrics, so the same
   # input should give the same output: 0.0 is greedy decoding, which makes
   # intent parsing reproducible and an eval run repeatable.

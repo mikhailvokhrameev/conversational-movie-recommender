@@ -90,7 +90,7 @@ in the same XLM-RoBERTa-large size class as the reranker).
 
 **Reasoning mode is disabled** (`llm.thinking: false`). This is a hybrid
 reasoning model: left alone it emits a `<think>...</think>` span before every
-answer. That breaks JSON-mode intent parsing and adds seconds to each of the
+answer. That breaks JSON intent parsing and adds seconds to each of the
 two sequential LLM calls per turn (classify+parse, then explanation). The
 flag is sent to Ollama on every request, and `ollama_client` additionally
 strips reasoning spans from both parsed JSON and the streamed output, so an
@@ -544,11 +544,12 @@ recorded configuration sums to 1.0 and the best one can be pasted into
 ### Determinism
 
 Every Ollama call sends `options.seed` (`llm.seed`) and a temperature chosen
-by call kind: `llm.temperature.structured` (0.0) for every JSON-mode call --
+by call kind: `llm.temperature.structured` (0.0) for every schema-constrained call --
 classify+parse, the sync intent call, the judge -- and
 `llm.temperature.generation` (0.7) for explanations and conversational
 replies. With greedy decoding on the structured calls, `e2e` intent parsing
-and the judge give the same output for the same input, so two runs of the
+and the judge should give the same output for the same input (on the same Ollama
+build and hardware; GPU kernels may still vary the result), so two runs of the
 same code and params are comparable.
 
 ### Run Records

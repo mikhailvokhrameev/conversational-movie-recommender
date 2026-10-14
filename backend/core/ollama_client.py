@@ -1,7 +1,7 @@
 """Ollama LLM client for intent parsing and recommendation explanations.
 
 Communicates with a standalone Ollama container via its HTTP API.
-Two roles: (1) parse natural language queries into structured intent (JSON mode),
+Two roles: (1) parse natural language queries into structured intent (JSON-schema-constrained),
 (2) generate English-language explanations for recommended movies (RAG pattern).
 
 The explanation is not one blob: the model is asked for an opening line followed
@@ -222,7 +222,7 @@ def _strip_think(text: str) -> str:
 
 
 def _parse_json_response(content: str) -> dict:
-    """Parse an Ollama JSON-mode response, tolerating a reasoning preamble."""
+    """Parse an Ollama JSON-schema response, tolerating a reasoning preamble."""
     return json.loads(_strip_think(content).strip())
 
 
@@ -572,7 +572,7 @@ def _ollama_options(kind: Literal["structured", "generation"]) -> dict:
     """Ollama `options` sent with EVERY request. All calls must use the same
     num_ctx: a differing value makes Ollama reload the model.
 
-    `kind` picks the temperature: "structured" for JSON-mode calls whose output
+    `kind` picks the temperature: "structured" for schema-constrained calls whose output
     is parsed (deterministic, so intent parsing and the eval judge are
     reproducible), "generation" for user-facing free text. The seed is fixed
     for both.
@@ -865,7 +865,7 @@ def _chat_sync(
 
 
 def parse_intent(query: str) -> dict:
-    """Extract structured intent from a natural language movie query via Ollama JSON mode."""
+    """Extract structured intent from a natural language movie query via an Ollama JSON-schema call."""
     try:
         content = _chat_sync(
             _intent_payload(query)["messages"],

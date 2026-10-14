@@ -168,12 +168,13 @@ heaviest call, classify+parse, comes to ~3.8k tokens in heavy use (system prompt
 6 history pairs at ~340 tokens/pair + ~0.3k for the latest facts block + current message
 + JSON reply), ~2.3k of headroom; with every history entry at the 1000-char cap it is
 ~5.0k. The derivation is in the `llm.num_ctx` comment in `params.yaml`; the logged
-`prompt_tokens` (below) is the measured figure. This is a budget, not a guard -- if a
+`prompt_tokens` (below) is the measured figure (it may count only newly evaluated
+tokens when Ollama reuses a cached prompt prefix, so read it from a cold call). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start (dropping the system prompt and oldest turns
 first) with no error. All calls must use the same `num_ctx` (one helper,
 `_ollama_options(kind)`, feeds every payload), because a differing value makes Ollama
 reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
-call's kind: `llm.temperature.structured` (0.0) for every JSON-mode call
+call's kind: `llm.temperature.structured` (0.0) for every schema-constrained call
 (classify+parse, `parse_intent`, the eval judge) so their output is reproducible,
 `llm.temperature.generation` (0.7) for explanations and conversational replies. The
 sync API (`parse_intent`, `generate_explanation`, `stream_explanation`) is unaffected

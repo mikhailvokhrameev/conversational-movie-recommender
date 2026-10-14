@@ -43,7 +43,7 @@ The LLM layer (Ollama with qwen3:8b, running locally on GPU) handles intent pars
 ```
 User message
   │
-  ├── Classify + parse intent (Ollama, JSON mode, one call) → category + genres/mood/themes/filters
+  ├── Classify + parse intent (Ollama, JSON schema, one call) → category + genres/mood/themes/filters
   │
   ├── [new_search / refinement]
   │     ├── Encode query (BGE-M3)
