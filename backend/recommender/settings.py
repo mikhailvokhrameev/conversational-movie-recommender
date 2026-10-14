@@ -207,7 +207,9 @@ def _validate_history_limits(session: dict) -> None:
     0 must not mean "unlimited": the history window is what keeps the prompt
     inside llm.num_ctx, so a non-positive limit would silently remove that bound.
     """
-    for key in ("history_max_turns", "history_max_chars_per_entry"):
+    for key in (
+        "history_max_turns", "history_max_chars_per_entry", "history_movie_description_chars",
+    ):
         value = session[key]
         if isinstance(value, bool) or not isinstance(value, int) or value < 1:
             raise ValueError(
@@ -224,6 +226,7 @@ SESSION_ALPHA_REFINEMENT = _session["alpha_refinement"]
 SESSION_TTL_HOURS = _session["ttl_hours"]
 SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
+SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS = _session["history_movie_description_chars"]
 
 GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
 

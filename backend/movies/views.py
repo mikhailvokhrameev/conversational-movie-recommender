@@ -19,7 +19,8 @@ from core.ollama_client import (
 )
 from core.pipeline import generate_and_score
 from core.session_manager import (
-    track_explicit_preferences, update_preference_vector, vector_for_scoring,
+    build_movie_facts, track_explicit_preferences, update_preference_vector,
+    vector_for_scoring,
 )
 from .models import ChatSession, Movie
 
@@ -90,12 +91,15 @@ def _save_session(session: ChatSession, query: str, intent: dict,
 
 @sync_to_async(thread_sensitive=False)
 def _append_history(session: ChatSession, role: str, content: str,
-                    movies: list[str] | None = None, count_turn: bool = True):
+                    movies: list[str] | None = None, count_turn: bool = True,
+                    movie_facts: list[dict] | None = None):
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
         entry = {"role": role, "content": content}
         if movies:
             entry["movies"] = movies
+        if movie_facts:
+            entry["movie_facts"] = movie_facts
         fresh.history = list(fresh.history) + [entry]
         if count_turn:
             fresh.turn_count += 1
@@ -184,6 +188,7 @@ class ChatView(View):
             for m in top_movies
         ]
         top_titles = [m["serial_name"] for m in top_movies]
+        movie_facts = build_movie_facts(top_movies, settings.SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS)
         candidate_titles = [m["serial_name"] for m in candidate_pool]
 
         async def event_stream():
@@ -224,14 +229,15 @@ class ChatView(View):
             # Skip storing only when there is nothing to keep: with an empty
             # explanation the movies were still shown, so store the entry with
             # empty content and `movies` -- the history formatter turns it into
-            # "(Recommended: ...)" so later turns know what was recommended.
+            # "(Recommended: ...)" (or, for the latest set, a facts block built
+            # from `movie_facts`) so later turns know what was recommended.
             # Otherwise the user turn would stay without a reply -- acceptable,
             # Ollama takes consecutive user messages; the 2*N window shifts slightly.
             if assistant_text.strip() or top_titles:
                 try:
                     await _append_history(
                         session, "assistant", assistant_text,
-                        movies=top_titles, count_turn=False,
+                        movies=top_titles, count_turn=False, movie_facts=movie_facts,
                     )
                 except Exception:
                     logger.exception("failed to store assistant turn")

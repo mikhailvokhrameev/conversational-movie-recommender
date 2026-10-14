@@ -557,6 +557,108 @@ class TestBuildChatMessages:
         )
         assert messages[1]["content"] == "(Recommended: Film A, Film B)"
 
+    @staticmethod
+    def _facts_entry(content="Here you go", titles=("Film A", "Film B"), **fact_overrides):
+        facts = [
+            {"title": t, "year": 1999, "genres": ["Drama", "Crime"], "runtime": 142,
+             "description": f"About {t}.", **fact_overrides}
+            for t in titles
+        ]
+        return {"role": "assistant", "content": content, "movies": list(titles), "movie_facts": facts}
+
+    def test_latest_entry_with_facts_renders_facts_block(self):
+        messages = _build_chat_messages(
+            history=[{"role": "user", "content": "q"}, self._facts_entry()],
+            system_prompt="SYS", current_content="now", max_turns=10, max_chars=1000,
+        )
+        assert messages[2]["content"] == (
+            "Here you go\n\n(Recommended movies:\n"
+            "1. Film A (1999) — Drama, Crime — 142 min: About Film A.\n"
+            "2. Film B (1999) — Drama, Crime — 142 min: About Film B.)"
+        )
+
+    def test_older_entry_with_facts_stays_titles_only(self):
+        history = [
+            {"role": "user", "content": "q1"},
+            self._facts_entry(content="First set", titles=("Old A", "Old B")),
+            {"role": "user", "content": "q2"},
+            self._facts_entry(content="Second set", titles=("New A",)),
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages[2]["content"] == "First set\n\n(Recommended: Old A, Old B)"
+        assert "1. New A (1999)" in messages[4]["content"]
+
+    def test_latest_facts_entry_is_chosen_among_later_entries_without_facts(self):
+        history = [
+            self._facts_entry(),
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "You're welcome"},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert "1. Film A (1999)" in messages[1]["content"]
+        assert messages[3]["content"] == "You're welcome"
+
+    def test_legacy_entry_without_facts_renders_exactly_as_before(self):
+        history = [{"role": "assistant", "content": "Here you go", "movies": ["Film A", "Film B"]}]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages[1]["content"] == "Here you go\n\n(Recommended: Film A, Film B)"
+
+    def test_legacy_entry_after_facts_entry_keeps_titles_only(self):
+        # The facts block goes to the latest entry that HAS facts; a newer
+        # legacy-shaped entry must not steal it nor gain one.
+        history = [
+            self._facts_entry(),
+            {"role": "assistant", "content": "Newer", "movies": ["Film C"]},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert "Recommended movies" in messages[1]["content"]
+        assert messages[2]["content"] == "Newer\n\n(Recommended: Film C)"
+
+    def test_empty_content_with_facts_has_no_leading_blank_lines(self):
+        messages = _build_chat_messages(
+            history=[self._facts_entry(content="")], system_prompt="SYS",
+            current_content="now", max_turns=10, max_chars=1000,
+        )
+        assert messages[1]["content"].startswith("(Recommended movies:\n1. Film A")
+
+    def test_facts_block_is_not_cut_by_the_reply_char_cap(self):
+        messages = _build_chat_messages(
+            history=[self._facts_entry(content="x" * 50)], system_prompt="SYS",
+            current_content="now", max_turns=10, max_chars=10,
+        )
+        content = messages[1]["content"]
+        assert content.startswith("x" * 10 + "\n\n(Recommended movies:")
+        assert "2. Film B (1999) — Drama, Crime — 142 min: About Film B.)" in content
+
+    def test_missing_year_runtime_genres_and_description_are_omitted(self):
+        entry = self._facts_entry(titles=("Film A",), year=None, runtime=None, genres=[], description="")
+        messages = _build_chat_messages(
+            history=[entry], system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages[1]["content"] == "Here you go\n\n(Recommended movies:\n1. Film A)"
+
+    def test_none_runtime_alone_is_dropped(self):
+        entry = self._facts_entry(titles=("Film A",), runtime=None)
+        messages = _build_chat_messages(
+            history=[entry], system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert "None" not in messages[1]["content"]
+        assert "1. Film A (1999) — Drama, Crime: About Film A." in messages[1]["content"]
+
     def test_skips_entries_with_missing_or_invalid_role(self):
         history = [
             {"content": "no role field"},
@@ -691,12 +793,17 @@ class TestHistoryLimitValidation:
     """params.yaml history limits < 1 must fail at settings load, never mean
     "unlimited" (the window is what bounds the prompt to llm.num_ctx)."""
 
-    @pytest.mark.parametrize("key", ["history_max_turns", "history_max_chars_per_entry"])
+    @pytest.mark.parametrize("key", [
+        "history_max_turns", "history_max_chars_per_entry", "history_movie_description_chars",
+    ])
     @pytest.mark.parametrize("bad", [0, -1, 1.5, "8", None, True])
     def test_rejects_values_below_one_or_non_int(self, key, bad):
         from recommender.settings import _validate_history_limits
 
-        session = {"history_max_turns": 8, "history_max_chars_per_entry": 1000}
+        session = {
+            "history_max_turns": 8, "history_max_chars_per_entry": 1000,
+            "history_movie_description_chars": 200,
+        }
         session[key] = bad
         with pytest.raises(ValueError, match=key):
             _validate_history_limits(session)
@@ -704,7 +811,10 @@ class TestHistoryLimitValidation:
     def test_accepts_minimum_of_one(self):
         from recommender.settings import _validate_history_limits
 
-        _validate_history_limits({"history_max_turns": 1, "history_max_chars_per_entry": 1})
+        _validate_history_limits({
+            "history_max_turns": 1, "history_max_chars_per_entry": 1,
+            "history_movie_description_chars": 1,
+        })
 
 
 class TestNumCtxValidation:
@@ -830,3 +940,12 @@ class TestSamplingValidation:
 
         with pytest.raises(ValueError, match="llm.seed"):
             _validate_sampling(self._llm(seed=bad))
+
+
+class TestConversationalPromptGrounding:
+    def test_prompt_makes_listed_facts_the_source_of_truth_and_flags_missing_details(self):
+        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+
+        assert "Recommended movies" in CONVERSATIONAL_SYSTEM_PROMPT
+        assert "source of truth" in CONVERSATIONAL_SYSTEM_PROMPT
+        assert "not in your catalog data" in CONVERSATIONAL_SYSTEM_PROMPT

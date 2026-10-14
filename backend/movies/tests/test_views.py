@@ -342,6 +342,24 @@ class TestAppendHistory:
         }]
 
     @pytest.mark.asyncio
+    async def test_assistant_entry_includes_movie_facts_when_given(self):
+        from movies.models import ChatSession
+        from movies.views import _append_history
+        session = await ChatSession.objects.acreate()
+        facts = [{"title": "Film A", "year": 1999, "genres": ["Drama"], "runtime": 120,
+                  "description": "About A."}]
+
+        await _append_history(
+            session, "assistant", "Here you go", movies=["Film A"], movie_facts=facts,
+        )
+        await session.arefresh_from_db()
+
+        assert session.history == [{
+            "role": "assistant", "content": "Here you go",
+            "movies": ["Film A"], "movie_facts": facts,
+        }]
+
+    @pytest.mark.asyncio
     async def test_count_turn_false_does_not_increment_turn_count(self):
         from movies.models import ChatSession
         from movies.views import _append_history

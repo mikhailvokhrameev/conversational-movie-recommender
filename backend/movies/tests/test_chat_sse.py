@@ -155,6 +155,33 @@ class TestChatSSENewSearch:
         assert call.args[1] == "assistant"
         assert call.kwargs["movies"] == ["Test Film"]
         assert call.kwargs["count_turn"] is False
+        assert call.kwargs["movie_facts"] == [{
+            "title": "Test Film", "year": 2024, "genres": ["Drama"], "runtime": 120,
+            "description": "A test",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_stored_movie_facts_truncate_description_to_configured_cap(self, settings):
+        settings.SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS = 10
+        long_movie = _two_movies()[:1]
+        long_movie[0]["description"] = "x" * 500
+        request = AsyncRequestFactory().post(
+            "/api/chat/",
+            data=json.dumps({"message": "хочу комедию"}),
+            content_type="application/json",
+        )
+        append_history_mock = AsyncMock()
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="комедия")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score(long_movie)), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
+             patch("movies.views.astream_explanation_parts", _mock_explanation_parts((None, "Вот подборка."))):
+            response = await ChatView.as_view()(request)
+            async for _ in response.streaming_content:
+                pass
+
+        assert append_history_mock.await_args.kwargs["movie_facts"][0]["description"] == "x" * 10
 
     @pytest.mark.asyncio
     async def test_embeds_semantic_query_not_raw_message(self):

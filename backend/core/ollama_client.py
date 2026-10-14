@@ -103,6 +103,8 @@ Rules:
 - If the user asks about anything unrelated to movies or cinema, politely redirect: say you are a movie assistant and suggest discussing films instead
 - Be concise, friendly, and knowledgeable about cinema
 - Use the earlier messages in this conversation to understand what the user is referring to, especially short replies like agreements or follow-up questions
+- The most recent "(Recommended movies: ...)" block in the conversation lists the movies shown to the user, with year, genres, runtime and description from our catalog. Treat those facts as the source of truth when the user asks about those movies (which is shorter, what year, what it is about)
+- Our catalog has no director, cast, awards or box-office data. If asked for a detail that is not in the listed facts, say that detail is not in your catalog data; do not state it as fact. You may add general knowledge only if you clearly mark it as such (for example "from general knowledge, not our catalog: ...")
 """
 
 INTENT_PROMPT = """You are a movie intent parser. Given a user query, return a JSON object.
@@ -368,21 +370,49 @@ def _build_movies_context(movies: list[dict]) -> str:
     )
 
 
-def _format_history_entry(entry: dict, max_chars: int) -> dict | None:
+def _format_movie_facts(facts: list[dict]) -> str:
+    """One compact line per shown movie: `1. Title (1999) — Drama, Crime — 142 min: description`.
+    Missing year/genres/runtime are left out rather than printed as "None"."""
+    lines = []
+    for i, fact in enumerate(facts, 1):
+        head = f"{i}. {fact.get('title', '')}"
+        if fact.get("year"):
+            head += f" ({fact['year']})"
+        parts = [head]
+        if fact.get("genres"):
+            parts.append(", ".join(fact["genres"]))
+        if fact.get("runtime"):
+            parts.append(f"{fact['runtime']} min")
+        line = " — ".join(parts)
+        if fact.get("description"):
+            line += f": {fact['description']}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _format_history_entry(entry: dict, max_chars: int, with_facts: bool = False) -> dict | None:
     """Turn one `ChatSession.history` entry into a `messages`-array entry.
 
     Returns None for an entry with an unrecognized/missing `role` -- this is
     what lets legacy (pre-history-feature) sessions replay cleanly, since
     they may contain shapes this feature didn't originally write.
+
+    `with_facts` replaces the titles-only "(Recommended: ...)" line with the
+    entry's `movie_facts` block. The caller sets it for the latest shown set
+    only (see `_build_chat_messages`); the block is bounded by the storage-time
+    description cap and top_n, so `max_chars` applies to the reply text alone.
     """
     role = entry.get("role")
     if role not in ("user", "assistant"):
         return None
     content = str(entry.get("content", ""))[:max_chars]
     movies = entry.get("movies")
-    if movies:
-        # An empty reply with movies (explanation failed after the cards were
-        # shown) must not start with a blank gap.
+    facts = entry.get("movie_facts")
+    # An empty reply with movies (explanation failed after the cards were
+    # shown) must not start with a blank gap.
+    if with_facts and facts:
+        content = f"{content}\n\n(Recommended movies:\n{_format_movie_facts(facts)})".lstrip("\n")
+    elif movies:
         content = f"{content}\n\n(Recommended: {', '.join(movies)})".lstrip("\n")
     return {"role": role, "content": content}
 
@@ -395,18 +425,28 @@ def _build_chat_messages(
     max_chars: int,
 ) -> list[dict]:
     """Build a native Ollama multi-turn `messages` list: system prompt, a
-    capped window of real conversation history, then the current turn.
+    capped history window of real conversation, then the current turn.
 
     `max_turns` caps history to the last N user+assistant pairs (2*N raw
     entries) before per-entry filtering, so the window size is predictable
     regardless of how many entries turn out to be malformed/skipped. It is
     never "unlimited": 0 yields no history (settings rejects values < 1).
+
+    Only the most recent entry carrying `movie_facts` is rendered with its
+    facts: follow-ups refer to the last shown set, and grounding every past
+    set would not fit llm.num_ctx. Older sets keep the titles-only line, and
+    legacy entries without `movie_facts` render as they always did.
     """
     # history[-0:] is the WHOLE list in Python, so 0 needs its own case.
     windowed = history[-(max_turns * 2):] if max_turns > 0 else []
+    latest_facts_index = next(
+        (i for i in range(len(windowed) - 1, -1, -1)
+         if windowed[i].get("role") == "assistant" and windowed[i].get("movie_facts")),
+        None,
+    )
     messages = [{"role": "system", "content": system_prompt}]
-    for entry in windowed:
-        formatted = _format_history_entry(entry, max_chars)
+    for i, entry in enumerate(windowed):
+        formatted = _format_history_entry(entry, max_chars, with_facts=(i == latest_facts_index))
         if formatted:
             messages.append(formatted)
     messages.append({"role": "user", "content": current_content})

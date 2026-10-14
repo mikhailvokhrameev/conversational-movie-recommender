@@ -86,6 +86,14 @@ llm:
   # a hard worst case: if both entries of every pair hit the 1000-char cap
   # (~1000 tokens/pair) history alone is ~6.0k and the prompt overflows.
   #
+  # The ~5.5k above predates grounding follow-ups in the shown movies: the
+  # latest recommendation set is now also replayed as a facts block
+  # (session.history_movie_description_chars): 5 movies x ~(70 description +
+  # 15 meta) tokens ~0.4k, minus the ~0.05k titles-only line it replaces, so
+  # the real heavy-use total is ~5.9k with only ~0.25k headroom. Older sets
+  # stay titles-only precisely to keep this to ONE block; do not replay facts
+  # for every past set without raising this value.
+  #
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
   # of extra VRAM (see the budget in the header -- on estimate it is now over
@@ -224,8 +232,9 @@ session:
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
-  # this bounds the prompt: 6 pairs is sized so a heavy-use prompt (~5.5k
-  # tokens) fits the 6144-token window with ~0.6k headroom. If you raise this, raise
+  # this bounds the prompt: 6 pairs is sized so a heavy-use prompt (~5.9k
+  # tokens, including the latest set's facts block -- see llm.num_ctx) fits
+  # the 6144-token window with ~0.25k headroom. If you raise this, raise
   # llm.num_ctx too (and pay the extra KV-cache VRAM). Minimum 1: 0 does NOT
   # mean unlimited, and settings.py refuses to load a value below 1.
   history_max_turns: 6
@@ -234,6 +243,17 @@ session:
   # long explanation) can't blow up the prompt even within the turn cap.
   # Minimum 1, enforced at settings load like history_max_turns.
   history_max_chars_per_entry: 1000
+  # Per-movie description cap for the `movie_facts` stored with each assistant
+  # recommendation turn (title, year, genres, runtime, description). Only the
+  # LATEST shown set is replayed to the model (older ones stay titles-only),
+  # so this is paid once per prompt: diversification.top_n (5) x (~200 chars
+  # description ~50-70 tokens + ~15 tokens of title/year/genres/runtime) ~0.4k
+  # tokens, which is why it is 200 and not the full TMDB overview (500+ chars
+  # would cost ~0.8k and eat the whole llm.num_ctx headroom). 200 chars is
+  # enough for a follow-up like "what is the second one about?" to be answered
+  # from the catalog, not from the model's memory. This is a storage-time cap:
+  # lowering it only affects turns stored afterwards. Minimum 1.
+  history_movie_description_chars: 200
 
 evaluation:
   # LLM-as-judge (manage.py evaluate_scoring --llm-judge). Same model family as
