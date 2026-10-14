@@ -36,8 +36,23 @@ model changed at once). Measure BGE-M3 on its own merits with the golden-set
 evaluation (see Evaluation Framework) once its draft labels are reviewed.
 
 **Embedding text**: Each movie is embedded as
-`"{serial_name}. {genres joined}. {description[:500]}. Keywords: {keywords[:10] joined}"`.
+`"{serial_name}. {genres joined}. {description[:N]}. Keywords: {keywords[:M] joined}"`,
+built by `core.embedding_service.build_movie_embedding_text` with `N` =
+`embedding.text.description_chars` (500) and `M` = `embedding.text.max_keywords` (10).
 This captures title, genre signal, semantic content, and curated theme tags in one vector.
+The wording/format is versioned by the `EMBEDDING_TEXT_VERSION` constant next to the
+function: bump it on any template change.
+
+**Index provenance**: the single-row `EmbeddingIndex` table records what built the
+vectors -- `embedding.model`, `embedding.dimensions`, `EMBEDDING_TEXT_VERSION` and the
+`embedding.text.*` values. `generate_embeddings` writes it;
+`check_embedding_index` (a step of the backend start-up chain) compares it with
+`params.yaml` and stops the container on a mismatch, because same-width vectors from a
+different model or text are not comparable with query vectors and nothing else notices.
+`generate_embeddings` refuses to embed only the missing rows under a mismatch (that would
+mix vector spaces); `--all` re-embeds the whole catalog and refreshes the record. An index
+built before the record existed is "legacy": `generate_embeddings --adopt` records the
+current config without re-embedding (you assert the vectors were built with it).
 
 > **Changing `embedding.model` or `embedding.dimensions` is not a config tweak.**
 > `dimensions` is baked into the `Movie.embedding` and `ChatSession.preference_vector`
@@ -45,7 +60,8 @@ This captures title, genre signal, semantic content, and curated theme tags in o
 > re-run of `manage.py generate_embeddings` over the entire catalog. Existing
 > vectors are not convertible between models or dimensions -- skipping the
 > re-run leaves stale vectors in place that fail comparisons silently rather
-> than raising an error. See `CLAUDE.md`.
+> than raising an error. The provenance record above catches the model, dimensions and
+> text settings, but the dimension change itself still needs the migration. See `CLAUDE.md`.
 
 ## LLM (Ollama)
 

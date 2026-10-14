@@ -353,6 +353,7 @@ these can be changed -- no environment variable overrides them.
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | `BAAI/bge-m3` | Embedding model |
 | `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |
+| `embedding.text.description_chars` / `max_keywords` | 500 / 10 | Truncation of the embedded movie text; part of the index provenance, changing needs `generate_embeddings --all` |
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |

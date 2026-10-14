@@ -39,7 +39,25 @@ after import; `import_catalog` calls it automatically.
 **Data source**: `TMDB Movie Dataset v11.csv`, filtered at import time to
 `status=Released`, non-adult, has overview, has poster, `vote_count >= 20`
 (~50K rows imported from ~1.49M raw). Loaded via `manage.py import_catalog`.
-Embeddings generated via `manage.py generate_embeddings`.
+Embeddings generated via `manage.py generate_embeddings`, which also records
+their provenance (see EmbeddingIndex).
+
+### EmbeddingIndex
+
+Single-row provenance record for `Movie.embedding`: what built the stored vectors.
+The row's pk is always 1 (`save()` forces it and a check constraint enforces it).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `model_name` | CharField(255) | `embedding.model` at embed time |
+| `dimensions` | PositiveIntegerField | `embedding.dimensions` at embed time |
+| `text_version` | PositiveIntegerField | `EMBEDDING_TEXT_VERSION` of the text template |
+| `text_config` | JSONField | `embedding.text` values (`description_chars`, `max_keywords`) |
+| `updated_at` | DateTimeField | Auto-updated |
+
+Written by `generate_embeddings`, compared with `params.yaml` by
+`check_embedding_index` (see ML.md, Index provenance). Absent until the first
+embedding run, or until `generate_embeddings --adopt` on an index built before it existed.
 
 ### Genre Taxonomy
 

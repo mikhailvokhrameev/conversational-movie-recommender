@@ -48,7 +48,7 @@ The system runs as 4 Docker services via `docker compose up`:
 
 - **Image**: custom, built from `backend/Dockerfile` (Python 3.11-slim)
 - **Port**: 8000
-- **Startup sequence**: `migrate -> import_catalog -> uvicorn`
+- **Startup sequence**: `migrate -> import_catalog -> check_embedding_index -> uvicorn`; `check_embedding_index` exits non-zero when the embedding index was built with a different model or text config than `params.yaml`, so the container stops instead of serving incomparable vectors (a missing record only warns)
 - **Dependencies**: waits for `db` (healthy) and `ollama` (healthy) before starting
 - **Volumes**:
   - `./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro` (catalog data)
@@ -97,8 +97,9 @@ overridable by an environment variable -- change the file and restart.
 | `catalog` | Import and embedding batch sizes |
 
 Changing `embedding.model` or `embedding.dimensions` additionally requires a
-schema migration and a full re-run of `generate_embeddings` -- existing vectors
-are not convertible.
+schema migration and a full re-run of `generate_embeddings --all` -- existing vectors
+are not convertible. The same re-run is needed after changing `embedding.text.*`.
+`check_embedding_index` fails the start-up until it has been done.
 
 ### Environment variables (secrets and wiring only)
 
@@ -210,7 +211,10 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | Command | Purpose |
 |---------|---------|
 | `import_catalog --skip-existing` | Load the TMDB CSV into PostgreSQL (idempotent), then rebuild search vectors |
-| `generate_embeddings` | Embed all movie descriptions (batch size from params.yaml) |
+| `generate_embeddings` | Embed movies that have no embedding (batch size from params.yaml) and record the index provenance; refuses under a config mismatch |
+| `generate_embeddings --all` | Re-embed every movie and refresh the provenance record (required after changing the embedding model or `embedding.text.*`) |
+| `generate_embeddings --adopt` | Record the current config for an index built before provenance tracking, without re-embedding |
+| `check_embedding_index` | Compare the recorded provenance with `params.yaml`; exit non-zero on a mismatch (runs at backend start-up) |
 | `evaluate_scoring` | Golden-set evaluation on the test split, intent parsed by the production LLM call; writes a run record to `eval_runs/` |
 | `evaluate_scoring --intent oracle` | Same, with each entry's labelled intent instead of the LLM parse |
 | `evaluate_scoring --llm-judge` | Also score results with the LLM judge (slow, secondary signal) |
@@ -228,7 +232,8 @@ docker compose up backend
 # This automatically:
 # 1. Starts PostgreSQL, waits for health check
 # 2. Starts Ollama, pulls the model named in params.yaml (first time only)
-# 3. Starts backend: runs migrations, imports ~50K movies from the TMDB CSV
+# 3. Starts backend: runs migrations, imports ~50K movies from the TMDB CSV,
+#    checks the embedding index (none yet on a first run is fine)
 # 4. Starts uvicorn on port 8000
 
 # Generate embeddings (separate step, ~5 min on GPU)
