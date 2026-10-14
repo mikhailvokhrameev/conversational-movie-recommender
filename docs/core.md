@@ -136,7 +136,7 @@ window is capped by `session.history_max_turns` (6 user/assistant pairs) and
 `session.history_max_chars_per_entry` (1000) in `params.yaml` (both minimum 1 --
 `settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and
 every Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived session's
-prompt stays bounded: the worst case (system prompt + 6 history pairs + current turn
+prompt stays bounded: a heavy-use prompt (system prompt + 6 history pairs at ~500 tokens/pair + current turn
 with movie context + answer) is ~5.5k tokens (~0.6k headroom). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start
 (dropping the system prompt and oldest turns first) with no error. All calls must
