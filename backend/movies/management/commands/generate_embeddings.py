@@ -5,6 +5,7 @@ from django.core.management.base import BaseCommand
 from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
+from core.embedding_service import build_movie_embedding_text
 from movies.models import Movie
 
 logger = logging.getLogger(__name__)
@@ -44,14 +45,10 @@ class Command(BaseCommand):
             for i in range(0, len(movies), batch_size):
                 batch = movies[i : i + batch_size]
 
-                texts = []
-                for movie_id, name, genres, description, keywords in batch:
-                    genre_str = ", ".join(genres) if genres else ""
-                    desc_truncated = (description or "")[:500]
-                    keyword_str = ", ".join((keywords or [])[:10])
-                    texts.append(
-                        f"{name}. {genre_str}. {desc_truncated}. Keywords: {keyword_str}"
-                    )
+                texts = [
+                    build_movie_embedding_text(name, genres, description, keywords)
+                    for _, name, genres, description, keywords in batch
+                ]
 
                 embeddings = model.encode(texts, convert_to_numpy=True)
 

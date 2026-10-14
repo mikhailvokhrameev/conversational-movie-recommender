@@ -145,8 +145,28 @@ embedding:
   # needs a schema migration AND a full re-run of
   # `manage.py generate_embeddings` over the catalog. Existing vectors are
   # not convertible between models or dimensions.
+  #
+  # The index records what built it. `generate_embeddings` stores the model,
+  # dimensions, text template version and the `text` values below in the
+  # single-row EmbeddingIndex table, and `check_embedding_index` (run in the
+  # backend start-up chain) refuses to start the container when they no longer
+  # match this file, since same-width vectors from a different model or text
+  # are not comparable with query vectors. After a deliberate change,
+  # `generate_embeddings --all` rebuilds the catalog and refreshes the record.
   model: BAAI/bge-m3
   dimensions: 1024
+
+  # Inputs of the per-movie text that gets embedded (see
+  # core.embedding_service.build_movie_embedding_text). They are part of the
+  # index provenance: changing either makes every stored vector stale, so it
+  # needs the same `generate_embeddings --all` as a model change. Values equal
+  # the literals the catalog was embedded with.
+  text:
+    # Leading characters of the description. Long plots add noise, not signal,
+    # and the model's input window is finite.
+    description_chars: 500
+    # Keywords kept, taken in catalog order.
+    max_keywords: 10
 
 retrieval:
   # Candidates pulled from each channel before fusion.

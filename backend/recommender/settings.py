@@ -172,9 +172,33 @@ OLLAMA_NUM_CTX = _llm["num_ctx"]
 OLLAMA_TEMPERATURE = _llm["temperature"]
 OLLAMA_SEED = _llm["seed"]
 
+def _validate_embedding_text(embedding: dict) -> None:
+    """Fail at load if embedding.text.* is not a pair of positive integers.
+
+    Both feed the text that gets embedded and are recorded in the index
+    provenance. 0 would embed titles with no description or no keywords, and a
+    non-int would only fail (or silently slice wrong) inside generate_embeddings.
+    """
+    text = embedding.get("text")
+    if not isinstance(text, dict):
+        raise ValueError(
+            "params.yaml: embedding.text must map description_chars and max_keywords "
+            f"to positive integers (got {text!r})."
+        )
+    for key in ("description_chars", "max_keywords"):
+        value = text.get(key)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"params.yaml: embedding.text.{key} must be an integer >= 1 (got {value!r})."
+            )
+
+
 _embedding = PARAMS["embedding"]
+_validate_embedding_text(_embedding)
 EMBEDDING_MODEL = _embedding["model"]
 EMBEDDING_DIMENSIONS = _embedding["dimensions"]
+EMBEDDING_TEXT_DESCRIPTION_CHARS = _embedding["text"]["description_chars"]
+EMBEDDING_TEXT_MAX_KEYWORDS = _embedding["text"]["max_keywords"]
 
 _retrieval = PARAMS["retrieval"]
 CANDIDATE_COUNT = _retrieval["candidate_count"]
