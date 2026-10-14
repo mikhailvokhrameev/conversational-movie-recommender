@@ -318,7 +318,8 @@ no `rerank_score` ranked below the reranked head and are dropped too, so a
 gated reply can have fewer than `top_n` movies or none; an empty one makes the
 chat answer with a fixed "nothing matched, rephrase or loosen constraints"
 message, skip the explanation LLM call, and report `no_match: true` in the
-`movies` event (see `api.md`).
+`movies` event (see `api.md`). The same reply is sent whenever the turn ends with
+no movies, so also when hard SQL filters leave no candidates with the gate off.
 
 - *Range.* `rerank_score` is the sigmoid of the model's logit: in the pinned
   sentence-transformers line (`<3`, checked in 2.7.0) `CrossEncoder` defaults

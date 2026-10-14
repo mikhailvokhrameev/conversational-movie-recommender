@@ -121,8 +121,8 @@ to the empty state; `App.jsx` wires it to `Header`'s home button.
 Plain conversational turns (`general_chat` / `follow_up`) receive only `token` events,
 so `movies` stays empty and no carousel renders -- just markdown prose.
 
-A "nothing suitable" turn (the backend's `no_match: true`, relevance gate left no
-results) arrives as a `movies` event with `movies: []` plus one `token` with a fixed
+A "nothing suitable" turn (the backend's `no_match: true`: the relevance gate or the hard
+SQL filters left no results) arrives as a `movies` event with `movies: []` plus one `token` with a fixed
 message. The client needs no special case and does not read `no_match`: an empty
 `movies` array renders no carousel, and the token text shows as an ordinary assistant
 reply (which also clears the loading skeleton).

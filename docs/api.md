@@ -62,9 +62,11 @@ the body, `session_token` as the `X-Session-Token` header -- to continue the
 session on the next request), the top-5 movie objects, the `no_match` flag, and
 the parsed intent.
 
-`no_match` is `false` on every normal response. It is `true` only when the
-relevance gate (`reranking.min_score`, off by default -- see `ML.md`) removed
-every candidate: then `movies` is `[]`, the LLM explanation call is skipped, and
+`no_match` is `false` on every normal response. It is `true` only when
+the turn ends with no movies to show: either the relevance gate
+(`reranking.min_score`, off by default -- see `ML.md`) removed every candidate, or
+the hard SQL filters left nothing to rank, which
+can happen with the gate off. Then `movies` is `[]`, the LLM explanation call is skipped, and
 the stream is just `movies`, one `token` event carrying a fixed short message
 ("Nothing in the catalog matched that well. Try rephrasing your request or
 loosening some of the constraints."), and `done` -- no `blurb`, no `error`. The
