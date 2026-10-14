@@ -1,0 +1,464 @@
+{
+  "_note": "DRAFT LABELS - NOT YET REVIEWED. Every 'relevant' list here was written from general film knowledge, without access to the catalog, and needs human review before its numbers mean much. References are {title, year} so they can be checked against the catalog: evaluate_scoring resolves them at run time and reports every reference it cannot find. Lists are a sample of good answers, not exhaustive, so precision is a lower bound on broad queries ('a good comedy'). Grades: 1 = relevant, 2 = highly relevant (default 1). split: 'dev' is for tuning (--sweep only ever reads it), 'test' is held out for the final report. The first 18 entries are migrated from the old data/test_queries.json; their oracle_intent is what its genre-oracle mode used.",
+  "queries": [
+    {
+      "id": "comedy-good",
+      "query": "I want to watch a good comedy",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Comedy"]},
+      "relevant": [
+        {"title": "Superbad", "year": 2007},
+        {"title": "The Grand Budapest Hotel", "year": 2014},
+        {"title": "Groundhog Day", "year": 1993},
+        {"title": "The Hangover", "year": 2009},
+        {"title": "Hot Fuzz", "year": 2007},
+        {"title": "Bridesmaids", "year": 2011}
+      ]
+    },
+    {
+      "id": "scary-tonight",
+      "query": "something scary to watch tonight",
+      "split": "test",
+      "oracle_intent": {"genres": ["Horror", "Thriller"]},
+      "relevant": [
+        {"title": "The Conjuring", "year": 2013, "grade": 2},
+        {"title": "Hereditary", "year": 2018, "grade": 2},
+        {"title": "Get Out", "year": 2017},
+        {"title": "The Shining", "year": 1980, "grade": 2},
+        {"title": "It", "year": 2017},
+        {"title": "A Quiet Place", "year": 2018},
+        {"title": "Sinister", "year": 2012}
+      ]
+    },
+    {
+      "id": "space-travel",
+      "query": "a movie about space and travel",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Science Fiction", "Adventure"]},
+      "relevant": [
+        {"title": "Interstellar", "year": 2014, "grade": 2},
+        {"title": "2001: A Space Odyssey", "year": 1968, "grade": 2},
+        {"title": "The Martian", "year": 2015},
+        {"title": "Gravity", "year": 2013},
+        {"title": "Apollo 13", "year": 1995},
+        {"title": "Contact", "year": 1997}
+      ]
+    },
+    {
+      "id": "drama-not-romance",
+      "query": "I want a drama, but not a romance",
+      "split": "dev",
+      "negated_genres": ["Romance"],
+      "oracle_intent": {"genres": ["Drama"], "negations": ["Romance"]},
+      "relevant": [
+        {"title": "The Shawshank Redemption", "year": 1994, "grade": 2},
+        {"title": "12 Angry Men", "year": 1957, "grade": 2},
+        {"title": "Whiplash", "year": 2014},
+        {"title": "Manchester by the Sea", "year": 2016},
+        {"title": "Spotlight", "year": 2015},
+        {"title": "The Green Mile", "year": 1999}
+      ]
+    },
+    {
+      "id": "family-light-evening",
+      "query": "a light family movie for the evening",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Family", "Comedy", "Animation"]},
+      "relevant": [
+        {"title": "Paddington 2", "year": 2017, "grade": 2},
+        {"title": "Paddington", "year": 2014, "grade": 2},
+        {"title": "Toy Story", "year": 1995},
+        {"title": "Finding Nemo", "year": 2003},
+        {"title": "Up", "year": 2009},
+        {"title": "Home Alone", "year": 1990}
+      ]
+    },
+    {
+      "id": "crime-thriller-gripping",
+      "query": "a gripping crime thriller",
+      "split": "test",
+      "oracle_intent": {"genres": ["Crime", "Thriller"]},
+      "relevant": [
+        {"title": "Se7en", "year": 1995, "grade": 2},
+        {"title": "Heat", "year": 1995, "grade": 2},
+        {"title": "Zodiac", "year": 2007},
+        {"title": "Prisoners", "year": 2013, "grade": 2},
+        {"title": "The Departed", "year": 2006},
+        {"title": "No Country for Old Men", "year": 2007},
+        {"title": "Sicario", "year": 2015}
+      ]
+    },
+    {
+      "id": "documentary-nature",
+      "query": "a documentary about nature",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Documentary"]},
+      "relevant": [
+        {"title": "March of the Penguins", "year": 2005, "grade": 2},
+        {"title": "My Octopus Teacher", "year": 2020, "grade": 2},
+        {"title": "Earth", "year": 2007, "grade": 2},
+        {"title": "Winged Migration", "year": 2001},
+        {"title": "Microcosmos", "year": 1996},
+        {"title": "Grizzly Man", "year": 2005}
+      ]
+    },
+    {
+      "id": "action-effects",
+      "query": "I want an action movie with great effects",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Action", "Science Fiction"]},
+      "relevant": [
+        {"title": "Mad Max: Fury Road", "year": 2015, "grade": 2},
+        {"title": "The Matrix", "year": 1999, "grade": 2},
+        {"title": "Inception", "year": 2010},
+        {"title": "Avatar", "year": 2009},
+        {"title": "Terminator 2: Judgment Day", "year": 1991, "grade": 2},
+        {"title": "Edge of Tomorrow", "year": 2014}
+      ]
+    },
+    {
+      "id": "romance-date-night",
+      "query": "a romantic movie for date night",
+      "split": "test",
+      "oracle_intent": {"genres": ["Romance"]},
+      "relevant": [
+        {"title": "The Notebook", "year": 2004},
+        {"title": "Pride & Prejudice", "year": 2005},
+        {"title": "La La Land", "year": 2016},
+        {"title": "About Time", "year": 2013, "grade": 2},
+        {"title": "Before Sunrise", "year": 1995},
+        {"title": "Notting Hill", "year": 1999, "grade": 2}
+      ]
+    },
+    {
+      "id": "detective-investigation",
+      "query": "something like a detective investigation",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Mystery", "Crime"]},
+      "relevant": [
+        {"title": "Knives Out", "year": 2019, "grade": 2},
+        {"title": "Chinatown", "year": 1974, "grade": 2},
+        {"title": "Zodiac", "year": 2007},
+        {"title": "Memories of Murder", "year": 2003},
+        {"title": "L.A. Confidential", "year": 1997},
+        {"title": "The Nice Guys", "year": 2016}
+      ]
+    },
+    {
+      "id": "war-historical",
+      "query": "a historical film about war",
+      "split": "dev",
+      "oracle_intent": {"genres": ["War", "History", "Drama"]},
+      "relevant": [
+        {"title": "Saving Private Ryan", "year": 1998, "grade": 2},
+        {"title": "Dunkirk", "year": 2017},
+        {"title": "1917", "year": 2019},
+        {"title": "Schindler's List", "year": 1993, "grade": 2},
+        {"title": "Come and See", "year": 1985},
+        {"title": "Hacksaw Ridge", "year": 2016}
+      ]
+    },
+    {
+      "id": "scifi-not-horror-not-action",
+      "query": "sci-fi, but not horror and not action",
+      "split": "test",
+      "negated_genres": ["Horror", "Action"],
+      "oracle_intent": {"genres": ["Science Fiction", "Fantasy"], "negations": ["Horror", "Action"]},
+      "relevant": [
+        {"title": "Arrival", "year": 2016, "grade": 2},
+        {"title": "Her", "year": 2013},
+        {"title": "Moon", "year": 2009, "grade": 2},
+        {"title": "Ex Machina", "year": 2015},
+        {"title": "Gattaca", "year": 1997},
+        {"title": "Contact", "year": 1997}
+      ]
+    },
+    {
+      "id": "like-sherlock-holmes",
+      "query": "something like Sherlock Holmes",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Mystery"]},
+      "relevant": [
+        {"title": "Sherlock Holmes", "year": 2009, "grade": 2},
+        {"title": "Sherlock Holmes: A Game of Shadows", "year": 2011, "grade": 2},
+        {"title": "Enola Holmes", "year": 2020, "grade": 2},
+        {"title": "Mr. Holmes", "year": 2015},
+        {"title": "Knives Out", "year": 2019},
+        {"title": "Murder on the Orient Express", "year": 2017}
+      ]
+    },
+    {
+      "id": "animated-family-fun",
+      "query": "a fun animated movie for the whole family",
+      "split": "test",
+      "oracle_intent": {"genres": ["Animation", "Comedy", "Family"]},
+      "relevant": [
+        {"title": "Toy Story", "year": 1995, "grade": 2},
+        {"title": "Shrek", "year": 2001, "grade": 2},
+        {"title": "Zootopia", "year": 2016},
+        {"title": "Coco", "year": 2017},
+        {"title": "The Lego Movie", "year": 2014},
+        {"title": "Inside Out", "year": 2015},
+        {"title": "Despicable Me", "year": 2010}
+      ]
+    },
+    {
+      "id": "biopic-musician",
+      "query": "a biographical film about a musician",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Music", "Drama"]},
+      "relevant": [
+        {"title": "Bohemian Rhapsody", "year": 2018, "grade": 2},
+        {"title": "Walk the Line", "year": 2005, "grade": 2},
+        {"title": "Ray", "year": 2004, "grade": 2},
+        {"title": "Rocketman", "year": 2019},
+        {"title": "Amadeus", "year": 1984},
+        {"title": "Elvis", "year": 2022}
+      ]
+    },
+    {
+      "id": "fantasy-magic-adventure",
+      "query": "a fantasy adventure with magic",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Fantasy", "Adventure"]},
+      "relevant": [
+        {"title": "Harry Potter and the Philosopher's Stone", "year": 2001, "grade": 2},
+        {"title": "The Lord of the Rings: The Fellowship of the Ring", "year": 2001, "grade": 2},
+        {"title": "Stardust", "year": 2007},
+        {"title": "The Princess Bride", "year": 1987},
+        {"title": "Spirited Away", "year": 2001},
+        {"title": "Howl's Moving Castle", "year": 2004},
+        {"title": "Fantastic Beasts and Where to Find Them", "year": 2016}
+      ]
+    },
+    {
+      "id": "western-classic",
+      "query": "a classic western",
+      "split": "test",
+      "oracle_intent": {"genres": ["Western"]},
+      "relevant": [
+        {"title": "The Good, the Bad and the Ugly", "year": 1966, "grade": 2},
+        {"title": "Once Upon a Time in the West", "year": 1968, "grade": 2},
+        {"title": "Rio Bravo", "year": 1959},
+        {"title": "The Searchers", "year": 1956},
+        {"title": "High Noon", "year": 1952},
+        {"title": "Butch Cassidy and the Sundance Kid", "year": 1969}
+      ]
+    },
+    {
+      "id": "psych-mystery-not-horror",
+      "query": "a psychological mystery, not a horror movie",
+      "split": "dev",
+      "negated_genres": ["Horror"],
+      "oracle_intent": {"genres": ["Mystery", "Thriller"], "negations": ["Horror"]},
+      "relevant": [
+        {"title": "Shutter Island", "year": 2010, "grade": 2},
+        {"title": "Memento", "year": 2000, "grade": 2},
+        {"title": "Gone Girl", "year": 2014},
+        {"title": "The Prestige", "year": 2006},
+        {"title": "Mulholland Drive", "year": 2001}
+      ]
+    },
+    {
+      "id": "mt-scifi-then-funnier",
+      "query": "something funnier",
+      "context": ["I want a sci-fi movie"],
+      "category": "refinement",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Science Fiction", "Comedy"]},
+      "relevant": [
+        {"title": "Galaxy Quest", "year": 1999, "grade": 2},
+        {"title": "Men in Black", "year": 1997, "grade": 2},
+        {"title": "Back to the Future", "year": 1985},
+        {"title": "The Hitchhiker's Guide to the Galaxy", "year": 2005, "grade": 2},
+        {"title": "Guardians of the Galaxy", "year": 2014},
+        {"title": "Spaceballs", "year": 1987, "grade": 2},
+        {"title": "Paul", "year": 2011}
+      ]
+    },
+    {
+      "id": "mt-heist-then-recent",
+      "query": "something more recent, after 2010",
+      "context": ["a crime movie about a heist"],
+      "category": "refinement",
+      "split": "test",
+      "oracle_intent": {"genres": ["Crime"], "min_release_year": 2011},
+      "relevant": [
+        {"title": "Baby Driver", "year": 2017, "grade": 2},
+        {"title": "Now You See Me", "year": 2013},
+        {"title": "Widows", "year": 2018, "grade": 2},
+        {"title": "Logan Lucky", "year": 2017},
+        {"title": "Hell or High Water", "year": 2016},
+        {"title": "Ocean's Eight", "year": 2018}
+      ]
+    },
+    {
+      "id": "mt-animated-then-adults",
+      "query": "but not for kids, something for adults",
+      "context": ["I'd like an animated movie"],
+      "category": "refinement",
+      "split": "dev",
+      "negated_genres": ["Family"],
+      "oracle_intent": {"genres": ["Animation"], "negations": ["Family"]},
+      "relevant": [
+        {"title": "Perfect Blue", "year": 1997, "grade": 2},
+        {"title": "Akira", "year": 1988, "grade": 2},
+        {"title": "Waltz with Bashir", "year": 2008},
+        {"title": "Persepolis", "year": 2007},
+        {"title": "Anomalisa", "year": 2015},
+        {"title": "Ghost in the Shell", "year": 1995},
+        {"title": "Grave of the Fireflies", "year": 1988}
+      ]
+    },
+    {
+      "id": "mt-haunted-then-comedy",
+      "query": "less scary, more of a comedy",
+      "context": ["show me some horror", "something with a haunted house"],
+      "category": "refinement",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Comedy", "Horror"]},
+      "relevant": [
+        {"title": "Ghostbusters", "year": 1984, "grade": 2},
+        {"title": "Beetlejuice", "year": 1988, "grade": 2},
+        {"title": "The Frighteners", "year": 1996, "grade": 2},
+        {"title": "Shaun of the Dead", "year": 2004},
+        {"title": "What We Do in the Shadows", "year": 2014},
+        {"title": "Zombieland", "year": 2009}
+      ]
+    },
+    {
+      "id": "mt-war-then-pacific",
+      "query": "set in the Pacific",
+      "context": ["a World War II movie"],
+      "category": "refinement",
+      "split": "test",
+      "oracle_intent": {"genres": ["War"]},
+      "relevant": [
+        {"title": "The Thin Red Line", "year": 1998, "grade": 2},
+        {"title": "Letters from Iwo Jima", "year": 2006, "grade": 2},
+        {"title": "Flags of Our Fathers", "year": 2006, "grade": 2},
+        {"title": "Hacksaw Ridge", "year": 2016, "grade": 2},
+        {"title": "Midway", "year": 2019},
+        {"title": "Unbroken", "year": 2014}
+      ]
+    },
+    {
+      "id": "mt-inception-then-mindbending",
+      "query": "more mind-bending movies like that",
+      "context": ["I loved Inception"],
+      "category": "refinement",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Science Fiction"], "reference_films": ["Inception"]},
+      "relevant": [
+        {"title": "The Matrix", "year": 1999, "grade": 2},
+        {"title": "Paprika", "year": 2006, "grade": 2},
+        {"title": "Primer", "year": 2004},
+        {"title": "Source Code", "year": 2011},
+        {"title": "Tenet", "year": 2020, "grade": 2},
+        {"title": "Memento", "year": 2000},
+        {"title": "Eternal Sunshine of the Spotless Mind", "year": 2004}
+      ]
+    },
+    {
+      "id": "sports-feel-good",
+      "query": "a feel-good sports movie",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Drama"], "themes": ["sports"]},
+      "relevant": [
+        {"title": "Rocky", "year": 1976, "grade": 2},
+        {"title": "Remember the Titans", "year": 2000, "grade": 2},
+        {"title": "The Blind Side", "year": 2009},
+        {"title": "Cool Runnings", "year": 1993, "grade": 2},
+        {"title": "Rudy", "year": 1993},
+        {"title": "Moneyball", "year": 2011}
+      ]
+    },
+    {
+      "id": "heist-not-comedy",
+      "query": "a heist movie, not a comedy",
+      "split": "test",
+      "negated_genres": ["Comedy"],
+      "oracle_intent": {"genres": ["Crime", "Thriller"], "negations": ["Comedy"]},
+      "relevant": [
+        {"title": "Heat", "year": 1995, "grade": 2},
+        {"title": "Inside Man", "year": 2006, "grade": 2},
+        {"title": "The Town", "year": 2010, "grade": 2},
+        {"title": "Reservoir Dogs", "year": 1992},
+        {"title": "Den of Thieves", "year": 2018},
+        {"title": "Rififi", "year": 1955}
+      ]
+    },
+    {
+      "id": "korean-thriller",
+      "query": "a Korean thriller",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Thriller"], "original_languages": ["ko"]},
+      "relevant": [
+        {"title": "Parasite", "year": 2019, "grade": 2},
+        {"title": "Oldboy", "year": 2003, "grade": 2},
+        {"title": "Memories of Murder", "year": 2003, "grade": 2},
+        {"title": "I Saw the Devil", "year": 2010},
+        {"title": "The Chaser", "year": 2008},
+        {"title": "The Handmaiden", "year": 2016}
+      ]
+    },
+    {
+      "id": "comedy-adults-not-animated",
+      "query": "a comedy for adults, nothing animated",
+      "split": "dev",
+      "negated_genres": ["Animation"],
+      "oracle_intent": {"genres": ["Comedy"], "negations": ["Animation"]},
+      "relevant": [
+        {"title": "The Big Lebowski", "year": 1998, "grade": 2},
+        {"title": "Superbad", "year": 2007},
+        {"title": "The Hangover", "year": 2009},
+        {"title": "Step Brothers", "year": 2008},
+        {"title": "Office Space", "year": 1999},
+        {"title": "In Bruges", "year": 2008, "grade": 2}
+      ]
+    },
+    {
+      "id": "drama-90s-acclaimed",
+      "query": "a highly rated drama from the 90s",
+      "split": "test",
+      "oracle_intent": {"genres": ["Drama"], "min_vote_average": 7.5, "min_release_year": 1990, "max_release_year": 1999},
+      "relevant": [
+        {"title": "The Shawshank Redemption", "year": 1994, "grade": 2},
+        {"title": "Forrest Gump", "year": 1994, "grade": 2},
+        {"title": "Schindler's List", "year": 1993, "grade": 2},
+        {"title": "Good Will Hunting", "year": 1997},
+        {"title": "American Beauty", "year": 1999},
+        {"title": "The Green Mile", "year": 1999},
+        {"title": "Fight Club", "year": 1999}
+      ]
+    },
+    {
+      "id": "musical-great-songs",
+      "query": "a musical with great songs",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Music"]},
+      "relevant": [
+        {"title": "The Greatest Showman", "year": 2017, "grade": 2},
+        {"title": "La La Land", "year": 2016, "grade": 2},
+        {"title": "Les Misérables", "year": 2012},
+        {"title": "Singin' in the Rain", "year": 1952, "grade": 2},
+        {"title": "The Sound of Music", "year": 1965, "grade": 2},
+        {"title": "Mamma Mia!", "year": 2008}
+      ]
+    },
+    {
+      "id": "superhero-dark",
+      "query": "a dark superhero movie",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Action", "Crime", "Drama"]},
+      "relevant": [
+        {"title": "The Dark Knight", "year": 2008, "grade": 2},
+        {"title": "Logan", "year": 2017, "grade": 2},
+        {"title": "Joker", "year": 2019},
+        {"title": "Watchmen", "year": 2009},
+        {"title": "The Batman", "year": 2022, "grade": 2},
+        {"title": "Batman Begins", "year": 2005}
+      ]
+    }
+  ]
+}
