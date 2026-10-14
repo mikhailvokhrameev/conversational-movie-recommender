@@ -101,7 +101,7 @@ overridable by an environment variable -- change the file and restart.
 | `session` | EMA alpha, session TTL, LLM history replay caps |
 | `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
 | `intent` | Genre-match threshold |
-| `catalog` | Import and embedding batch sizes |
+| `catalog` | Import and embedding batch sizes, the import vote-count floor, poster URL parts |
 
 Changing `embedding.model` or `embedding.dimensions` additionally requires a
 schema migration and a full re-run of `generate_embeddings --all` -- existing vectors

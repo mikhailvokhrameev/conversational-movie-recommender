@@ -140,8 +140,12 @@ frontend/src/
 ├── hooks/                      # useChat (SSE streaming), useTheme (dark/light)
 └── index.css                   # OKLCH design tokens
 
-docs/                           # API reference, ML decisions, infrastructure
+docs/                           # API reference, ML decisions, infrastructure, datasheet, ADRs
 ```
+
+## Data attribution
+
+Movie data and poster images come from [TMDB](https://www.themoviedb.org/). This product uses the TMDB API but is not endorsed or certified by TMDB. Posters are loaded in the browser from TMDB's image CDN (`https://image.tmdb.org/t/p/`), not stored by this project. See the [catalog datasheet](docs/datasheet.md) for what the catalog contains and its known limits.
 
 ## Documentation
 
@@ -149,5 +153,7 @@ docs/                           # API reference, ML decisions, infrastructure
 - [Core ML Pipeline](docs/core.md)
 - [ML Decisions](docs/ML.md)
 - [Data Models](docs/models.md)
+- [Catalog Datasheet](docs/datasheet.md)
+- [Architecture Decision Records](docs/adr/README.md)
 - [Frontend](docs/frontend.md)
 - [Infrastructure](docs/infrastructure.md)
