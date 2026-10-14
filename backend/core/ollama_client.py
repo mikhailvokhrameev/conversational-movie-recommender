@@ -12,7 +12,8 @@ Falls back to empty intent if Ollama is unavailable (semantic search still works
 
 The async chat view uses a single combined classify+parse call
 (`aclassify_and_parse`, validated against the `MessageIntent` Pydantic schema);
-sync management commands still use the separate `parse_intent` call.
+the separate sync `parse_intent` call uses a different prompt, so
+`evaluate_scoring` runs `aclassify_and_parse` instead -- it evaluates what ships.
 
 Provides both sync and async variants for use in sync management commands
 and async Django views respectively.

@@ -68,8 +68,9 @@ def mmr_diversify(
     Note: `max_sim` here is a raw cosine in [-1, 1] while `relevance` is in
     [0, 1], so the diversity penalty is on a different scale than relevance.
     Left as-is deliberately: correcting it changes ranking behaviour, and
-    there is no golden-set evaluation yet to measure whether the change
-    helps. Revisit once retrieval metrics exist.
+    the golden-set evaluation (`manage.py evaluate_scoring`) still runs on
+    unreviewed draft labels, so it cannot yet show whether the change
+    helps. Revisit once the labels are reviewed.
     """
     top_n = top_n if top_n is not None else settings.TOP_N
     lambda_param = (

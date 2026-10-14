@@ -32,8 +32,8 @@ produces 1024-dim vectors, and runs on both GPU and CPU. No fine-tuning needed.
 Russian-language source to TMDB. The swap and the embedder upgrade shipped
 together -- the full catalog re-embed was happening anyway, so there is no
 valid before/after recall@k comparison between the two embedders (catalog and
-model changed at once). See `TODOS.md`'s golden-set item for measuring BGE-M3
-on its own merits once it lands.
+model changed at once). Measure BGE-M3 on its own merits with the golden-set
+evaluation (see Evaluation Framework) once its draft labels are reviewed.
 
 **Embedding text**: Each movie is embedded as
 `"{serial_name}. {genres joined}. {description[:500]}. Keywords: {keywords[:10] joined}"`.
@@ -213,8 +213,8 @@ worth keeping.
 configurations, suggesting semantic similarity dominated regardless of weight
 allocation. That result no longer applies -- the catalog, embedder, and
 weight scheme (a `popularity` signal was added) have all changed since. Needs
-re-running against the current pipeline; see the golden-set item in
-`TODOS.md`.
+re-running against the current pipeline with `evaluate_scoring --sweep` (dev
+split, golden-set nDCG) once the draft labels are reviewed.
 
 **Configurable**: weights live in `params.yaml` under `scoring.weights` and
 must sum to 1.0. That file is the only place they can be changed.
@@ -268,8 +268,9 @@ and returns candidates in scorer order. A failed download must not break
 recommendations, and the failure is cached so it is not retried per request.
 
 **Not yet measured**: whether reranking improves results here is unverified.
-It is a well-established technique and the reasoning is sound, but the
-golden-set evaluation is the thing that would actually prove it. Treat
+It is a well-established technique and the reasoning is sound, but a
+golden-set evaluation run (with reviewed labels) is the thing that would
+actually prove it. Treat
 `reranking.weight` and `reranking.top_k` as untuned defaults until then.
 
 ## MMR Diversification
@@ -337,61 +338,170 @@ read-only via `GET /api/sessions/<id>/`.
 
 ## Evaluation Framework
 
+`manage.py evaluate_scoring` scores the system against a labelled golden set.
+It is built so that a number it prints measures what ships:
+
+- **Relevance is golden-set membership**, not genre overlap. The old
+  heuristic counted a result as relevant if it shared a genre with the
+  query's labelled genres -- exactly what the `metadata` scoring signal
+  computes from the same genres, so P@k was inflated by construction.
+- **The intent is parsed by the production LLM call** by default (`--intent
+  e2e`), so the most fragile link -- parsing -- is evaluated too.
+- **Retrieval is the production function.** `core.pipeline.generate_and_score`
+  (candidates -> scoring -> reranking -> MMR) is what `ChatView` runs through a
+  thin `sync_to_async` wrapper, so eval and production cannot drift.
+- **Weights are selected on dev, reported on test**, and every run leaves a
+  JSON record behind.
+
+### Golden Set
+
+`data/golden_set.json`: ~30 queries, each with `id`, `query`, `split`
+(`dev`/`test`), and `relevant` -- movie references as `{"tmdb_id": int}` or
+`{"title": str, "year": int}`, optionally with `grade` (1 relevant, 2 highly
+relevant; default 1). Optional fields: `negated_genres` (for the
+negation-violation check), `oracle_intent` (the intent `--intent oracle` uses),
+`context` (prior user messages, for multi-turn entries) and `category`
+(`new_search`/`refinement`, the final message's category in oracle mode).
+
+**The labels are a draft.** They were written from general film knowledge
+without catalog access, as `{title, year}` references, and have not been
+reviewed by a human. At run time each reference is resolved against `Movie`
+(title matched case-insensitively on `serial_name` or `original_title`, plus
+the `release_date` year; `tmdb_id` directly). Unresolved references are
+listed per query on stdout and in the run record (`unresolved_refs`); they
+drop out of that query's recall/nDCG denominator, visibly. A query with no
+resolved reference at all is reported as unscored (`unscorable_queries`)
+rather than counted as 0. Lists are a sample of good answers, not
+exhaustive, so precision on broad queries ("a good comedy") is a lower bound.
+
+The loader and resolver live in `core/golden_set.py`, separate from the
+command, so other evaluations can reuse them.
+
+**Splits.** ~2/3 `dev`, ~1/3 `test`, both containing negation and multi-turn
+entries. `--sweep` only ever selects on `dev` (it refuses `--split test` and
+`--split all`); the plain eval defaults to `test`. Picking weights on the set
+you then report on overstates the result.
+
+### Intent Modes
+
+| Mode | Intent | Query embedding | Use it for |
+|------|--------|-----------------|------------|
+| `e2e` (default) | `aclassify_and_parse(message, history)`, as `ChatView` calls it | `encode_query(intent.semantic_query)` | What users get |
+| `oracle` | The entry's `oracle_intent` (`{}` if absent) | `encode_query(query)` | Retrieval in isolation from parsing |
+
+In `e2e` the prior `context` messages are passed as user-role history entries
+(the shape `ChatSession.history` uses), and the predicted category is
+recorded per query. A golden query classified `follow_up`/`general_chat` is
+still searched, so it still gets metrics, but it counts in `misclassified`
+-- in production it would have produced no recommendations. Comparing `e2e`
+against `oracle` on the same split separates parsing errors from retrieval
+errors (oracle intents are labels too, so they are only as good as the
+draft).
+
+### Session Vector
+
+Entries with `context` get a session preference vector built the way
+production builds one: each prior message is embedded and folded in with
+`update_preference_vector` (default alpha -- prior turns' categories are not
+labelled), then `vector_for_scoring(current, query_embedding, category)`
+applies the refinement update for the final message. Entries without context
+use `session_vector=None`, as a first turn does. Without this, the `session`
+signal was identical for every candidate and the session axis of `--sweep`
+changed nothing; it now matters on the multi-turn entries.
+
 ### Metrics
 
 | Metric | What it measures | Implementation |
 |--------|-----------------|----------------|
-| Precision@k | Fraction of top-k results matching relevant genres | `evaluation.precision_at_k()` |
-| NDCG@k | Position-aware relevance (supports graded scores) | `evaluation.ndcg_at_k()` |
+| Precision@k | Fraction of the top k that are golden movies | `evaluation.precision_at_k()` |
+| Recall@k | Fraction of the resolved golden movies found in the top k | `evaluation.recall_at_k()` |
+| nDCG@k | Position-aware, graded: DCG uses each result's golden grade (0 if not golden), IDCG the golden grades sorted descending, top k | `evaluation.ndcg_at_k()` |
 | Diversity | 1 - mean pairwise cosine similarity among results | `evaluation.diversity()` |
 | Novelty | How non-obvious the recommendations are (genre rarity) | `evaluation.novelty()` |
 | Coverage | Fraction of catalog appearing in any recommendation | `evaluation.coverage()` |
-| LLM Relevance | Ollama rates each recommendation 1-5 for relevance | `evaluation.llm_relevance_score()` |
-| Negation Violations | Count of results matching negated genres | `evaluate_scoring._score_query()` |
+| Negation Violations | Results containing a negated genre (safety metric, separate from relevance) | `evaluate_scoring._score_query()` |
+| LLM Relevance | Mean judge score (1-5) over successfully judged results | `evaluation.llm_relevance_score()` |
+| Judge nDCG | nDCG over judge scores, gain = score - 1, ideal = k results at 5/5 | `evaluation.judge_ndcg()` |
+
+nDCG's ideal ranking comes from the labels, never from the returned list --
+the old graded mode sorted the returned scores to build its ideal, so a list
+of uniformly bad results scored 1.0.
 
 ### LLM-as-Judge
 
-When `--llm-judge` is enabled, the same Ollama model rates each recommended
-movie's relevance to the query on a 1-5 scale. These graded scores feed into
-NDCG for position-aware quality measurement.
+With `--llm-judge`, Ollama rates each result 1-5 (for multi-turn entries it
+sees the whole conversation, not just the last message). It is reported as
+`llm_relevance` and `judge_ndcg`, beside -- not instead of -- the golden-set
+metrics. A failed judge call (request error, unparseable reply, score off the
+scale) returns `None`: it is skipped in the mean, counted in
+`judge_failures`, and a query with any failure gets no `judge_ndcg`. There is
+no substitute score; the old code silently returned 3. Its description cap
+and timeout are `evaluation.judge_description_chars` /
+`evaluation.judge_timeout_seconds` in `params.yaml`.
 
-**Known limitation (circularity)**: The same model that parses intent also
-judges relevance. This creates evaluation bias. A production system would
-use a stronger or different model for judging. For a portfolio project,
-this is documented honestly as a limitation.
+**Known limitation (circularity)**: the judge is the same model family that
+parses intent and writes explanations, so it shares the system's blind
+spots. `--sweep` ranks configurations by golden-set nDCG, never by the judge.
+
+### Determinism
+
+Every Ollama call sends `options.seed` (`llm.seed`) and a temperature chosen
+by call kind: `llm.temperature.structured` (0.0) for every JSON-mode call --
+classify+parse, the sync intent call, the judge -- and
+`llm.temperature.generation` (0.7) for explanations and conversational
+replies. With greedy decoding on the structured calls, `e2e` intent parsing
+and the judge give the same output for the same input, so two runs of the
+same code and params are comparable.
+
+### Run Records
+
+Every run writes a JSON record to `--output`, default
+`eval_runs/<eval|sweep>-<UTC timestamp>.json` under the working directory
+(`eval_runs/` is git-ignored; it is not under `data/`, which is mounted
+read-only in Docker). It holds the git commit and dirty flag (`null` when git
+or `.git` is unavailable, as inside the image), the sha256 of `params.yaml`
+and of the golden set, the CLI options, intent mode, split, k, weights, a
+timestamp, per-query results (recommended ids/titles, hits, resolved and
+unresolved references, predicted category in `e2e`, judge scores), aggregate
+metrics, and counters (`unresolved_refs`, `unscorable_queries`,
+`judge_failures`, `misclassified`). A sweep records every configuration this
+way, sorted best first. Stdout stays a human-readable summary.
 
 ### Running Evaluation
 
 ```bash
-# Genre-based evaluation (fast)
+# Production path (e2e intent) on the held-out test split
 docker compose exec backend python manage.py evaluate_scoring
 
-# With LLM-as-judge graded relevance (slow, ~2s per movie)
+# Retrieval only: labelled intent instead of the LLM parse
+docker compose exec backend python manage.py evaluate_scoring --intent oracle
+
+# Another split (dev | test | all)
+docker compose exec backend python manage.py evaluate_scoring --split dev
+
+# Plus LLM-as-judge (slow, ~2s per movie; secondary signal)
 docker compose exec backend python manage.py evaluate_scoring --llm-judge
 
-# Grid search over weight space (fast, genre-based)
+# Grid search over weight space (dev split only; intent is parsed once per query)
 docker compose exec backend python manage.py evaluate_scoring --sweep
 
-# Grid search with LLM judge (6 configs, ~12 min on GPU)
+# Grid search with LLM judge (6 configs)
 docker compose exec backend python manage.py evaluate_scoring --sweep --llm-judge
 
-# Custom weights
-docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2
+# Custom weights, explicit run-record path
+docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2 --output eval_runs/custom.json
 ```
 
 ### Evaluation Results
 
-**Stale -- pre-swap, do not treat as current.** The numbers that used to live
-here were measured against the old Okko catalog (18,130 items), the old
-mpnet embedder (768-dim), the old 3-signal weight scheme, and a Russian-language
-test set. All four of those changed in the TMDB catalog swap (`28f0194`), so
-none of the old figures describe the current system. No fresh numbers have
-replaced them yet -- `data/test_queries.json` was updated to the new English
-genre taxonomy, but re-running `evaluate_scoring` and reporting real results
-here is still open work. The bigger, non-circular replacement for this whole
-section is the manually-labeled golden-set eval tracked in `TODOS.md`;
-prefer that over re-populating this table with more LLM-judge numbers, per
-the circularity caveat below.
+**None yet.** No run of the golden-set evaluation has been recorded. The
+numbers that used to live here were measured with the old genre-overlap
+heuristic (inflated by construction, see above) against the old Okko catalog
+(18,130 items), the old mpnet embedder (768-dim), the old 3-signal weight
+scheme, and a Russian-language test set -- none of them describe the current
+system. Before reporting numbers here: import and embed the catalog, review
+the draft labels (start with whatever the run reports as unresolved), then
+run on `test` with weights chosen on `dev`, and cite the run record.
 
 ## Production Extensions (not implemented)
 

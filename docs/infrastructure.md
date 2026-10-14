@@ -92,6 +92,7 @@ overridable by an environment variable -- change the file and restart.
 | `diversification` | MMR top_n and lambda |
 | `reranking` | Cross-encoder model, enable flag, top_k, blend weight |
 | `session` | EMA alpha, session TTL, LLM history replay caps |
+| `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
 | `intent` | Genre-match threshold |
 | `catalog` | Import and embedding batch sizes |
 
@@ -210,10 +211,11 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 |---------|---------|
 | `import_catalog --skip-existing` | Load the TMDB CSV into PostgreSQL (idempotent), then rebuild search vectors |
 | `generate_embeddings` | Embed all movie descriptions (batch size from params.yaml) |
-| `evaluate_scoring` | Run offline evaluation with genre-based metrics |
-| `evaluate_scoring --llm-judge` | Run evaluation with LLM graded relevance (slow) |
-| `evaluate_scoring --sweep` | Grid search over scoring weight space |
-| `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge (6 configs) |
+| `evaluate_scoring` | Golden-set evaluation on the test split, intent parsed by the production LLM call; writes a run record to `eval_runs/` |
+| `evaluate_scoring --intent oracle` | Same, with each entry's labelled intent instead of the LLM parse |
+| `evaluate_scoring --llm-judge` | Also score results with the LLM judge (slow, secondary signal) |
+| `evaluate_scoring --sweep` | Grid search over scoring weight space, dev split only |
+| `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge columns (6 configs) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
 
 ## First Run

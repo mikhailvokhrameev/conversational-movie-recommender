@@ -105,7 +105,10 @@ curl -H "X-Session-Token: <token>" http://localhost:3000/api/sessions/<uuid>/
 # Generate embeddings for the catalog (runs on first import)
 docker compose exec backend python manage.py generate_embeddings
 
-# Evaluate scoring quality
+# Evaluate against the golden set (test split; run record in eval_runs/)
+docker compose exec backend python manage.py evaluate_scoring
+
+# Tune scoring weights on the dev split
 docker compose exec backend python manage.py evaluate_scoring --sweep
 ```
 
@@ -120,7 +123,9 @@ backend/
 │   ├── reranking.py                # cross-encoder reranking stage
 │   ├── scoring.py                  # hybrid scoring + MMR diversification
 │   ├── session_manager.py          # EMA preference vector
-│   └── evaluation.py              # LLM-as-judge, metrics
+│   ├── pipeline.py                 # retrieval pipeline shared by chat view and eval
+│   ├── golden_set.py               # golden-set loading + reference resolution
+│   └── evaluation.py              # metrics, LLM-as-judge
 ├── movies/
 │   ├── models.py                   # Movie + ChatSession (pgvector fields)
 │   ├── views.py                    # async API: chat, sessions, health

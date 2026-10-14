@@ -85,8 +85,9 @@ The model is loaded lazily on first call and cached as a module-level singleton.
 
 Calls the Ollama container's HTTP API (`/api/chat`) for classification+intent
 parsing and explanation generation. The request path uses the async variants
-below; sync counterparts of the same functions exist for management commands
-(`evaluate_scoring`, etc.) that run outside the ASGI event loop.
+below; sync counterparts exist for code that runs outside the ASGI event loop
+(the `evaluate_scoring` judge uses `_chat_sync`; its intent parsing runs the async
+`aclassify_and_parse` so it evaluates the production call).
 
 **Classification + intent parsing** (`aclassify_and_parse`): One combined JSON-mode
 call replaces what used to be two separate classify/parse requests. Sends the
@@ -146,9 +147,11 @@ first) with no error. All calls must use the same `num_ctx` (one helper,
 reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
 call's kind: `llm.temperature.structured` (0.0) for every JSON-mode call
 (classify+parse, `parse_intent`, the eval judge) so their output is reproducible,
-`llm.temperature.generation` (0.7) for explanations and conversational replies. The sync API (`parse_intent`, `generate_explanation`, `stream_explanation`),
-used by management commands and evaluation, is unaffected and still builds a
-single-message prompt.
+`llm.temperature.generation` (0.7) for explanations and conversational replies. The
+sync API (`parse_intent`, `generate_explanation`, `stream_explanation`) is unaffected
+and still builds a single-message prompt. `evaluate_scoring` does not use
+`parse_intent` (a different prompt from the one that ships): it runs
+`aclassify_and_parse` through `asyncio.run`, like the chat view.
 
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
@@ -287,22 +290,41 @@ turns from overwriting each other.
 **Explicit preferences**: Accumulates liked genres, disliked genres, themes, and
 reference films extracted from parsed intent.
 
+### `pipeline.py` -- Shared Retrieval Pipeline
+
+`generate_and_score(query_embedding, intent, session_vector, query_text, weights=None,
+top_n=None)` runs `generate_candidates` -> `score_candidates` -> `rerank_candidates` ->
+`mmr_diversify` and returns `(top_movies, reranked_pool)`. `ChatView` calls it through
+the thin `sync_to_async` wrapper `movies.views._generate_and_score`; `evaluate_scoring`
+calls it directly (overriding `weights`/`top_n` for sweeps and custom k), so the
+evaluated pipeline is the production one.
+
 ### `evaluation.py` -- Offline Quality Metrics
 
-Reusable evaluation framework for measuring recommendation quality:
+Reusable evaluation framework for measuring recommendation quality. Relevance is
+membership in the golden set's resolved movie ids, with grades -- never genre overlap,
+which the `metadata` signal computes from the same genres:
 
 | Metric | What it measures |
 |--------|-----------------|
-| `precision_at_k` | Fraction of top-k results that are relevant |
-| `recall_at_k` | Fraction of relevant items that appear in top-k |
-| `ndcg_at_k` | Position-aware relevance (higher = relevant items ranked higher) |
+| `precision_at_k` | Fraction of top-k results that are golden movies |
+| `recall_at_k` | Fraction of resolved golden movies that appear in top-k |
+| `ndcg_at_k` | Graded nDCG; the ideal is built from the golden grades, never from the returned list |
+| `judge_ndcg` | nDCG over LLM-judge scores (gain = score - 1, ideal = k results at 5/5) |
 | `coverage` | Fraction of catalog that appears in any recommendation |
 | `diversity` | 1 - mean pairwise cosine similarity (higher = more diverse results) |
 
-Used by `manage.py evaluate_scoring` and the ablation notebook.
-Test set: `data/test_queries.json` (18 hand-curated English queries with relevance judgments).
-This is a genre-overlap heuristic, not the manually labeled golden-set eval
-tracked in `TODOS.md` -- see there before treating either as ground truth.
+`llm_relevance_score` returns `None` when the judge call fails or its reply is not a
+1-5 score -- callers skip it and count the failure; nothing substitutes a score.
+
+### `golden_set.py` -- Golden Set Loading and Resolution
+
+Loads and validates `data/golden_set.json` (`load_golden_set`, `select_split`) and
+resolves its `{tmdb_id}` / `{title, year}` references to catalog `tmdb_id`s
+(`resolve_references`), returning the unresolved ones for the caller to report. Kept
+apart from the command for reuse. The labels are an unreviewed draft written without
+catalog access; see `docs/ML.md` (Evaluation Framework) for methodology, intent modes,
+splits and run records.
 
 ## Design Decisions
 

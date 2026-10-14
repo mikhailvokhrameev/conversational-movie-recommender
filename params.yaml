@@ -119,7 +119,8 @@ llm:
   timeout_seconds:
     # Combined classify+intent call used by the live chat view (aclassify_and_parse).
     classify_parse: 45
-    # Intent-only call used by the sync path (management commands, evaluation).
+    # Intent-only sync call (parse_intent). evaluate_scoring does not use it:
+    # it runs classify_parse, the call the chat view makes.
     intent: 60
     explanation: 120
 
