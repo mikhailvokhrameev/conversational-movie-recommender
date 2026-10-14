@@ -161,6 +161,17 @@ session:
   # bias ranking among the movies that survive the filters.
   alpha_refinement: 0.92
   ttl_hours: 24
+  # Soft cap on how much conversation history gets replayed into every LLM
+  # call (classification, conversational replies, explanations) as native
+  # multi-turn `messages`. Full session history is used up to this many
+  # user+assistant turn-pairs; older turns are dropped, not summarized. Keeps
+  # a long-lived session (up to `ttl_hours` above) from growing the prompt
+  # sent to the local qwen3:8b without bound.
+  history_max_turns: 20
+  # Second, independent safety net: caps a single history entry's replayed
+  # content by character count, so one abnormally long past message (e.g. a
+  # long explanation) can't blow up the prompt even within the turn cap.
+  history_max_chars_per_entry: 1000
 
 intent:
   # Minimum cosine similarity for mapping an LLM-produced genre name onto a

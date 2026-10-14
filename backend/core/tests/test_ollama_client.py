@@ -11,6 +11,7 @@ from core.ollama_client import (
     _parse_json_response,
     _strip_think,
     _normalize_genres,
+    _build_chat_messages,
     aclassify_and_parse,
     check_explanation_titles,
     CATALOG_GENRES,
@@ -392,4 +393,86 @@ class TestExplanationSplitter:
         assert self._run(["Интро\n[[1]]", "\n", "Описание"]) == [
             (None, "Интро\n"),
             (0, "Описание"),
+        ]
+
+
+class TestBuildChatMessages:
+    def test_no_history_returns_system_and_current_only(self):
+        messages = _build_chat_messages(
+            history=[], system_prompt="SYS", current_content="hi",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages == [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "hi"},
+        ]
+
+    def test_includes_history_turns_in_order(self):
+        history = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="second",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages == [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "reply"},
+            {"role": "user", "content": "second"},
+        ]
+
+    def test_caps_to_last_max_turns_pairs(self):
+        history = [
+            {"role": "user", "content": "turn1-user"},
+            {"role": "assistant", "content": "turn1-assistant"},
+            {"role": "user", "content": "turn2-user"},
+            {"role": "assistant", "content": "turn2-assistant"},
+            {"role": "user", "content": "turn3-user"},
+            {"role": "assistant", "content": "turn3-assistant"},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=2, max_chars=1000,
+        )
+        contents = [m["content"] for m in messages]
+        assert contents == [
+            "SYS", "turn2-user", "turn2-assistant",
+            "turn3-user", "turn3-assistant", "now",
+        ]
+
+    def test_truncates_entry_content_exceeding_max_chars(self):
+        history = [{"role": "user", "content": "x" * 50}]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=10,
+        )
+        assert messages[1]["content"] == "x" * 10
+
+    def test_assistant_entry_with_movies_appended_to_content(self):
+        history = [{
+            "role": "assistant", "content": "Here you go",
+            "movies": ["Film A", "Film B"],
+        }]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages[1]["content"] == "Here you go\n\n(Recommended: Film A, Film B)"
+
+    def test_skips_entries_with_missing_or_invalid_role(self):
+        history = [
+            {"content": "no role field"},
+            {"role": "system", "content": "should not appear"},
+            {"role": "user", "content": "valid"},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages == [
+            {"role": "system", "content": "SYS"},
+            {"role": "user", "content": "valid"},
+            {"role": "user", "content": "now"},
         ]

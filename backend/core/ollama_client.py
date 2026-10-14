@@ -342,6 +342,47 @@ def _build_movies_context(movies: list[dict]) -> str:
     )
 
 
+def _format_history_entry(entry: dict, max_chars: int) -> dict | None:
+    """Turn one `ChatSession.history` entry into a `messages`-array entry.
+
+    Returns None for an entry with an unrecognized/missing `role` -- this is
+    what lets legacy (pre-history-feature) sessions replay cleanly, since
+    they may contain shapes this feature didn't originally write.
+    """
+    role = entry.get("role")
+    if role not in ("user", "assistant"):
+        return None
+    content = str(entry.get("content", ""))[:max_chars]
+    movies = entry.get("movies")
+    if movies:
+        content = f"{content}\n\n(Recommended: {', '.join(movies)})"
+    return {"role": role, "content": content}
+
+
+def _build_chat_messages(
+    history: list[dict],
+    system_prompt: str,
+    current_content: str,
+    max_turns: int,
+    max_chars: int,
+) -> list[dict]:
+    """Build a native Ollama multi-turn `messages` list: system prompt, a
+    capped window of real conversation history, then the current turn.
+
+    `max_turns` caps history to the last N user+assistant pairs (2*N raw
+    entries) before per-entry filtering, so the window size is predictable
+    regardless of how many entries turn out to be malformed/skipped.
+    """
+    windowed = history[-(max_turns * 2):] if max_turns else list(history)
+    messages = [{"role": "system", "content": system_prompt}]
+    for entry in windowed:
+        formatted = _format_history_entry(entry, max_chars)
+        if formatted:
+            messages.append(formatted)
+    messages.append({"role": "user", "content": current_content})
+    return messages
+
+
 def check_explanation_titles(
     explanation: str, top_titles: list[str], candidate_titles: list[str]
 ) -> list[str]:

@@ -158,6 +158,8 @@ _session = PARAMS["session"]
 SESSION_ALPHA = _session["alpha"]
 SESSION_ALPHA_REFINEMENT = _session["alpha_refinement"]
 SESSION_TTL_HOURS = _session["ttl_hours"]
+SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
+SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
 
 GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
 
