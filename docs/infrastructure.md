@@ -91,7 +91,7 @@ overridable by an environment variable -- change the file and restart.
 | `scoring` | Signal weights, neutral score |
 | `diversification` | MMR top_n and lambda |
 | `reranking` | Cross-encoder model, enable flag, top_k, blend weight |
-| `session` | EMA alpha, session TTL |
+| `session` | EMA alpha, session TTL, LLM history replay caps |
 | `intent` | Genre-match threshold |
 | `catalog` | Import and embedding batch sizes |
 

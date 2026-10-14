@@ -198,7 +198,11 @@ Requires the `X-Session-Token` header for authentication.
   "history": [
     {
       "role": "user",
-      "content": "I want a comedy",
+      "content": "I want a comedy"
+    },
+    {
+      "role": "assistant",
+      "content": "Here are a few comedies you might enjoy...",
       "movies": ["Home Alone", "Groundhog Day"]
     }
   ],
@@ -248,7 +252,7 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   ├── validate message (non-empty, <= 2000 chars)
   ├── get or create session (expired sessions are replaced)
   |
-  aclassify_and_parse(message)                ← single Ollama call: category +
+  aclassify_and_parse(message, history)       ← single Ollama call: category +
   (Ollama LLM, ~2s, Pydantic-validated,          filters + semantic_query
    1 retry-with-repair on schema validation
    errors; a request-level failure --
@@ -284,8 +288,17 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
    an explicit correction dominates the vector instead of blending).
 2. Explicit preferences (liked genres, disliked genres, themes, reference films)
    are accumulated from the parsed intent.
-3. The conversation history is appended with the query and recommended movie titles.
-4. `turn_count` increments.
+3. The conversation history gets a `user` entry for the query, and once the
+   reply has finished streaming, an `assistant` entry with the reply text.
+   For search and refinement turns the assistant entry also carries the
+   recommended movie titles (`movies`), and its text is the opening line plus
+   the per-movie descriptions joined by blank lines. Every live-chat LLM call
+   (classification, conversational reply, explanation) replays this history,
+   capped by `session.history_max_turns` / `session.history_max_chars_per_entry`
+   in `params.yaml`, so the model sees real multi-turn context rather than
+   only the current message.
+4. `turn_count` increments once per user turn; the assistant entry from step 3
+   does not increment it again.
 
 Session updates use `SELECT FOR UPDATE` inside a transaction to prevent
 lost updates from concurrent requests on the same session.
@@ -322,6 +335,8 @@ these can be changed -- no environment variable overrides them.
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
+| `session.history_max_turns` | `20` | Max past user/assistant pairs replayed to the LLM |
+| `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
 
 Environment variables are reserved for secrets and deployment wiring
@@ -342,8 +357,9 @@ The API runs on Django ASGI via uvicorn. Key threading decisions:
 - **Candidate generation + scoring** (`_generate_and_score`): wrapped in
   `sync_to_async(thread_sensitive=False)`. Runs in the general thread pool because
   the Django ORM and numpy computations are thread-safe.
-- **Explanation streaming** (`astream_explanation`): fully async generator via
-  `httpx.AsyncClient.stream()`. `astream_explanation_parts` wraps it with
+- **Explanation streaming** (`astream_explanation(query, movies, history)`): fully async
+  generator via `httpx.AsyncClient.stream()`. `astream_explanation_parts` (same
+  signature, forwards `history`) wraps it with
   `ExplanationSplitter` and yields `(slot, text)` pairs instead of raw tokens -- a pure
   transform over the same stream, so it adds no second Ollama call and no extra thread.
 - **Session save** (`_save_session`): `sync_to_async(thread_sensitive=False)` with

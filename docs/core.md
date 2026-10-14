@@ -108,9 +108,9 @@ routes what follows into the matching slot, returning `(slot, text)` pairs where
 is `None` for the intro and a 0-based movie index thereafter. Markers can straddle a
 chunk boundary, so a partial match is held back until the marker is either completed or
 ruled out, and never reaches the caller as text. `astream_explanation_parts(query,
-movies)` is the async generator that wraps `astream_explanation` with that splitter and
-yields those pairs; `astream_explanation` itself is unchanged and still yields raw
-tokens for callers that want them.
+movies, history)` is the async generator that wraps `astream_explanation` with that
+splitter (forwarding `history`) and yields those pairs; `astream_explanation` itself
+still yields raw tokens for callers that want them.
 
 This is a pure transform over the one existing stream -- no second LLM call, no second
 timeout, no extra Ollama round trip. If the model emits no markers at all, everything
@@ -118,12 +118,24 @@ lands in the intro slot; the frontend then falls back to each movie's catalog
 `description`, so a model that ignores the format degrades to the previous behaviour
 rather than failing.
 
+**Conversation history**: all three live-chat LLM calls (`aclassify_and_parse`,
+`astream_conversational`, `astream_explanation`, and `astream_explanation_parts`, which
+forwards it) also receive the session's conversation `history` and build a native
+multi-turn Ollama `messages` array from it via `_build_chat_messages()` (system prompt +
+capped history window + the current turn), so short follow-ups like "another one" or
+"давай" resolve against what was actually said instead of a flattened summary. The
+window is capped by `session.history_max_turns` (20 user/assistant pairs) and
+`session.history_max_chars_per_entry` (1000) in `params.yaml`, so a long-lived
+session's prompt stays bounded. The sync API (`parse_intent`, `generate_explanation`,
+`stream_explanation`), used by management commands and evaluation, is unaffected and
+still builds a single-message prompt.
+
 | Function | Ollama API | Timeout | Fallback |
 |----------|-----------|---------|----------|
-| `aclassify_and_parse(message)` | `POST /api/chat` (JSON mode) | 45s | `_fallback_message_intent()` |
-| `astream_explanation(query, movies)` | `POST /api/chat` (stream) | 120s | Silent stop |
-| `astream_explanation_parts(query, movies)` | none -- wraps `astream_explanation` | inherited (120s) | All text in the intro slot |
-| `astream_conversational(message, context)` | `POST /api/chat` (stream) | 120s | Silent stop |
+| `aclassify_and_parse(message, history)` | `POST /api/chat` (JSON mode) | 45s | `_fallback_message_intent()` |
+| `astream_explanation(query, movies, history)` | `POST /api/chat` (stream) | 120s | Silent stop |
+| `astream_explanation_parts(query, movies, history)` | none -- wraps `astream_explanation` | inherited (120s) | All text in the intro slot |
+| `astream_conversational(message, history)` | `POST /api/chat` (stream) | 120s | Silent stop |
 | `ais_available()` | `GET /` | 5s | Returns `False` |
 
 ### `candidate_generation.py` -- Hard Filters + Hybrid Retrieval
