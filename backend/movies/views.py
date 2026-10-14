@@ -215,10 +215,13 @@ class ChatView(View):
             assistant_blocks = ["".join(intro_parts)] + [
                 "".join(slot_parts[slot]) for slot in sorted(slot_parts)
             ]
-            await _append_history(
-                session, "assistant", "\n\n".join(b for b in assistant_blocks if b),
-                movies=top_titles, count_turn=False,
-            )
+            try:
+                await _append_history(
+                    session, "assistant", "\n\n".join(b for b in assistant_blocks if b),
+                    movies=top_titles, count_turn=False,
+                )
+            except Exception:
+                logger.exception("failed to store assistant turn")
 
             suspicious = check_explanation_titles("".join(explanation_parts), top_titles, candidate_titles)
             if suspicious:
@@ -251,7 +254,10 @@ class ChatView(View):
                 reply_parts.append(token)
                 yield _sse_event("token", {"text": token})
             explain_ms = (time.perf_counter() - t_explain) * 1000
-            await _append_history(session, "assistant", "".join(reply_parts), count_turn=False)
+            try:
+                await _append_history(session, "assistant", "".join(reply_parts), count_turn=False)
+            except Exception:
+                logger.exception("failed to store assistant turn")
             _log_turn_latency(category, classify_parse_ms=classify_parse_ms, explain_ms=explain_ms)
             yield _sse_event("done", {})
 

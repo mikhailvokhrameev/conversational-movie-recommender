@@ -321,6 +321,34 @@ class TestChatSSEConversational:
 
         assert append_history_mock.await_count == 2
 
+    @pytest.mark.asyncio
+    async def test_assistant_turn_store_failure_still_sends_done(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "привет"}),
+            content_type="application/json",
+        )
+
+        # First call (user turn) succeeds, second call (assistant turn) fails.
+        append_history_mock = AsyncMock(side_effect=[None, RuntimeError("db down")])
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("general_chat", semantic_query="привет")), \
+             patch("movies.views._append_history", append_history_mock), \
+             patch("movies.views.astream_conversational", _empty_stream):
+
+            view = ChatView.as_view()
+            response = await view(request)
+
+            assert response.status_code == 200
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+
+            text = body.decode()
+            assert "event: done" in text
+
+        assert append_history_mock.await_count == 2
+
 
 @pytest.mark.django_db
 class TestChatSSERefinement:
