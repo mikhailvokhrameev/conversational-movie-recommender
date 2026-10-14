@@ -396,9 +396,11 @@ def _build_chat_messages(
 
     `max_turns` caps history to the last N user+assistant pairs (2*N raw
     entries) before per-entry filtering, so the window size is predictable
-    regardless of how many entries turn out to be malformed/skipped.
+    regardless of how many entries turn out to be malformed/skipped. It is
+    never "unlimited": 0 yields no history (settings rejects values < 1).
     """
-    windowed = history[-(max_turns * 2):] if max_turns else list(history)
+    # history[-0:] is the WHOLE list in Python, so 0 needs its own case.
+    windowed = history[-(max_turns * 2):] if max_turns > 0 else []
     messages = [{"role": "system", "content": system_prompt}]
     for entry in windowed:
         formatted = _format_history_entry(entry, max_chars)

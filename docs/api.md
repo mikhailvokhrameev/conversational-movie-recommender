@@ -336,8 +336,8 @@ these can be changed -- no environment variable overrides them.
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
-| `session.history_max_turns` | `8` | Max past user/assistant pairs replayed to the LLM; sized so the worst-case prompt fits `llm.num_ctx` |
-| `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM |
+| `session.history_max_turns` | `8` | Max past user/assistant pairs replayed to the LLM; sized so the worst-case prompt fits `llm.num_ctx`. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
+| `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
 
 Environment variables are reserved for secrets and deployment wiring

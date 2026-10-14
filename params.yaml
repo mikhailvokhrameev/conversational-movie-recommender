@@ -201,11 +201,13 @@ session:
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
   # this bounds the prompt: 8 pairs is sized so the worst case fits the
   # 6144-token window. If you raise this, raise llm.num_ctx too (and pay the
-  # extra KV-cache VRAM).
+  # extra KV-cache VRAM). Minimum 1: 0 does NOT mean unlimited, and
+  # settings.py refuses to load a value below 1.
   history_max_turns: 8
   # Second, independent safety net: caps a single history entry's replayed
   # content by character count, so one abnormally long past message (e.g. a
   # long explanation) can't blow up the prompt even within the turn cap.
+  # Minimum 1, enforced at settings load like history_max_turns.
   history_max_chars_per_entry: 1000
 
 intent:

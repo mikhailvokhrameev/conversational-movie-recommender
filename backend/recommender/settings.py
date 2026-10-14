@@ -155,7 +155,24 @@ RERANK_WEIGHT = _reranking["weight"]
 RERANK_MAX_LENGTH = _reranking["max_length"]
 RERANK_DESCRIPTION_CHARS = _reranking["description_chars"]
 
+def _validate_history_limits(session: dict) -> None:
+    """Fail at load if a history limit is < 1.
+
+    0 must not mean "unlimited": the history window is what keeps the prompt
+    inside llm.num_ctx, so a non-positive limit would silently remove that bound.
+    """
+    for key in ("history_max_turns", "history_max_chars_per_entry"):
+        value = session[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(
+                f"params.yaml: session.{key} must be an integer >= 1 (got {value!r}). "
+                "0 does not mean unlimited -- the history window bounds the prompt "
+                "to llm.num_ctx."
+            )
+
+
 _session = PARAMS["session"]
+_validate_history_limits(_session)
 SESSION_ALPHA = _session["alpha"]
 SESSION_ALPHA_REFINEMENT = _session["alpha_refinement"]
 SESSION_TTL_HOURS = _session["ttl_hours"]

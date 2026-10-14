@@ -518,6 +518,17 @@ class TestBuildChatMessages:
             "turn3-user", "turn3-assistant", "now",
         ]
 
+    def test_max_turns_zero_means_no_history_not_unlimited(self):
+        history = [
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+        ]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=0, max_chars=1000,
+        )
+        assert [m["content"] for m in messages] == ["SYS", "now"]
+
     def test_truncates_entry_content_exceeding_max_chars(self):
         history = [{"role": "user", "content": "x" * 50}]
         messages = _build_chat_messages(
@@ -665,6 +676,26 @@ class TestStreamExplanationHistory:
         assert all(isinstance(slot, (int, type(None))) and isinstance(text, str) for slot, text in parts)
         assert "Here are some thrillers." in "".join(t for s, t in parts if s is None)
         assert "A tense detective story." in "".join(t for s, t in parts if s == 0)
+
+
+class TestHistoryLimitValidation:
+    """params.yaml history limits < 1 must fail at settings load, never mean
+    "unlimited" (the window is what bounds the prompt to llm.num_ctx)."""
+
+    @pytest.mark.parametrize("key", ["history_max_turns", "history_max_chars_per_entry"])
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "8", None, True])
+    def test_rejects_values_below_one_or_non_int(self, key, bad):
+        from recommender.settings import _validate_history_limits
+
+        session = {"history_max_turns": 8, "history_max_chars_per_entry": 1000}
+        session[key] = bad
+        with pytest.raises(ValueError, match=key):
+            _validate_history_limits(session)
+
+    def test_accepts_minimum_of_one(self):
+        from recommender.settings import _validate_history_limits
+
+        _validate_history_limits({"history_max_turns": 1, "history_max_chars_per_entry": 1})
 
 
 class TestOllamaOptions:
