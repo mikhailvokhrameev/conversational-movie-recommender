@@ -82,6 +82,9 @@ services:
       - ./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro
       - ./data:/app/data:ro
       - ./params.yaml:/app/params.yaml:ro
+      # evaluate_scoring writes run records to eval_runs/ under the working
+      # directory (/app); without this mount `compose down` would delete them.
+      - ./eval_runs:/app/eval_runs
       - model_cache:/root/.cache
     ports:
       - "8000:8000"

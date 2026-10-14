@@ -551,8 +551,11 @@ same code and params are comparable.
 Every run writes a JSON record to `--output`, default
 `eval_runs/<eval|sweep|gate_report>-<UTC timestamp>.json` under the working directory
 (`eval_runs/` is git-ignored; it is not under `data/`, which is mounted
-read-only in Docker). It holds the git commit and dirty flag (`null` when git
-or `.git` is unavailable, as inside the image), the sha256 of `params.yaml`
+read-only in Docker). In the Docker setup the backend container's `/app/eval_runs`
+is bind-mounted to `./eval_runs/` at the repo root, so records land there on the
+host and survive `docker compose down`/`up --build`. It holds the git commit and dirty flag (`null` when git
+or `.git` is unavailable: always the case for a run inside the Docker image, so
+the commit of a Docker run is not recorded -- note it yourself if it matters), the sha256 of `params.yaml`
 and of the golden set, the CLI options, intent mode, split, k, weights, a
 timestamp, per-query results (recommended ids/titles, hits, resolved and
 unresolved references, predicted category in `e2e`, judge scores), aggregate

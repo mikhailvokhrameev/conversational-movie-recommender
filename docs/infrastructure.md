@@ -38,7 +38,8 @@ The system runs as 4 Docker services via `docker compose up`:
 - **Port**: 11434 (Ollama default)
 - **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
   readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
-  not cached
+  not cached (checked with `ollama show`, the same exact-name test the health check
+  uses, so a cached `qwen3:8b-q4` does not count as `qwen3:8b`)
 - **Model cache**: persisted in `ollama_data` Docker volume (~5.0GB for the
   default qwen3:8b, Q4_K_M)
 - **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
