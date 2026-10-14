@@ -12,14 +12,12 @@ from django.views import View
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from core.candidate_generation import generate_candidates
 from core.embedding_service import encode_query
 from core.ollama_client import (
     aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation_parts,
 )
-from core.reranking import rerank_candidates
-from core.scoring import mmr_diversify, score_candidates
+from core.pipeline import generate_and_score
 from core.session_manager import (
     track_explicit_preferences, update_preference_vector, vector_for_scoring,
 )
@@ -106,14 +104,9 @@ def _append_history(session: ChatSession, role: str, content: str,
 
 @sync_to_async(thread_sensitive=False)
 def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
-    """Returns (top_movies, candidate_pool): candidate_pool is the full reranked
-    pool before the top-n cut, kept around cheaply for the hallucination check
-    in the explanation stream's caller -- no extra retrieval work, no DB round trip."""
-    candidates = generate_candidates(query_embedding, intent, query_text=query_text)
-    scored = score_candidates(candidates, query_embedding, intent, session_vector)
-    reranked = rerank_candidates(query_text, scored)
-    top_movies = mmr_diversify(reranked, top_n=settings.TOP_N)
-    return top_movies, reranked
+    """Async wrapper over `core.pipeline.generate_and_score` -- the same function
+    `evaluate_scoring` runs, so what is evaluated is what ships."""
+    return generate_and_score(query_embedding, intent, session_vector, query_text=query_text)
 
 
 def _log_turn_latency(category, **stage_ms):
