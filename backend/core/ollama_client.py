@@ -29,6 +29,7 @@ or leaking reasoning into the user-visible stream.
 import json
 import logging
 import re
+import time
 from typing import Generator, Literal, Optional
 
 import httpx
@@ -672,6 +673,78 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
     }
 
 
+# --- Call logging: tokens, latency, model identity ---
+
+# Warn when a prompt fills this share of llm.num_ctx or more. History is capped
+# by characters, not tokens (see session.history_max_*), so this is the only
+# signal that a prompt is close to being truncated by Ollama.
+_NUM_CTX_WARN_SHARE = 0.9
+
+
+def _ns_to_ms(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value / 1_000_000
+
+
+def _fmt(value, spec: str = "") -> str:
+    return "n/a" if value is None else format(value, spec)
+
+
+def _log_call_stats(call_type: str, stats, ttft_ms: float | None = None) -> None:
+    """One INFO line per Ollama call: token counts and Ollama's own timings.
+
+    `stats` is the non-streamed response body, or the final `done: true` chunk
+    of a stream; any field may be missing and shows as n/a. `ttft_ms` is the
+    client-side time to first token and only exists for streamed calls. Never
+    raises: logging must not be able to fail a request.
+    """
+    if not isinstance(stats, dict):
+        stats = {}
+    prompt_tokens = stats.get("prompt_eval_count")
+    if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int):
+        prompt_tokens = None
+    eval_tokens = stats.get("eval_count")
+    if isinstance(eval_tokens, bool) or not isinstance(eval_tokens, int):
+        eval_tokens = None
+    logger.info(
+        "Ollama call=%s prompt_tokens=%s eval_tokens=%s prompt_eval_ms=%s eval_ms=%s ttft_ms=%s",
+        call_type,
+        _fmt(prompt_tokens),
+        _fmt(eval_tokens),
+        _fmt(_ns_to_ms(stats.get("prompt_eval_duration")), ".0f"),
+        _fmt(_ns_to_ms(stats.get("eval_duration")), ".0f"),
+        _fmt(ttft_ms, ".0f"),
+    )
+    if prompt_tokens is not None and prompt_tokens >= _NUM_CTX_WARN_SHARE * settings.OLLAMA_NUM_CTX:
+        logger.warning(
+            "Ollama call=%s prompt used %d of %d context tokens (llm.num_ctx); "
+            "Ollama truncates beyond it. Lower session.history_max_turns or raise llm.num_ctx.",
+            call_type, prompt_tokens, settings.OLLAMA_NUM_CTX,
+        )
+
+
+class _StreamStats:
+    """Collects what a streamed call reports: the final `done: true` chunk
+    carries the token counts, and the first non-empty content chunk gives the
+    client-side time to first token (measured from construction, so create it
+    just before sending the request)."""
+
+    def __init__(self) -> None:
+        self._started = time.perf_counter()
+        self.ttft_ms: float | None = None
+        self.final: dict = {}
+
+    def observe(self, data: dict) -> None:
+        if self.ttft_ms is None and data.get("message", {}).get("content"):
+            self.ttft_ms = (time.perf_counter() - self._started) * 1000
+        if data.get("done"):
+            self.final = data
+
+    def log(self, call_type: str) -> None:
+        _log_call_stats(call_type, self.final, self.ttft_ms)
+
+
 # --- Low-level Ollama call (shared by ollama_client and evaluation) ---
 
 
@@ -688,13 +761,15 @@ def _stream_chat_payload(messages: list[dict]) -> dict:
 def _chat_sync(
     messages: list[dict],
     *,
+    call_type: str,
     schema: dict | None = None,
     timeout: float = 60.0,
 ) -> str:
     """Send a chat request to Ollama and return the response content string.
 
     `schema` is a JSON schema constraining the reply (Ollama `format`); passing
-    one also selects the structured sampling kind.
+    one also selects the structured sampling kind. `call_type` labels the
+    token/latency log line.
     """
     payload = {
         "model": settings.OLLAMA_MODEL,
@@ -711,7 +786,9 @@ def _chat_sync(
         timeout=timeout,
     )
     response.raise_for_status()
-    return response.json()["message"]["content"]
+    body = response.json()
+    _log_call_stats(call_type, body)
+    return body["message"]["content"]
 
 
 # --- Sync API (for management commands) ---
@@ -722,6 +799,7 @@ def parse_intent(query: str) -> dict:
     try:
         content = _chat_sync(
             _intent_payload(query)["messages"],
+            call_type="intent",
             schema=INTENT_SCHEMA,
             timeout=settings.OLLAMA_TIMEOUTS["intent"],
         )
@@ -739,6 +817,7 @@ def generate_explanation(query: str, movies: list[dict]) -> str:
     try:
         return _chat_sync(
             _explanation_payload(query, movies)["messages"],
+            call_type="explanation",
             timeout=settings.OLLAMA_TIMEOUTS["explanation"],
         )
     except (httpx.HTTPError, KeyError) as e:
@@ -752,6 +831,7 @@ def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, N
     The token stream is marker-delimited: an opening line, then a `[[n]]` line per movie.
     """
     try:
+        stats = _StreamStats()
         with httpx.stream(
             "POST",
             f"{settings.OLLAMA_BASE_URL}/api/chat",
@@ -762,11 +842,13 @@ def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, N
             for line in response.iter_lines():
                 if line:
                     data = json.loads(line)
+                    stats.observe(data)
                     content = data.get("message", {}).get("content", "")
                     if content:
                         visible = think_filter.feed(content)
                         if visible:
                             yield visible
+            stats.log("explanation")
             tail = think_filter.flush()
             if tail:
                 yield tail
@@ -795,7 +877,9 @@ async def _request_classify_and_parse(
             timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
         )
         response.raise_for_status()
-        return _parse_json_response(response.json()["message"]["content"])
+        body = response.json()
+        _log_call_stats("classify_parse", body)
+        return _parse_json_response(body["message"]["content"])
 
 
 def _fallback_message_intent(message: str) -> MessageIntent:
@@ -854,6 +938,7 @@ async def astream_conversational(message: str, history: list[dict] | None = None
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
+        stats = _StreamStats()
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
@@ -866,11 +951,13 @@ async def astream_conversational(message: str, history: list[dict] | None = None
                 async for line in response.aiter_lines():
                     if line:
                         data = json.loads(line)
+                        stats.observe(data)
                         content = data.get("message", {}).get("content", "")
                         if content:
                             visible = think_filter.feed(content)
                             if visible:
                                 yield visible
+                stats.log("conversational")
                 tail = think_filter.flush()
                 if tail:
                     yield tail
@@ -891,6 +978,7 @@ async def astream_explanation(query: str, movies: list[dict], history: list[dict
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
+        stats = _StreamStats()
         async with httpx.AsyncClient() as client:
             async with client.stream(
                 "POST",
@@ -903,11 +991,13 @@ async def astream_explanation(query: str, movies: list[dict], history: list[dict
                 async for line in response.aiter_lines():
                     if line:
                         data = json.loads(line)
+                        stats.observe(data)
                         content = data.get("message", {}).get("content", "")
                         if content:
                             visible = think_filter.feed(content)
                             if visible:
                                 yield visible
+                stats.log("explanation")
                 tail = think_filter.flush()
                 if tail:
                     yield tail

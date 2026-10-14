@@ -175,6 +175,7 @@ def llm_relevance_score(query: str, movie: dict) -> int | None:
     try:
         content = _chat_sync(
             [{"role": "user", "content": prompt}],
+            call_type="judge",
             schema=JUDGE_SCHEMA,
             timeout=settings.EVAL_JUDGE_TIMEOUT_SECONDS,
         )

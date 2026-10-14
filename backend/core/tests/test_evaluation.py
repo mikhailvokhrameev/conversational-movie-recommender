@@ -132,6 +132,7 @@ class TestLlmRelevanceScore:
         prompt = chat.call_args.args[0][0]["content"]
         assert "x" * 10 in prompt and "x" * 11 not in prompt
         assert chat.call_args.kwargs["timeout"] == 7.5
+        assert chat.call_args.kwargs["call_type"] == "judge"
 
     def test_requests_an_integer_schema_on_the_judge_scale(self):
         from core.evaluation import JUDGE_MAX_SCORE, JUDGE_MIN_SCORE, JUDGE_SCHEMA

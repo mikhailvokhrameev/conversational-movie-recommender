@@ -1,4 +1,5 @@
 import json
+import logging
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import httpx
@@ -16,6 +17,8 @@ from core.ollama_client import (
     _classify_and_parse_payload,
     _explanation_payload,
     _intent_payload,
+    _log_call_stats,
+    _StreamStats,
     _ollama_options,
     _stream_chat_payload,
     aclassify_and_parse,
@@ -894,8 +897,8 @@ class TestOllamaOptions:
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
         with patch("core.ollama_client.httpx.post", return_value=response) as post:
-            assert _chat_sync([{"role": "user", "content": "hi"}]) == "ok"
-            _chat_sync([{"role": "user", "content": "hi"}], schema={"type": "object"})
+            assert _chat_sync([{"role": "user", "content": "hi"}], call_type="explanation") == "ok"
+            _chat_sync([{"role": "user", "content": "hi"}], call_type="judge", schema={"type": "object"})
         plain, structured = post.call_args_list
         assert plain.kwargs["json"]["options"] == self._generation(settings)
         assert structured.kwargs["json"]["options"] == self._structured(settings)
@@ -1041,14 +1044,14 @@ class TestStructuredOutputSchema:
         response.json.return_value = {"message": {"content": "{}"}}
         schema = {"type": "object", "properties": {"score": {"type": "integer"}}}
         with patch("core.ollama_client.httpx.post", return_value=response) as post:
-            _chat_sync([{"role": "user", "content": "hi"}], schema=schema)
+            _chat_sync([{"role": "user", "content": "hi"}], call_type="judge", schema=schema)
         assert post.call_args.kwargs["json"]["format"] == schema
 
     def test_chat_sync_without_schema_sends_no_format(self):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
         with patch("core.ollama_client.httpx.post", return_value=response) as post:
-            _chat_sync([{"role": "user", "content": "hi"}])
+            _chat_sync([{"role": "user", "content": "hi"}], call_type="explanation")
         assert "format" not in post.call_args.kwargs["json"]
 
     def test_parse_intent_sends_the_intent_schema(self):
@@ -1066,4 +1069,179 @@ class TestStructuredOutputSchema:
         with patch("core.ollama_client.httpx.post", return_value=response), \
              patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
             assert parse_intent("a comedy")["genres"] == ["Comedy"]
+
+
+FINAL_CHUNK = {
+    "done": True,
+    "prompt_eval_count": 812,
+    "eval_count": 96,
+    "prompt_eval_duration": 143_200_000,
+    "eval_duration": 1_021_700_000,
+}
+
+
+def _call_records(caplog):
+    return [r for r in caplog.records if r.getMessage().startswith("Ollama call=")]
+
+
+class TestCallLogging:
+    """One INFO line per Ollama call with tokens and Ollama's own timings."""
+
+    def test_line_has_call_type_counts_and_durations_in_ms(self, caplog):
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("classify_parse", FINAL_CHUNK)
+        (record,) = _call_records(caplog)
+        message = record.getMessage()
+        assert record.levelno == logging.INFO
+        assert "call=classify_parse" in message
+        assert "prompt_tokens=812" in message
+        assert "eval_tokens=96" in message
+        assert "prompt_eval_ms=143 " in message
+        assert "eval_ms=1022 " in message
+        assert "ttft_ms=n/a" in message
+
+    def test_ttft_is_reported_when_measured(self, caplog):
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("explanation", FINAL_CHUNK, ttft_ms=250.4)
+        assert "ttft_ms=250" in _call_records(caplog)[0].getMessage()
+
+    @pytest.mark.parametrize("stats", [{}, None, "garbage", {"prompt_eval_count": None}])
+    def test_missing_or_malformed_fields_do_not_crash(self, caplog, stats):
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("judge", stats)
+        (record,) = _call_records(caplog)
+        assert "prompt_tokens=n/a eval_tokens=n/a prompt_eval_ms=n/a eval_ms=n/a" in record.getMessage()
+
+    def test_bool_counts_are_not_mistaken_for_numbers(self, caplog):
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("judge", {"prompt_eval_count": True, "prompt_eval_duration": True})
+        assert "prompt_tokens=n/a" in _call_records(caplog)[0].getMessage()
+        assert "prompt_eval_ms=n/a" in _call_records(caplog)[0].getMessage()
+
+    def test_warns_when_prompt_is_within_ten_percent_of_num_ctx(self, caplog, settings):
+        settings.OLLAMA_NUM_CTX = 1000
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("conversational", {"prompt_eval_count": 900})
+        (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert "900 of 1000" in warning.getMessage()
+        assert "call=conversational" in warning.getMessage()
+
+    def test_no_warning_below_the_threshold(self, caplog, settings):
+        settings.OLLAMA_NUM_CTX = 1000
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("conversational", {"prompt_eval_count": 899})
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_no_warning_without_a_prompt_count(self, caplog):
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_call_stats("conversational", {})
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_chat_sync_logs_with_its_call_type(self, caplog):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": "ok"}, **FINAL_CHUNK}
+        with patch("core.ollama_client.httpx.post", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _chat_sync([{"role": "user", "content": "hi"}], call_type="judge")
+        assert "call=judge prompt_tokens=812" in _call_records(caplog)[0].getMessage()
+
+    @pytest.mark.parametrize("call, call_type", [
+        (lambda: parse_intent("q"), "intent"),
+    ])
+    def test_sync_wrappers_label_their_calls(self, caplog, call, call_type):
+        response = MagicMock()
+        response.json.return_value = {"message": {"content": "{}"}, **FINAL_CHUNK}
+        with patch("core.ollama_client.httpx.post", return_value=response), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            call()
+        assert f"call={call_type} " in _call_records(caplog)[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_classify_parse_logs_each_attempt(self, caplog):
+        body = {"message": {"content": '{"category": "new_search"}'}, **FINAL_CHUNK}
+        mock_client = _mock_ollama_responses("x")
+        mock_client.post.side_effect = [MagicMock(json=MagicMock(return_value=body))]
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            await aclassify_and_parse("hi")
+        (record,) = _call_records(caplog)
+        assert "call=classify_parse prompt_tokens=812" in record.getMessage()
+
+    @pytest.mark.asyncio
+    async def test_classify_parse_response_without_stats_still_parses(self, caplog):
+        mock_client = _mock_ollama_responses('{"category": "general_chat"}')
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            intent = await aclassify_and_parse("hi")
+        assert intent.category == "general_chat"
+        assert "prompt_tokens=n/a" in _call_records(caplog)[0].getMessage()
+
+
+class TestStreamCallLogging:
+    @staticmethod
+    def _lines(*chunks):
+        return [json.dumps(c) for c in chunks]
+
+    def test_stream_stats_takes_final_chunk_and_first_content_time(self):
+        stats = _StreamStats()
+        stats.observe({"message": {"content": ""}, "done": False})
+        assert stats.ttft_ms is None
+        stats.observe({"message": {"content": "Hi"}, "done": False})
+        first = stats.ttft_ms
+        assert first is not None and first >= 0
+        stats.observe({"message": {"content": " there"}, "done": False})
+        assert stats.ttft_ms == first
+        stats.observe({"message": {"content": ""}, **FINAL_CHUNK})
+        assert stats.final["eval_count"] == 96
+
+    @pytest.mark.asyncio
+    async def test_conversational_stream_logs_final_chunk_and_ttft(self, caplog):
+        lines = self._lines(
+            {"message": {"content": "Sure"}, "done": False},
+            {"message": {"content": ""}, **FINAL_CHUNK},
+        )
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            tokens = [t async for t in astream_conversational("hi")]
+        assert tokens == ["Sure"]
+        (record,) = _call_records(caplog)
+        message = record.getMessage()
+        assert "call=conversational prompt_tokens=812 eval_tokens=96" in message
+        assert "ttft_ms=n/a" not in message
+
+    @pytest.mark.asyncio
+    async def test_explanation_stream_logs_with_its_call_type(self, caplog):
+        lines = self._lines({"message": {"content": "Opening"}, **FINAL_CHUNK})
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _ = [t async for t in astream_explanation("q", [])]
+        assert "call=explanation " in _call_records(caplog)[0].getMessage()
+
+    @pytest.mark.asyncio
+    async def test_stream_without_a_final_chunk_still_streams_and_logs_na(self, caplog):
+        lines = self._lines({"message": {"content": "Hello"}})
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            tokens = [t async for t in astream_conversational("hi")]
+        assert tokens == ["Hello"]
+        assert "prompt_tokens=n/a eval_tokens=n/a" in _call_records(caplog)[0].getMessage()
+
+    def test_sync_stream_logs(self, caplog):
+        from core.ollama_client import stream_explanation
+
+        class _Response:
+            def iter_lines(self):
+                yield json.dumps({"message": {"content": "Hi"}, **FINAL_CHUNK})
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        with patch("core.ollama_client.httpx.stream", return_value=_Response()), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            assert "".join(stream_explanation("q", [])) == "Hi"
+        assert "call=explanation prompt_tokens=812" in _call_records(caplog)[0].getMessage()
 
