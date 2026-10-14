@@ -193,9 +193,25 @@ def _validate_embedding_text(embedding: dict) -> None:
             )
 
 
+def _validate_revision(section: str, params: dict) -> None:
+    """Fail at load if <section>.revision is neither null nor a non-empty string.
+
+    It is passed straight to Hugging Face as the `revision` of the model
+    download; null means "whatever the default branch is today" (unpinned).
+    """
+    value = params["revision"]
+    if value is not None and (not isinstance(value, str) or not value.strip()):
+        raise ValueError(
+            f"params.yaml: {section}.revision must be null (unpinned) or a non-empty "
+            f"commit hash string (got {value!r})."
+        )
+
+
 _embedding = PARAMS["embedding"]
 _validate_embedding_text(_embedding)
+_validate_revision("embedding", _embedding)
 EMBEDDING_MODEL = _embedding["model"]
+EMBEDDING_REVISION = _embedding["revision"]
 EMBEDDING_DIMENSIONS = _embedding["dimensions"]
 EMBEDDING_TEXT_DESCRIPTION_CHARS = _embedding["text"]["description_chars"]
 EMBEDDING_TEXT_MAX_KEYWORDS = _embedding["text"]["max_keywords"]
@@ -235,8 +251,10 @@ def _validate_rerank_min_score(reranking: dict) -> None:
 
 _reranking = PARAMS["reranking"]
 _validate_rerank_min_score(_reranking)
+_validate_revision("reranking", _reranking)
 RERANKER_ENABLED = _reranking["enabled"]
 RERANKER_MODEL = _reranking["model"]
+RERANKER_REVISION = _reranking["revision"]
 RERANKER_DEVICE = _reranking["device"]
 RERANK_TOP_K = _reranking["top_k"]
 RERANK_WEIGHT = _reranking["weight"]

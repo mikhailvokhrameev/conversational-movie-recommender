@@ -72,6 +72,10 @@ class EmbeddingIndex(models.Model):
 
     model_name = models.CharField(max_length=255)
     dimensions = models.PositiveIntegerField()
+    # Hugging Face commit of the embedder; null = built unpinned (or before this
+    # was recorded). A null on either side is a note, not a mismatch -- see
+    # core.embedding_provenance.
+    revision = models.CharField(max_length=64, null=True, blank=True)
     text_version = models.PositiveIntegerField()
     text_config = models.JSONField(default=dict)
     updated_at = models.DateTimeField(auto_now=True)
@@ -96,6 +100,7 @@ class EmbeddingIndex(models.Model):
         return {
             "model_name": row.model_name,
             "dimensions": row.dimensions,
+            "revision": row.revision,
             "text_version": row.text_version,
             "text_config": row.text_config,
         }

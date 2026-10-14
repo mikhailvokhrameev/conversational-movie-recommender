@@ -73,6 +73,7 @@ def get_model():
             device = settings.RERANKER_DEVICE
             _model = CrossEncoder(
                 settings.RERANKER_MODEL,
+                revision=settings.RERANKER_REVISION,
                 max_length=settings.RERANK_MAX_LENGTH,
                 device=None if device == "auto" else device,
             )

@@ -745,6 +745,62 @@ class _StreamStats:
         _log_call_stats(call_type, self.final, self.ttft_ms)
 
 
+# The tag behind settings.OLLAMA_MODEL (e.g. "qwen3:8b") is mutable and cannot
+# be pinned by digest in `ollama pull`, so the digest actually serving requests
+# is logged once per process to make a run traceable. One attempt only: a
+# failed lookup costs at most one short timeout, never one per request.
+_digest_lookup_attempted = False
+_DIGEST_LOOKUP_TIMEOUT_SECONDS = 5.0
+
+
+def _model_digest(tags) -> str | None:
+    """The digest of the configured model in an `/api/tags` body, if listed."""
+    wanted = {settings.OLLAMA_MODEL, f"{settings.OLLAMA_MODEL}:latest"}
+    for entry in tags.get("models", []):
+        if entry.get("name") in wanted:
+            return entry.get("digest")
+    return None
+
+
+def _report_model_digest(tags) -> None:
+    digest = _model_digest(tags)
+    if digest:
+        logger.info("Ollama model %s digest %s", settings.OLLAMA_MODEL, digest)
+    else:
+        logger.warning("Ollama model %s not listed by /api/tags; digest unknown", settings.OLLAMA_MODEL)
+
+
+def _log_model_digest_once() -> None:
+    global _digest_lookup_attempted
+    if _digest_lookup_attempted:
+        return
+    _digest_lookup_attempted = True
+    try:
+        response = httpx.get(
+            f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=_DIGEST_LOOKUP_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+        _report_model_digest(response.json())
+    except (httpx.HTTPError, ValueError, AttributeError) as e:
+        logger.warning("Could not read the Ollama model digest: %s", e)
+
+
+async def _alog_model_digest_once(client: httpx.AsyncClient) -> None:
+    """Async variant of `_log_model_digest_once`, reusing the caller's client."""
+    global _digest_lookup_attempted
+    if _digest_lookup_attempted:
+        return
+    _digest_lookup_attempted = True
+    try:
+        response = await client.get(
+            f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=_DIGEST_LOOKUP_TIMEOUT_SECONDS
+        )
+        response.raise_for_status()
+        _report_model_digest(response.json())
+    except (httpx.HTTPError, ValueError, AttributeError) as e:
+        logger.warning("Could not read the Ollama model digest: %s", e)
+
+
 # --- Low-level Ollama call (shared by ollama_client and evaluation) ---
 
 
@@ -780,6 +836,7 @@ def _chat_sync(
     }
     if schema:
         payload["format"] = schema
+    _log_model_digest_once()
     response = httpx.post(
         f"{settings.OLLAMA_BASE_URL}/api/chat",
         json=payload,
@@ -871,6 +928,7 @@ async def _request_classify_and_parse(
     message: str, history: list[dict], repair_note: str | None = None
 ) -> dict:
     async with httpx.AsyncClient() as client:
+        await _alog_model_digest_once(client)
         response = await client.post(
             f"{settings.OLLAMA_BASE_URL}/api/chat",
             json=_classify_and_parse_payload(message, history, repair_note=repair_note),

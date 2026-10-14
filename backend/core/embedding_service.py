@@ -1,7 +1,8 @@
 """Sentence-transformers embedding service with lazy-loaded singleton model.
 
-Wraps BAAI/bge-m3 (1024-dim, multilingual). The model loads on first call and
-stays in memory for the process lifetime.
+Wraps BAAI/bge-m3 (1024-dim, multilingual) at the commit pinned in
+params.yaml (embedding.revision). The model loads on first call and stays in
+memory for the process lifetime.
 """
 
 import logging
@@ -50,7 +51,7 @@ def get_model():
     global _model
     if _model is None:
         logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        _model = SentenceTransformer(settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION)
         logger.info("Embedding model loaded")
     return _model
 

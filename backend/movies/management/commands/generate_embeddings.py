@@ -78,7 +78,7 @@ class Command(BaseCommand):
             return
 
         self.stdout.write(f"Loading embedding model: {settings.EMBEDDING_MODEL}...")
-        model = SentenceTransformer(settings.EMBEDDING_MODEL)
+        model = SentenceTransformer(settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION)
         self.stdout.write(f"Generating embeddings for {len(movies)} movies...")
 
         updated_ids = []

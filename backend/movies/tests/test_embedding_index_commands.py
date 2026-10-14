@@ -54,6 +54,11 @@ class TestEmbeddingIndexModel:
 
         assert EmbeddingIndex.stored() == current_provenance()
 
+    def test_unpinned_revision_round_trips_as_null(self):
+        EmbeddingIndex.record({**current_provenance(), "revision": None})
+
+        assert EmbeddingIndex.stored()["revision"] is None
+
     def test_record_overwrites_instead_of_adding_a_second_row(self):
         EmbeddingIndex.record(current_provenance())
         EmbeddingIndex.record({**current_provenance(), "model_name": "other"})
@@ -79,6 +84,15 @@ class TestGenerateEmbeddings:
 
         assert Movie.objects.filter(embedding__isnull=False).count() == 2
         assert EmbeddingIndex.stored() == current_provenance()
+
+    def test_embedder_is_loaded_at_the_pinned_revision(self):
+        _movie(1)
+
+        encoder_cls, _, _ = _generate()
+
+        encoder_cls.assert_called_once_with(
+            settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION
+        )
 
     def test_ok_record_embeds_only_the_null_rows(self):
         _record()
@@ -179,4 +193,23 @@ class TestCheckEmbeddingIndex:
             self._run()
 
         assert "dimensions" in str(exc.value)
+        assert "generate_embeddings --all" in str(exc.value)
+
+    def test_index_recorded_before_revisions_were_pinned_warns_and_exits_zero(self):
+        _record(revision=None)
+        _movie(1, embedding=_vec(0.5))
+
+        output = self._run()
+
+        assert "WARNING" in output
+        assert "revision" in output
+
+    def test_different_pinned_revision_exits_non_zero(self):
+        _record(revision="0" * 40)
+        _movie(1, embedding=_vec(0.5))
+
+        with pytest.raises(CommandError) as exc:
+            self._run()
+
+        assert "revision" in str(exc.value)
         assert "generate_embeddings --all" in str(exc.value)

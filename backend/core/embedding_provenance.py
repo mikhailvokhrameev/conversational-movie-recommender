@@ -24,10 +24,19 @@ class ProvenanceError(Exception):
     """An embedding run the recorded provenance forbids; the message says what to do."""
 
 
+# Recorded fields where null means "not pinned / not known" rather than a value
+# of its own. A difference with a null on either side cannot be told apart from
+# "same weights, recorded before pinning existed", so it is reported as a note
+# and not a mismatch; two set, different values are a mismatch like any other.
+_PIN_KEYS = frozenset({"revision"})
+
+
 @dataclass(frozen=True)
 class IndexCheck:
     status: str  # "ok" | "missing" | "mismatch"
     differences: list[str] = field(default_factory=list)
+    # Differences that cannot be judged (see _PIN_KEYS); never change `status`.
+    notes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -42,6 +51,7 @@ def current_provenance() -> dict:
     return {
         "model_name": settings.EMBEDDING_MODEL,
         "dimensions": settings.EMBEDDING_DIMENSIONS,
+        "revision": settings.EMBEDDING_REVISION,
         "text_version": EMBEDDING_TEXT_VERSION,
         "text_config": {
             "description_chars": settings.EMBEDDING_TEXT_DESCRIPTION_CHARS,
@@ -62,16 +72,25 @@ def _flatten(record: dict) -> dict:
 
 
 def compare_provenance(stored: dict | None, current: dict) -> IndexCheck:
-    """ok / missing (no record) / mismatch (with one line per differing field)."""
+    """ok / missing (no record) / mismatch (with one line per differing field).
+
+    A differing _PIN_KEYS field with a null on either side goes to `notes`
+    instead, so an index recorded before revisions were pinned stays ok.
+    """
     if stored is None:
         return IndexCheck("missing")
     stored_flat, current_flat = _flatten(stored), _flatten(current)
-    differences = [
-        f"{key}: index was built with {stored_flat.get(key)!r}, config now has {current_flat.get(key)!r}"
-        for key in sorted(stored_flat.keys() | current_flat.keys())
-        if stored_flat.get(key) != current_flat.get(key)
-    ]
-    return IndexCheck("mismatch" if differences else "ok", differences)
+    differences, notes = [], []
+    for key in sorted(stored_flat.keys() | current_flat.keys()):
+        was, now = stored_flat.get(key), current_flat.get(key)
+        if was == now:
+            continue
+        line = f"{key}: index was built with {was!r}, config now has {now!r}"
+        if key in _PIN_KEYS and (was is None or now is None):
+            notes.append(line)
+        else:
+            differences.append(line)
+    return IndexCheck("mismatch" if differences else "ok", differences, notes)
 
 
 def _bullets(differences: list[str]) -> str:
@@ -117,6 +136,15 @@ def plan_generate(check: IndexCheck, has_embeddings: bool, rebuild_all: bool, ad
 
 def check_verdict(check: IndexCheck, has_embeddings: bool) -> Verdict:
     """What check_embedding_index reports; only a mismatch is unhealthy."""
+    if check.status == "ok" and check.notes:
+        return Verdict(
+            True, "warning",
+            "Embedding index matches the current config, but a pinned value cannot be "
+            "compared because one side is not pinned:\n"
+            f"{_bullets(check.notes)}\n"
+            "If the vectors were built from the configured revision, nothing is wrong; "
+            f"to record it, {_FIX_ALL}.",
+        )
     if check.status == "ok":
         return Verdict(True, "ok", "Embedding index matches the current config.")
     if check.status == "missing":

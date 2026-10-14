@@ -155,6 +155,14 @@ embedding:
   # `generate_embeddings --all` rebuilds the catalog and refreshes the record.
   model: BAAI/bge-m3
   dimensions: 1024
+  # Hugging Face commit the weights are downloaded at (SHA of the model repo's
+  # main branch on 2026-10-15; last upstream change 2024-07-03). A Hub model
+  # name alone follows the default branch, so a re-download could silently
+  # bring different weights and invalidate the stored vectors. Treat a change
+  # like a model change (`generate_embeddings --all`): the index records this
+  # value, and check_embedding_index reports a difference as a mismatch when
+  # both the recorded and the configured revision are set. null = unpinned.
+  revision: 5617a9f61b028005a4858fdac845db406aefb181
 
   # Inputs of the per-movie text that gets embedded (see
   # core.embedding_service.build_movie_embedding_text). They are part of the
@@ -220,6 +228,12 @@ reranking:
   # The GFLOPs estimate this used to cite was off by ~2x on the GPU side and
   # ~3x on the CPU side; the CPU/GPU ratio it implied held up.
   model: BAAI/bge-reranker-v2-m3
+  # Hugging Face commit the weights are downloaded at (SHA of the model repo's
+  # main branch on 2026-10-15; last upstream change 2024-06-24), so a
+  # re-download cannot silently change the scores the min_score gate and the
+  # blend weight were calibrated on. Nothing is recorded in the DB for this
+  # one: the reranker has no stored artifacts. null = unpinned.
+  revision: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
   # auto lets sentence-transformers pick (cuda > mps > cpu). Pin to "cpu" to
   # free ~2.2GB of VRAM, but only with a small reranker -- this model on CPU
   # makes every request take seconds instead of a fraction of one.

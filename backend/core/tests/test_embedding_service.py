@@ -99,3 +99,17 @@ class TestEmbeddingTextSettingsValidation:
 
         with pytest.raises(ValueError, match="embedding.text"):
             _validate_embedding_text({})
+
+
+class TestPinnedRevision:
+    def test_model_is_loaded_at_the_configured_revision(self, settings):
+        from unittest.mock import patch
+
+        from core import embedding_service
+
+        settings.EMBEDDING_MODEL = "org/embedder"
+        settings.EMBEDDING_REVISION = "abc123"
+        with patch.object(embedding_service, "_model", None), \
+             patch.object(embedding_service, "SentenceTransformer") as ctor:
+            assert embedding_service.get_model() is ctor.return_value
+        ctor.assert_called_once_with("org/embedder", revision="abc123")

@@ -14,6 +14,7 @@ from core.embedding_provenance import (
 CURRENT = {
     "model_name": "BAAI/bge-m3",
     "dimensions": 1024,
+    "revision": "rev-a",
     "text_version": 1,
     "text_config": {"description_chars": 500, "max_keywords": 10},
 }
@@ -36,6 +37,7 @@ class TestCurrentProvenance:
         assert current == {
             "model_name": settings.EMBEDDING_MODEL,
             "dimensions": settings.EMBEDDING_DIMENSIONS,
+            "revision": settings.EMBEDDING_REVISION,
             "text_version": EMBEDDING_TEXT_VERSION,
             "text_config": {
                 "description_chars": settings.EMBEDDING_TEXT_DESCRIPTION_CHARS,
@@ -61,6 +63,7 @@ class TestCompareProvenance:
         [
             ({"model_name": "other/model"}, "model_name"),
             ({"dimensions": 768}, "dimensions"),
+            ({"revision": "rev-b"}, "revision"),
             ({"text_version": 2}, "text_version"),
             (
                 {"text_config": {"description_chars": 400, "max_keywords": 10}},
@@ -104,6 +107,56 @@ class TestCompareProvenance:
 
         assert check.status == "mismatch"
         assert "text_config.extra" in check.differences[0]
+
+
+class TestRevisionComparison:
+    """A revision difference is a mismatch only when both sides are pinned; a
+    null on either side is a note, so an index recorded before revisions were
+    pinned does not suddenly fail the start-up check."""
+
+    def test_two_different_pins_are_a_mismatch(self):
+        check = compare_provenance(_stored(revision="rev-b"), CURRENT)
+
+        assert check.status == "mismatch"
+        assert "rev-b" in check.differences[0] and "rev-a" in check.differences[0]
+        assert check.notes == []
+
+    def test_same_pin_is_ok_without_notes(self):
+        assert compare_provenance(_stored(), CURRENT) == IndexCheck("ok", [], [])
+
+    @pytest.mark.parametrize(
+        "stored_revision, current_revision",
+        [(None, "rev-a"), ("rev-a", None)],
+    )
+    def test_null_on_one_side_is_a_note_not_a_mismatch(self, stored_revision, current_revision):
+        current = {**CURRENT, "revision": current_revision}
+
+        check = compare_provenance(_stored(revision=stored_revision), current)
+
+        assert check.status == "ok"
+        assert check.differences == []
+        assert len(check.notes) == 1
+        assert "revision" in check.notes[0]
+
+    def test_both_null_is_silent(self):
+        check = compare_provenance(_stored(revision=None), {**CURRENT, "revision": None})
+
+        assert check == IndexCheck("ok", [], [])
+
+    def test_record_without_a_revision_key_is_treated_as_null(self):
+        stored = {k: v for k, v in CURRENT.items() if k != "revision"}
+
+        check = compare_provenance(stored, CURRENT)
+
+        assert check.status == "ok"
+        assert len(check.notes) == 1
+
+    def test_a_real_difference_still_wins_over_a_revision_note(self):
+        check = compare_provenance(_stored(revision=None, model_name="old/model"), CURRENT)
+
+        assert check.status == "mismatch"
+        assert len(check.differences) == 1 and "model_name" in check.differences[0]
+        assert len(check.notes) == 1
 
 
 OK = IndexCheck("ok", [])
@@ -166,6 +219,16 @@ class TestCheckVerdict:
 
         assert verdict.healthy is True
         assert verdict.level == "ok"
+
+    def test_ok_with_a_revision_note_warns_but_stays_healthy(self):
+        check = compare_provenance(_stored(revision=None), CURRENT)
+
+        verdict = check_verdict(check, has_embeddings=True)
+
+        assert verdict.healthy is True
+        assert verdict.level == "warning"
+        assert "revision" in verdict.message
+        assert "generate_embeddings --all" in verdict.message
 
     def test_missing_without_embeddings_is_not_yet_run_and_healthy(self):
         verdict = check_verdict(MISSING, has_embeddings=False)

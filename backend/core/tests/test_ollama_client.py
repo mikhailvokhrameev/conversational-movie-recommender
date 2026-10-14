@@ -18,6 +18,8 @@ from core.ollama_client import (
     _explanation_payload,
     _intent_payload,
     _log_call_stats,
+    _log_model_digest_once,
+    _alog_model_digest_once,
     _StreamStats,
     _ollama_options,
     _stream_chat_payload,
@@ -1244,4 +1246,97 @@ class TestStreamCallLogging:
              caplog.at_level(logging.INFO, logger="core.ollama_client"):
             assert "".join(stream_explanation("q", [])) == "Hi"
         assert "call=explanation prompt_tokens=812" in _call_records(caplog)[0].getMessage()
+
+
+TAGS = {
+    "models": [
+        {"name": "other:1b", "digest": "sha256:aaa"},
+        {"name": "qwen3:8b", "digest": "sha256:bbb"},
+    ]
+}
+
+
+class TestModelDigestLogging:
+    @pytest.fixture(autouse=True)
+    def _lookup_enabled(self, monkeypatch):
+        monkeypatch.setattr("core.ollama_client._digest_lookup_attempted", False)
+
+    @staticmethod
+    def _digest_lines(caplog):
+        return [r.getMessage() for r in caplog.records if "digest" in r.getMessage()]
+
+    def test_logs_the_digest_of_the_configured_model(self, caplog, settings):
+        settings.OLLAMA_MODEL = "qwen3:8b"
+        response = MagicMock()
+        response.json.return_value = TAGS
+        with patch("core.ollama_client.httpx.get", return_value=response) as get, \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_model_digest_once()
+        assert get.call_args.args[0].endswith("/api/tags")
+        assert self._digest_lines(caplog) == ["Ollama model qwen3:8b digest sha256:bbb"]
+
+    def test_only_one_lookup_per_process(self):
+        response = MagicMock()
+        response.json.return_value = TAGS
+        with patch("core.ollama_client.httpx.get", return_value=response) as get:
+            _log_model_digest_once()
+            _log_model_digest_once()
+        assert get.call_count == 1
+
+    def test_failure_is_tolerated_and_not_retried(self, caplog):
+        with patch("core.ollama_client.httpx.get", side_effect=httpx.ConnectError("down")) as get, \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_model_digest_once()
+            _log_model_digest_once()
+        assert get.call_count == 1
+        assert any("Could not read the Ollama model digest" in r.getMessage() for r in caplog.records)
+
+    def test_unexpected_body_is_tolerated(self):
+        response = MagicMock()
+        response.json.return_value = ["not", "a", "dict"]
+        with patch("core.ollama_client.httpx.get", return_value=response):
+            _log_model_digest_once()
+
+    def test_model_missing_from_tags_is_reported(self, caplog, settings):
+        settings.OLLAMA_MODEL = "absent:1b"
+        response = MagicMock()
+        response.json.return_value = TAGS
+        with patch("core.ollama_client.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_model_digest_once()
+        assert any("digest unknown" in r.getMessage() for r in caplog.records)
+
+    def test_untagged_model_name_matches_latest(self, caplog, settings):
+        settings.OLLAMA_MODEL = "llama3"
+        response = MagicMock()
+        response.json.return_value = {"models": [{"name": "llama3:latest", "digest": "sha256:ccc"}]}
+        with patch("core.ollama_client.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            _log_model_digest_once()
+        assert self._digest_lines(caplog) == ["Ollama model llama3 digest sha256:ccc"]
+
+    @pytest.mark.asyncio
+    async def test_async_variant_logs_and_runs_once(self, caplog, settings):
+        settings.OLLAMA_MODEL = "qwen3:8b"
+        client = AsyncMock()
+        client.get.return_value = MagicMock(json=MagicMock(return_value=TAGS))
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            await _alog_model_digest_once(client)
+            await _alog_model_digest_once(client)
+        assert client.get.await_count == 1
+        assert self._digest_lines(caplog) == ["Ollama model qwen3:8b digest sha256:bbb"]
+
+    @pytest.mark.asyncio
+    async def test_async_failure_is_tolerated(self):
+        client = AsyncMock()
+        client.get.side_effect = httpx.ConnectError("down")
+        await _alog_model_digest_once(client)
+
+    @pytest.mark.asyncio
+    async def test_first_chat_request_triggers_the_lookup(self):
+        mock_client = _mock_ollama_responses('{"category": "general_chat"}')
+        mock_client.get = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=TAGS)))
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            await aclassify_and_parse("hi")
+        assert mock_client.get.await_count == 1
 

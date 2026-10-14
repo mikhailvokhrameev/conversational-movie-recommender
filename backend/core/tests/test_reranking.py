@@ -183,12 +183,25 @@ class TestFailSafe:
         with patch.object(reranking, "settings") as mock_settings:
             mock_settings.RERANKER_MODEL = "does-not-exist"
             mock_settings.RERANK_MAX_LENGTH = 256
+            mock_settings.RERANKER_REVISION = "abc123"
+            mock_settings.RERANKER_DEVICE = "auto"
             with patch(
                 "sentence_transformers.CrossEncoder", side_effect=OSError("no such model")
             ) as ctor:
                 assert reranking.get_model() is None
                 assert reranking.get_model() is None
         assert ctor.call_count == 1
+
+    def test_model_is_loaded_at_the_pinned_revision(self):
+        with patch.object(reranking, "settings") as mock_settings:
+            mock_settings.RERANKER_MODEL = "org/reranker"
+            mock_settings.RERANKER_REVISION = "abc123"
+            mock_settings.RERANKER_DEVICE = "auto"
+            mock_settings.RERANK_MAX_LENGTH = 256
+            with patch("sentence_transformers.CrossEncoder") as ctor:
+                assert reranking.get_model() is ctor.return_value
+        assert ctor.call_args.args == ("org/reranker",)
+        assert ctor.call_args.kwargs["revision"] == "abc123"
 
 
 class TestMovieText:
