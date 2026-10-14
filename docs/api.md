@@ -203,7 +203,11 @@ Requires the `X-Session-Token` header for authentication.
     {
       "role": "assistant",
       "content": "Here are a few comedies you might enjoy...",
-      "movies": ["Home Alone", "Groundhog Day"]
+      "movies": ["Home Alone", "Groundhog Day"],
+      "movie_facts": [
+        {"title": "Home Alone", "year": 1990, "genres": ["Comedy", "Family"], "runtime": 103, "description": "An eight-year-old left behind..."},
+        {"title": "Groundhog Day", "year": 1993, "genres": ["Comedy", "Romance"], "runtime": 101, "description": "A weatherman finds himself..."}
+      ]
     }
   ],
   "turn_count": 1,
@@ -291,15 +295,24 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
 3. The conversation history gets a `user` entry for the query, and once the
    reply has finished streaming, an `assistant` entry with the reply text.
    For search and refinement turns the assistant entry also carries the
-   recommended movie titles (`movies`), and its text is the opening line plus
-   the per-movie descriptions joined by blank lines. If the explanation comes
-   back empty (or fails) after the cards were shown, the entry is still stored
-   with empty `content` plus `movies`, and replays to the model as
-   "(Recommended: ...)". Every live-chat LLM call
+   recommended movie titles (`movies`) and `movie_facts` -- per shown movie,
+   in display order, `title`, `year` (`null` if the release date is unknown),
+   `genres`, `runtime` (minutes, may be `null`) and `description` truncated to
+   `session.history_movie_description_chars` at storage time. Its text is the
+   opening line plus the per-movie descriptions joined by blank lines. If the
+   explanation comes back empty (or fails) after the cards were shown, the
+   entry is still stored with empty `content` plus `movies`/`movie_facts`.
+   Sessions stored before `movie_facts` existed have `movies` only and keep
+   working. Every live-chat LLM call
    (classification, conversational reply, explanation) replays this history,
    capped by `session.history_max_turns` / `session.history_max_chars_per_entry`
    in `params.yaml`, so the model sees real multi-turn context rather than
-   only the current message.
+   only the current message. In the replay only the most recent assistant
+   entry that has `movie_facts` is rendered as a facts block
+   (`1. Title (1999) — Drama, Crime — 142 min: description`) so follow-ups like
+   "which one is shorter?" are answered from catalog data; every older entry
+   (and every legacy entry without `movie_facts`) replays as
+   "(Recommended: ...)" with titles only, to stay inside `llm.num_ctx`.
 4. `turn_count` increments once per user turn; the assistant entry from step 3
    does not increment it again.
 
@@ -343,6 +356,7 @@ these can be changed -- no environment variable overrides them.
 | `session.ttl_hours` | `24` | Session expiry |
 | `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so the worst-case prompt fits `llm.num_ctx`. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |
+| `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |
 | `evaluation.judge_description_chars` | `300` | Description chars shown to the `evaluate_scoring --llm-judge` judge. Minimum 1 |
 | `evaluation.judge_timeout_seconds` | `30` | Per-call judge timeout; a timeout counts as a judge failure, never a substitute score |
 | `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
