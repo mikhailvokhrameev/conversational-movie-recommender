@@ -380,7 +380,9 @@ def _format_history_entry(entry: dict, max_chars: int) -> dict | None:
     content = str(entry.get("content", ""))[:max_chars]
     movies = entry.get("movies")
     if movies:
-        content = f"{content}\n\n(Recommended: {', '.join(movies)})"
+        # An empty reply with movies (explanation failed after the cards were
+        # shown) must not start with a blank gap.
+        content = f"{content}\n\n(Recommended: {', '.join(movies)})".lstrip("\n")
     return {"role": role, "content": content}
 
 

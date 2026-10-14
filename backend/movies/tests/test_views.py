@@ -1,5 +1,5 @@
 import json
-from unittest.mock import patch, AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock
 
 import pytest
 from django.conf import settings

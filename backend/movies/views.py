@@ -71,22 +71,19 @@ async def _get_or_create_session(session_id: str | None, token: str) -> ChatSess
 
 @sync_to_async(thread_sensitive=False)
 def _save_session(session: ChatSession, query: str, intent: dict,
-                  query_embedding: list[float], movies: list[dict], category: str,
-                  preference_vector: list[float] | None = None):
-    """`preference_vector`, when given, is stored as-is: it is the vector the
-    turn was already scored with (see `vector_for_scoring`), so what is saved
-    can never diverge from what was scored. Otherwise the EMA is applied here."""
+                  query_embedding: list[float], movies: list[dict], category: str):
+    """The EMA is recomputed here from the *locked* row, with the refinement alpha
+    for a refinement. Outside a race that equals the vector the turn was scored
+    with (`vector_for_scoring`); recomputing under the lock, rather than storing
+    the scoring-time vector, keeps concurrent turns from overwriting each other."""
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
-        if preference_vector is not None:
-            fresh.preference_vector = preference_vector
-        else:
-            alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
-            fresh.preference_vector = update_preference_vector(
-                [float(x) for x in fresh.preference_vector] if fresh.preference_vector is not None else None,
-                query_embedding,
-                alpha=alpha,
-            )
+        alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
+        fresh.preference_vector = update_preference_vector(
+            [float(x) for x in fresh.preference_vector] if fresh.preference_vector is not None else None,
+            query_embedding,
+            alpha=alpha,
+        )
         fresh.preferences = track_explicit_preferences(fresh.preferences, intent)
         fresh.history = list(fresh.history) + [{"role": "user", "content": query}]
         fresh.turn_count += 1
@@ -158,9 +155,10 @@ class ChatView(View):
 
     async def _handle_search_like(self, session, message, intent, classify_parse_ms):
         """Handles both `new_search` and `refinement`: identical pipeline, differing
-        only in the preference vector used for scoring and saved (see
-        `vector_for_scoring`): a refinement scores against the already-updated
-        high-alpha vector, a new_search against the pre-turn one."""
+        only in the preference vector used for scoring (see `vector_for_scoring`):
+        a refinement scores against the already-updated high-alpha vector, a
+        new_search against the pre-turn one. `_save_session` recomputes the stored
+        vector itself under the row lock."""
         # Captured before _save_session/_append_history run below -- both write
         # via a separately-fetched row and never mutate this in-memory `session`,
         # so this deliberately reflects history *before* this turn: the current
@@ -181,12 +179,8 @@ class ChatView(View):
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]
-            # Only a refinement scores with an already-updated vector; store that
-            # exact one. A new_search scored with the pre-turn vector, so
-            # _save_session applies the regular EMA update afterwards.
             await _save_session(
                 session, message, intent_dict, query_embedding, top_movies, category=intent.category,
-                preference_vector=session_vector if intent.category == "refinement" else None,
             )
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
@@ -234,11 +228,13 @@ class ChatView(View):
                 "".join(slot_parts[slot]) for slot in sorted(slot_parts)
             ]
             assistant_text = "\n\n".join(b for b in assistant_blocks if b)
-            # Skip storing an empty reply (failed/empty generation): an empty
-            # assistant entry would only pollute the LLM context. Side effect: the
-            # user turn stays in history without a reply -- acceptable, Ollama
-            # takes consecutive user messages; the 2*N history window shifts slightly.
-            if assistant_text.strip():
+            # Skip storing only when there is nothing to keep: with an empty
+            # explanation the movies were still shown, so store the entry with
+            # empty content and `movies` -- the history formatter turns it into
+            # "(Recommended: ...)" so later turns know what was recommended.
+            # Otherwise the user turn would stay without a reply -- acceptable,
+            # Ollama takes consecutive user messages; the 2*N window shifts slightly.
+            if assistant_text.strip() or top_titles:
                 try:
                     await _append_history(
                         session, "assistant", assistant_text,

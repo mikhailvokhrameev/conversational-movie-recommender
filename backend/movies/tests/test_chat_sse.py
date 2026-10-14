@@ -385,7 +385,7 @@ class TestChatSSEEmptyReply:
         assert [e["role"] for e in session.history] == ["user"]
 
     @pytest.mark.asyncio
-    async def test_empty_explanation_stream_stores_no_assistant_entry(self):
+    async def test_empty_explanation_stream_still_records_shown_movies(self):
         from movies.models import ChatSession
 
         session = await ChatSession.objects.acreate()
@@ -406,7 +406,10 @@ class TestChatSSEEmptyReply:
         assert "event: error" in text
         assert "event: done" in text
         await session.arefresh_from_db()
-        assert all(e["role"] != "assistant" for e in session.history)
+        # The cards were shown, so the turn is kept (empty content + movies) for
+        # the LLM context to know what was recommended.
+        assistant_entries = [e for e in session.history if e["role"] == "assistant"]
+        assert assistant_entries == [{"role": "assistant", "content": "", "movies": ["Test Film"]}]
 
     @pytest.mark.asyncio
     async def test_whitespace_only_conversational_reply_is_not_stored(self):

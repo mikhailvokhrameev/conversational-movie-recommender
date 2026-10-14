@@ -548,6 +548,14 @@ class TestBuildChatMessages:
         )
         assert messages[1]["content"] == "Here you go\n\n(Recommended: Film A, Film B)"
 
+    def test_assistant_entry_with_empty_content_and_movies_has_no_leading_blank_lines(self):
+        history = [{"role": "assistant", "content": "", "movies": ["Film A", "Film B"]}]
+        messages = _build_chat_messages(
+            history=history, system_prompt="SYS", current_content="now",
+            max_turns=10, max_chars=1000,
+        )
+        assert messages[1]["content"] == "(Recommended: Film A, Film B)"
+
     def test_skips_entries_with_missing_or_invalid_role(self):
         history = [
             {"content": "no role field"},

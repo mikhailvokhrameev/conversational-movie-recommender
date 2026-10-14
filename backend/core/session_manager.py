@@ -51,6 +51,9 @@ def vector_for_scoring(
     current query is already in the semantic signal, so folding it into the
     session signal too would count it twice. With no vector yet (first turn)
     there is nothing stale to correct, so None stays None.
+
+    Scoring-only: the stored vector is recomputed from the locked row in
+    `_save_session`, which matches this one outside a concurrent-turn race.
     """
     if category != "refinement" or current_vector is None:
         return current_vector
