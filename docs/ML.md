@@ -267,6 +267,52 @@ request.
 and returns candidates in scorer order. A failed download must not break
 recommendations, and the failure is cached so it is not retried per request.
 
+**"Nothing suitable" gate (`reranking.min_score`)**: retrieval always has a
+top-5, so on its own it can never say "the catalog has nothing for this".
+Every other signal (semantic cosine after min-max, genre overlap, popularity,
+RRF rank) is relative to the rest of the pool; only the cross-encoder's raw
+`rerank_score` is an absolute answer to "does this movie match this query".
+`core.pipeline.apply_relevance_gate` keeps candidates with
+`rerank_score >= min_score` before MMR (both `ChatView` and `evaluate_scoring`
+run it, because it lives in the shared `generate_and_score`). Candidates with
+no `rerank_score` ranked below the reranked head and are dropped too, so a
+gated reply can have fewer than `top_n` movies or none; an empty one makes the
+chat answer with a fixed "nothing matched, rephrase or loosen constraints"
+message, skip the explanation LLM call, and report `no_match: true` in the
+`movies` event (see `api.md`).
+
+- *Range.* `rerank_score` is the sigmoid of the model's logit: in the pinned
+  sentence-transformers line (`<3`, checked in 2.7.0) `CrossEncoder` defaults
+  `default_activation_function` to `nn.Sigmoid()` for a single-label model, and
+  bge-reranker-v2-m3 is single-label. So scores are in [0, 1] and
+  `min_score` must lie strictly inside (0, 1) (settings refuses anything else).
+  The model could not be downloaded on the build host; the calibration report
+  prints the observed min/max, so confirm they fall in [0, 1].
+- *Fail open.* If the reranker is disabled, did not load, failed to predict, or
+  had fewer than two candidates, no candidate has a `rerank_score` and the gate is
+  skipped with one WARNING per request: an infrastructure fault must never turn
+  into zero results.
+- *Off by default, no number shipped.* `min_score: null`. A threshold nobody
+  measured is exactly the defect found in `intent.genre_match_threshold`
+  (an eyeballed `0.5`): too high silently empties answerable queries, too low
+  gates nothing. The value depends on this reranker and this catalog, so it is
+  calibrated, not guessed.
+- *Calibrating.* On the GPU machine, with the catalog imported and golden labels
+  reviewed: `python manage.py evaluate_scoring --intent oracle --gate-report`
+  (dev split only; it refuses `test`, as `--sweep` does). The run is ungated and
+  prints, for hits vs non-hits (golden-set membership), the `rerank_score`
+  count/min/quartiles/max, then per candidate threshold the share of returned
+  hits it would drop, the share of non-hits dropped, and the share of queries it
+  would empty (a query empties when the best score in its whole reranked pool is
+  below the threshold). The same report is in the run record's `gate_report`
+  key, and each query's `recommended` entries carry `rerank_score`/`hit`. A good
+  threshold drops few hits and many non-hits while emptying few queries. The
+  golden set holds only answerable queries, so "queries emptied" measures the cost
+  of a threshold, not the benefit on unanswerable queries -- that side (queries
+  the catalog genuinely cannot serve) is not measured yet. The command never
+  writes `params.yaml`; set the chosen value by hand, then report on the `test`
+  split (`counters.empty_results` counts gated-empty queries in a normal run).
+
 **Not yet measured**: whether reranking improves results here is unverified.
 It is a well-established technique and the reasoning is sound, but a
 golden-set evaluation run (with reviewed labels) is the thing that would
@@ -464,7 +510,7 @@ same code and params are comparable.
 ### Run Records
 
 Every run writes a JSON record to `--output`, default
-`eval_runs/<eval|sweep>-<UTC timestamp>.json` under the working directory
+`eval_runs/<eval|sweep|gate_report>-<UTC timestamp>.json` under the working directory
 (`eval_runs/` is git-ignored; it is not under `data/`, which is mounted
 read-only in Docker). It holds the git commit and dirty flag (`null` when git
 or `.git` is unavailable, as inside the image), the sha256 of `params.yaml`
@@ -472,7 +518,7 @@ and of the golden set, the CLI options, intent mode, split, k, weights, a
 timestamp, per-query results (recommended ids/titles, hits, resolved and
 unresolved references, predicted category in `e2e`, judge scores), aggregate
 metrics, and counters (`unresolved_refs`, `unscorable_queries`,
-`judge_failures`, `misclassified`, `possible_parse_fallbacks`). A sweep records every configuration this
+`judge_failures`, `misclassified`, `possible_parse_fallbacks`, `empty_results`). A sweep records every configuration this
 way, sorted best first. Stdout stays a human-readable summary.
 
 ### Running Evaluation
@@ -495,6 +541,9 @@ docker compose exec backend python manage.py evaluate_scoring --sweep
 
 # Grid search with LLM judge (6 configs)
 docker compose exec backend python manage.py evaluate_scoring --sweep --llm-judge
+
+# Calibrate reranking.min_score (dev split only; gate off for the run; prints the report)
+docker compose exec backend python manage.py evaluate_scoring --intent oracle --gate-report
 
 # Custom weights, explicit run-record path
 docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2 --output eval_runs/custom.json

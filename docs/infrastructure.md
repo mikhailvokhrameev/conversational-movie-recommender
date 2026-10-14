@@ -90,7 +90,7 @@ overridable by an environment variable -- change the file and restart.
 | `retrieval` | Candidate count, RRF constants, lexical search settings |
 | `scoring` | Signal weights, neutral score |
 | `diversification` | MMR top_n and lambda |
-| `reranking` | Cross-encoder model, enable flag, top_k, blend weight |
+| `reranking` | Cross-encoder model, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
 | `session` | EMA alpha, session TTL, LLM history replay caps |
 | `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
 | `intent` | Genre-match threshold |
@@ -216,6 +216,7 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | `evaluate_scoring --llm-judge` | Also score results with the LLM judge (slow, secondary signal) |
 | `evaluate_scoring --sweep` | Grid search over scoring weight space, dev split only |
 | `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge columns (6 configs) |
+| `evaluate_scoring --intent oracle --gate-report` | Calibration report for `reranking.min_score` (gate off; dev split only) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
 
 ## First Run

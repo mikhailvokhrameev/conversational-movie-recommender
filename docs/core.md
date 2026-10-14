@@ -47,6 +47,10 @@ scoring.score_candidates() over the whole candidate set
 reranking.rerank_candidates(query, scored)   [optional, GPU cross-encoder]
   |   top-50 by score -> (query, movie) pairs -> blended 50/50 with scorer
   v
+pipeline.apply_relevance_gate(reranked, min_score)   [off by default: min_score null]
+  |   drops rerank_score < min_score and unscored candidates; skipped if the
+  |   reranker did not score the request; may leave fewer than 5, or none
+  v
 scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
   |   Greedy MMR: balance relevance vs diversity
   v
@@ -306,8 +310,11 @@ reference films extracted from parsed intent.
 ### `pipeline.py` -- Shared Retrieval Pipeline
 
 `generate_and_score(query_embedding, intent, session_vector, query_text, weights=None,
-top_n=None)` runs `generate_candidates` -> `score_candidates` -> `rerank_candidates` ->
-`mmr_diversify` and returns `(top_movies, reranked_pool)`. `ChatView` calls it through
+top_n=None, apply_gate=True)` runs `generate_candidates` -> `score_candidates` ->
+`rerank_candidates` -> `apply_relevance_gate` -> `mmr_diversify` and returns
+`(top_movies, reranked_pool)`; the pool is the full reranked pool, not the gated one.
+With `reranking.min_score` set, `top_movies` can be shorter than `top_n` or empty (see
+`ML.md`); `apply_gate=False` is for the gate calibration report only. `ChatView` calls it through
 the thin `sync_to_async` wrapper `movies.views._generate_and_score`; `evaluate_scoring`
 calls it directly (overriding `weights`/`top_n` for sweeps and custom k), so the
 evaluated pipeline is the production one.

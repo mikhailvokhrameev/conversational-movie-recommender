@@ -364,6 +364,7 @@ these can be changed -- no environment variable overrides them.
 | `reranking.device` | `auto` | `auto` / `cuda` / `cpu` (see ML.md before pinning) |
 | `reranking.top_k` | `50` | Candidates sent to the cross-encoder |
 | `reranking.weight` | `0.5` | Share of final score from the cross-encoder |
+| `reranking.min_score` | `null` | "Nothing suitable" gate: minimum `rerank_score` (strictly between 0 and 1) to keep a candidate; `null` = off. Uncalibrated, so off (see ML.md) |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.alpha` | `0.7` | EMA alpha for preference vector updates |
 | `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
