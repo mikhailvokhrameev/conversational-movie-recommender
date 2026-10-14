@@ -462,6 +462,92 @@ class TestChatSSEEmptyReply:
 
 
 @pytest.mark.django_db
+class TestChatSSENoMatch:
+    """The relevance gate (reranking.min_score) can leave no results."""
+
+    @staticmethod
+    async def _read(response):
+        body = b""
+        async for chunk in response.streaming_content:
+            body += chunk if isinstance(chunk, bytes) else chunk.encode()
+        return body.decode()
+
+    @staticmethod
+    def _request(session, message="фильм про несуществующее"):
+        return AsyncRequestFactory().post(
+            "/api/chat/",
+            data=json.dumps({"message": message, "session_id": str(session.session_id)}),
+            content_type="application/json",
+            headers={"X-Session-Token": session.session_token},
+        )
+
+    @staticmethod
+    async def _no_results(query_embedding, intent, session_vector, query_text=""):
+        return [], []
+
+    @pytest.mark.asyncio
+    async def test_empty_gated_result_emits_no_match_and_fixed_message_without_llm(self):
+        from movies.models import ChatSession
+        from movies.views import NO_MATCH_MESSAGE
+
+        session = await ChatSession.objects.acreate()
+        explain = MagicMock(side_effect=AssertionError("explanation must not be called"))
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="x")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", self._no_results), \
+             patch("movies.views.astream_explanation_parts", explain):
+            response = await ChatView.as_view()(self._request(session))
+            events = _parse_sse(await self._read(response))
+
+        assert [name for name, _ in events] == ["movies", "token", "done"]
+        movies_event = dict(events)["movies"]
+        assert movies_event["movies"] == []
+        assert movies_event["no_match"] is True
+        assert movies_event["session_id"] == str(session.session_id)
+        assert dict(events)["token"] == {"text": NO_MATCH_MESSAGE}
+        explain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_empty_result_saves_session_and_stores_text_without_movies(self):
+        from movies.models import ChatSession
+        from movies.views import NO_MATCH_MESSAGE
+
+        session = await ChatSession.objects.acreate()
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="x")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", self._no_results):
+            response = await ChatView.as_view()(self._request(session))
+            await self._read(response)
+
+        await session.arefresh_from_db()
+        assert session.history == [
+            {"role": "user", "content": "фильм про несуществующее"},
+            {"role": "assistant", "content": NO_MATCH_MESSAGE},
+        ]
+        assert session.turn_count == 1
+        assert session.preference_vector is not None
+
+    @pytest.mark.asyncio
+    async def test_fewer_than_top_n_movies_take_the_normal_explanation_path(self):
+        from movies.models import ChatSession
+
+        session = await ChatSession.objects.acreate()
+        two = _two_movies()
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="x")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score(two)), \
+             patch("movies.views.astream_explanation_parts",
+                   _mock_explanation_parts((None, "Две находки."), (0, "Первый."), (1, "Второй."))):
+            response = await ChatView.as_view()(self._request(session))
+            events = _parse_sse(await self._read(response))
+
+        movies_event = dict(events)["movies"]
+        assert [m["serial_name"] for m in movies_event["movies"]] == ["Film 1", "Film 2"]
+        assert movies_event["no_match"] is False
+        assert [name for name, _ in events if name == "blurb"] == ["blurb", "blurb"]
+
+
+@pytest.mark.django_db
 class TestChatSSERefinement:
     @pytest.mark.asyncio
     async def test_refinement_returns_new_movies(self):

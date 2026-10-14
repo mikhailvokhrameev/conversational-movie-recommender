@@ -36,7 +36,7 @@ with `session` instead (see **Conversational turns** below):
 
 ```
 event: movies          (new_search / refinement turns only)
-data: {"session_id": "...", "session_token": "...", "movies": [...], "intent": {...}}
+data: {"session_id": "...", "session_token": "...", "movies": [...], "no_match": false, "intent": {...}}
 
 event: session         (follow_up / general_chat turns only)
 data: {"session_id": "...", "session_token": "..."}
@@ -59,7 +59,19 @@ data: {}
 **Phase 1 (instant)**: The `movies` event fires as soon as candidates are scored.
 Contains the session UUID and session token (send both back -- `session_id` in
 the body, `session_token` as the `X-Session-Token` header -- to continue the
-session on the next request), the top-5 movie objects, and the parsed intent.
+session on the next request), the top-5 movie objects, the `no_match` flag, and
+the parsed intent.
+
+`no_match` is `false` on every normal response. It is `true` only when the
+relevance gate (`reranking.min_score`, off by default -- see `ML.md`) removed
+every candidate: then `movies` is `[]`, the LLM explanation call is skipped, and
+the stream is just `movies`, one `token` event carrying a fixed short message
+("Nothing in the catalog matched that well. Try rephrasing your request or
+loosening some of the constraints."), and `done` -- no `blurb`, no `error`. The
+stored assistant turn holds that text with no `movies`/`movie_facts`, so a
+follow-up is not grounded in movies that were never shown. With the gate on, a
+non-empty `movies` array can also hold fewer than 5 items; those take the
+normal explanation path.
 
 **Phase 2 (streaming)**: One LLM call produces the whole explanation, but it is no
 longer one blob. `EXPLANATION_PROMPT` asks for an opening line that names no titles,
@@ -270,11 +282,13 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   score_candidates(candidates, ...)          ← semantic + metadata + session + popularity,
                                                each normalized across the set
   rerank_candidates(query, scored)           ← cross-encoder, on by default, top_k=50
-  mmr_diversify(scored, top_n=5)             ← diversity selection
+  apply_relevance_gate(reranked, min_score)  ← drops rerank_score < min_score (off by default)
+  mmr_diversify(gated, top_n=5)              ← diversity selection
                  |
   _save_session()                            ← atomic update with SELECT FOR UPDATE
                  |
-  SSE Phase 1:   event: movies  {results + session_id + intent}
+  SSE Phase 1:   event: movies  {results + session_id + no_match + intent}
+                                  (no_match: movies=[] -> one fixed token, then done)
   SSE Phase 2:   event: token   {text}          ... (intro line, streamed from Ollama)
                  event: blurb   {index, text}   ... (per-movie descriptions, same stream)
   SSE Terminal:  event: done    {}

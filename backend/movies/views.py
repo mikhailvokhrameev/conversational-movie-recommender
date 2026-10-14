@@ -26,6 +26,14 @@ from .models import ChatSession, Movie
 
 logger = logging.getLogger(__name__)
 
+# Reply when the relevance gate (reranking.min_score) leaves no results. A
+# fixed user-facing string, not a tunable: no LLM call, so a "nothing found"
+# answer cannot be dressed up by the model into recommendations from thin air.
+NO_MATCH_MESSAGE = (
+    "Nothing in the catalog matched that well. "
+    "Try rephrasing your request or loosening some of the constraints."
+)
+
 
 class HealthView(APIView):
     def get(self, request):
@@ -183,6 +191,11 @@ class ChatView(View):
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)
 
+        if not top_movies:
+            return self._no_match_response(
+                session, intent, intent_dict, classify_parse_ms, embed_ms, score_ms,
+            )
+
         movies_for_llm = [
             {"serial_name": m["serial_name"], "genres": m["genres"], "description": m["description"]}
             for m in top_movies
@@ -196,6 +209,7 @@ class ChatView(View):
                 "session_id": str(session.session_id),
                 "session_token": session.session_token,
                 "movies": serialized,
+                "no_match": False,
                 "intent": intent_dict,
             })
             has_tokens = False
@@ -248,6 +262,39 @@ class ChatView(View):
             _log_turn_latency(
                 intent.category, classify_parse_ms=classify_parse_ms,
                 embed_ms=embed_ms, score_ms=score_ms, explain_ms=explain_ms,
+            )
+            yield _sse_event("done", {})
+
+        return StreamingHttpResponse(
+            event_stream(),
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    def _no_match_response(self, session, intent, intent_dict, classify_parse_ms, embed_ms, score_ms):
+        """The relevance gate left nothing: say so instead of explaining top-5.
+
+        The movies event carries `no_match: true` and an empty list, the fixed
+        message goes out as a normal token reply, and the stored assistant turn
+        has no `movies`/`movie_facts` -- nothing was shown, so a later follow-up
+        must not be grounded in movies the user never saw.
+        """
+        async def event_stream():
+            yield _sse_event("movies", {
+                "session_id": str(session.session_id),
+                "session_token": session.session_token,
+                "movies": [],
+                "no_match": True,
+                "intent": intent_dict,
+            })
+            yield _sse_event("token", {"text": NO_MATCH_MESSAGE})
+            try:
+                await _append_history(session, "assistant", NO_MATCH_MESSAGE, count_turn=False)
+            except Exception:
+                logger.exception("failed to store assistant turn")
+            _log_turn_latency(
+                intent.category, classify_parse_ms=classify_parse_ms,
+                embed_ms=embed_ms, score_ms=score_ms,
             )
             yield _sse_event("done", {})
 
