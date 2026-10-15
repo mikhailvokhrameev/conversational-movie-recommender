@@ -352,8 +352,8 @@ class TestFallbackIntent:
 
 
 class TestStripThink:
-    """Hybrid reasoning models prefix answers with a <think> span. JSON-mode
-    responses must survive one arriving despite the think=false flag."""
+    """Hybrid reasoning models prefix answers with a <think> span. Schema-constrained
+    replies must survive one arriving despite the think=false flag."""
 
     def test_clean_json_untouched(self):
         assert _strip_think('{"a": 1}') == '{"a": 1}'
@@ -1306,6 +1306,8 @@ class TestModelDigestLogging:
             {"models": "qwen3:8b"},
             {"models": ["qwen3:8b", None, 3]},
             {"models": [{"name": 7, "digest": "sha256:zzz"}, {"name": None}]},
+            {"models": [{"name": ["qwen3:8b"], "digest": "sha256:zzz"}]},
+            {"models": [{"name": {"a": 1}, "digest": "sha256:zzz"}]},
         ],
     )
     def test_malformed_tags_bodies_never_raise(self, body, caplog):
