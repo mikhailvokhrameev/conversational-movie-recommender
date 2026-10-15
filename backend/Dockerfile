@@ -8,22 +8,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY --from=ghcr.io/astral-sh/uv:0.12.9 /uv /usr/local/bin/uv
 
-# torch must be installed BEFORE requirements.txt, and from the CUDA 12.1 index.
-#
-# sentence-transformers pulls torch transitively, and PyPI's default wheel is
-# now a CUDA 13 build whose compiled architectures start at sm_75 (Turing).
-# The target GPU is a GTX 1080 Ti -- Pascal, sm_61 -- which CUDA 13 dropped, so
-# the default wheel sees the card but has no kernels for it and the reranker
-# silently falls back to CPU. cu121 is the newest index still shipping sm_61.
-#
-# Installing it first means the requirements.txt resolve finds torch already
-# satisfied and leaves it alone. Check with torch.cuda.get_arch_list() after
-# changing this: 'sm_61' must be in the list.
-RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+# The venv lives outside /app so `COPY . .` and any bind mount can't shadow it.
+# torch comes from the cu121 index (sm_61 support) -- see backend/pyproject.toml.
+ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH"
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY pyproject.toml uv.lock .python-version ./
+RUN uv sync --frozen --no-install-project --no-cache
 
 COPY . .
 
