@@ -146,7 +146,7 @@ What is pinned, and what is not:
 | Embedder weights | `embedding.revision` -- a Hugging Face commit SHA passed as `revision=` on every load. Recorded in the `EmbeddingIndex` row (see ML.md, Index provenance) |
 | Reranker weights | `reranking.revision`, same mechanism; nothing is stored in the DB for it |
 | LLM weights | **Not pinnable.** The `qwen3:8b` tag is mutable and `ollama pull` cannot take a digest. The digest actually served is logged once per backend process (`Ollama model qwen3:8b digest sha256:..`), so a run can be traced afterwards |
-| Python packages | **Not pinned.** No lock file; `requirements.txt` holds ranges (for example `sentence-transformers>=2.6,<3.0`) and only `torch` is exact in the backend `Dockerfile`. A rebuild can bring newer minor versions |
+| Python packages | `backend/uv.lock`, installed with `uv sync --frozen` in the backend `Dockerfile`, so a rebuild gets the locked versions. `pyproject.toml` holds the ranges. `torch` is exact (2.5.1) and comes from the PyTorch cu121 index on Linux, because newer CUDA builds dropped Pascal (sm_61); on macOS the lock falls back to PyPI. Change dependencies with `uv lock`, never by editing the lock |
 | Sampling | `llm.temperature.*` and `llm.seed` in `params.yaml`; reproducible on the same Ollama build and hardware |
 
 A `revision` of `null` means unpinned (the model's default branch at download time). To
