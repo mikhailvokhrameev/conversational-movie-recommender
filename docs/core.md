@@ -175,7 +175,8 @@ first) with no error. All calls must use the same `num_ctx` (one helper,
 `_ollama_options(kind)`, feeds every payload), because a differing value makes Ollama
 reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
 call's kind: `llm.temperature.structured` (0.0) for every schema-constrained call
-(classify+parse, `parse_intent`, the eval judge) so their output is reproducible,
+(classify+parse, `parse_intent`, the eval judge) so their output should repeat on the
+same Ollama build and hardware (GPU kernels may still vary it),
 `llm.temperature.generation` (0.7) for explanations and conversational replies. The
 sync API (`parse_intent`, `generate_explanation`, `stream_explanation`) is unaffected
 and still builds a single-message prompt. `evaluate_scoring` does not use

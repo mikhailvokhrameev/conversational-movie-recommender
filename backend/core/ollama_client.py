@@ -701,6 +701,8 @@ def _log_call_stats(call_type: str, stats, ttft_ms: float | None = None) -> None
     """
     if not isinstance(stats, dict):
         stats = {}
+    # prompt_eval_count may cover only the newly evaluated tokens when Ollama
+    # reuses a cached prompt prefix, so read it from a cold call.
     prompt_tokens = stats.get("prompt_eval_count")
     if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int):
         prompt_tokens = None
