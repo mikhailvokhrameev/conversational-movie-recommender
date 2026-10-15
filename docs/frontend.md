@@ -41,8 +41,7 @@ frontend/
 │       ├── WelcomeScreen.jsx  Empty state: arc-text heading, input, suggestion chips, poster arc hero
 │       └── PosterArc.jsx      Decorative rotating arc of static poster images (welcome screen only)
 └── public/
-    ├── favicon.svg
-    └── icons.svg
+    └── favicon.svg
 ```
 
 ## Design Tokens
