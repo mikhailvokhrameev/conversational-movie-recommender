@@ -503,6 +503,43 @@ use `session_vector=None`, as a first turn does. Without this, the `session`
 signal was identical for every candidate and the session axis of `--sweep`
 changed nothing; it now matters on the multi-turn entries.
 
+### Session-Vector Ablation
+
+`evaluate_scoring --session-ablation` answers whether the session vector earns
+its upkeep (the `ChatSession.preference_vector` column tied to the embedding
+dimensions, the EMA bookkeeping under a row lock). It parses each multi-turn
+entry once (all splits by default; single-turn entries have no vector and are
+skipped) and scores it three ways:
+
+| Arm | Session vector |
+|-----|----------------|
+| `with_vector` | as production builds it |
+| `without_vector` | none -- the same as deleting the `session` signal |
+| `refinement_only` | only on turns scored as `refinement` (the candidate fix for topic switches) |
+
+A missing vector gives every candidate the same `session` value, which adds one
+constant to every scorer total; the min-max before the rerank blend cancels it,
+so `without_vector` ranks exactly as if the signal were removed and the other
+weights renormalized. (With the reranker off, MMR sees the raw total, so the
+match is close rather than exact; the report warns when that happens.)
+
+The decision uses paired per-query nDCG@k differences, `with - without`, with a
+percentile bootstrap interval (`evaluation.session_ablation` in params.yaml):
+
+- **KEEP**: mean gain >= `min_ndcg_gain` and the interval is above 0.
+- **REMOVE**: the interval's upper end is below `min_ndcg_gain` -- a
+  worthwhile gain is ruled out (the reason says whether the vector also hurts).
+- **INCONCLUSIVE**: fewer than `min_queries` scored queries, or an interval that
+  straddles the bar.
+
+The report also breaks the difference down by labelled category (topic-switch
+`new_search` vs `refinement`), gives `refinement_only - with` for the partial
+fix, and counts how many top-k lists the vector changed at all. Run it with the
+default `--intent e2e`: in production the LLM parse already carries context
+from the history, and the question is whether the vector adds anything on top.
+`--intent oracle` isolates retrieval but embeds the raw last message, which
+favours the vector.
+
 ### Metrics
 
 | Metric | What it measures | Implementation |
