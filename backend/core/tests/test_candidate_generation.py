@@ -137,6 +137,18 @@ class TestLexicalTerms:
         assert _lexical_terms("") == []
         assert _lexical_terms("   ") == []
 
+    def test_stopwords_are_dropped(self):
+        terms = _lexical_terms("recommend something like movies about heists")
+        assert not {"recommend", "something", "movies", "like"} & set(terms)
+        assert "heists" in terms
+
+    def test_only_stopwords_gives_no_terms(self):
+        assert _lexical_terms("Please recommend a good movie") == []
+
+    def test_stopwords_do_not_use_up_the_term_cap(self):
+        text = " ".join(["movies"] * 20 + [f"слово{i}" for i in range(12)])
+        assert len(_lexical_terms(text)) == 12
+
     def test_caps_term_count(self):
         assert len(_lexical_terms(" ".join(f"слово{i}" for i in range(50)))) == 12
 

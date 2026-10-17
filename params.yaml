@@ -220,6 +220,27 @@ retrieval:
     min_term_length: 3
     # Ceiling on tsquery size for a long rambling message.
     max_terms: 12
+    # Conversational words that say nothing about the film but match titles
+    # and keywords ("Movie", "Like", "Good", "Show"...). Dropped from the
+    # lexical query so they don't drag those titles into the candidates; if
+    # nothing is left the lexical channel is skipped and semantic search
+    # carries the query. Lowercase, one word each.
+    stopwords:
+      - movie
+      - movies
+      - film
+      - films
+      - watch
+      - something
+      - anything
+      - recommend
+      - suggest
+      - show
+      - want
+      - like
+      - similar
+      - please
+      - good
 
 scoring:
   # Applied to signals that have been min-max normalized across the candidate

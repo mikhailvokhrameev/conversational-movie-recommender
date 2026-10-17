@@ -177,13 +177,14 @@ def _apply_hard_filters(queryset, intent: dict | None):
 
 
 def _lexical_terms(query_text: str) -> list[str]:
-    """Extract usable full-text terms from a raw user message."""
+    """Extract usable full-text terms from the query text, minus conversational
+    stopwords (dropped before the max-terms cut)."""
     if not query_text:
         return []
     terms = [
         term
         for term in _WORD_RE.findall(query_text.lower())
-        if len(term) >= settings.LEXICAL_MIN_TERM_LENGTH
+        if len(term) >= settings.LEXICAL_MIN_TERM_LENGTH and term not in settings.LEXICAL_STOPWORDS
     ]
     return terms[: settings.LEXICAL_MAX_TERMS]
 

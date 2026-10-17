@@ -62,7 +62,8 @@ class _Run:
         movies = movies if movies is not None else [_movie(1), _movie(2)]
         self.pipeline = MagicMock(return_value=(movies, movies))
         self.classify = AsyncMock(return_value=intent or MessageIntent(
-            category="new_search", semantic_query="rewritten query", genres=["Drama"],
+            category="new_search", semantic_query="rewritten query",
+            standalone_query="rewritten standalone query", genres=["Drama"],
         ))
         self.encode = MagicMock(side_effect=_vec)
         self.resolve = _resolver(grades, unresolved)
@@ -98,10 +99,27 @@ class TestE2eIntent:
         assert args[0] == _vec("rewritten query")
         assert args[1] == MessageIntent(
             category="new_search", genres=["Drama"],
-        ).model_dump(exclude={"category", "semantic_query"})
-        assert kwargs["query_text"] == "query q1"
+        ).model_dump(exclude={"category", "semantic_query", "standalone_query"})
         assert record["intent_mode"] == "e2e"
         assert record["queries"][0]["predicted_category"] == "new_search"
+
+    def test_e2e_passes_standalone_query_as_query_text(self, tmp_path):
+        run = _Run(tmp_path, [_entry()])
+        run()
+        assert run.pipeline.call_args.kwargs["query_text"] == "rewritten standalone query"
+
+    def test_oracle_keeps_the_raw_query_as_query_text(self, tmp_path):
+        run = _Run(tmp_path, [_entry()])
+        record = run("--intent", "oracle")
+        assert run.pipeline.call_args.kwargs["query_text"] == "query q1"
+        assert record["queries"][0]["query_text"] == "query q1"
+        assert record["queries"][0]["semantic_query"] is None
+
+    def test_record_has_semantic_query_and_query_text(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])()
+        query = record["queries"][0]
+        assert query["semantic_query"] == "rewritten query"
+        assert query["query_text"] == "rewritten standalone query"
 
     def test_context_becomes_user_history(self, tmp_path):
         run = _Run(tmp_path, [_entry(context=["first", "second"])])
@@ -139,7 +157,9 @@ class TestParseFallbackDetection:
         run.available.assert_not_awaited()
 
     def test_fallback_shaped_intent_is_counted(self, tmp_path):
-        fallback = MessageIntent(category="new_search", semantic_query="query q1")
+        fallback = MessageIntent(
+            category="new_search", semantic_query="query q1", standalone_query="query q1",
+        )
         run = _Run(tmp_path, [_entry()], intent=fallback)
         record = run()
         assert record["queries"][0]["possible_parse_fallback"] is True

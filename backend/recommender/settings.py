@@ -305,6 +305,22 @@ def _validate_rerank_weight(reranking: dict) -> None:
         raise ValueError(f"params.yaml: reranking.weight must be a number in [0, 1] (got {value!r}).")
 
 
+def _validate_lexical_stopwords(stopwords: list) -> None:
+    """Fail at load if retrieval.lexical.stopwords is not a list of non-empty
+    lowercase strings -- terms are lowercased before the lookup, so an
+    uppercase entry could never match."""
+    if not isinstance(stopwords, list) or not all(
+        isinstance(w, str) and w and w == w.lower() for w in stopwords
+    ):
+        raise ValueError(
+            "params.yaml: retrieval.lexical.stopwords must be a list of non-empty "
+            f"lowercase strings (got {stopwords!r})."
+        )
+
+
+_validate_lexical_stopwords(_retrieval["lexical"]["stopwords"])
+LEXICAL_STOPWORDS = frozenset(_retrieval["lexical"]["stopwords"])
+
 _reranking = PARAMS["reranking"]
 _validate_rerank_min_score(_reranking)
 _validate_rerank_weight(_reranking)

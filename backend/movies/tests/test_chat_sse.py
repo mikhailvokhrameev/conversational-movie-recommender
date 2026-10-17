@@ -9,8 +9,11 @@ from core.ollama_client import MessageIntent, aclassify_and_parse, astream_expla
 from movies.views import ChatView, _generate_and_score
 
 
-def _mock_classify_and_parse(category, semantic_query="", **filters):
-    intent = MessageIntent(category=category, semantic_query=semantic_query, **filters)
+def _mock_classify_and_parse(category, semantic_query="", standalone_query="", **filters):
+    intent = MessageIntent(
+        category=category, semantic_query=semantic_query,
+        standalone_query=standalone_query or semantic_query, **filters,
+    )
 
     async def _classify(message, history=None):
         return intent
@@ -182,6 +185,62 @@ class TestChatSSENewSearch:
                 pass
 
         assert append_history_mock.await_args.kwargs["movie_facts"][0]["description"] == "x" * 10
+
+    @pytest.mark.asyncio
+    async def test_search_uses_standalone_query_as_query_text(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "suggest something similar"}),
+            content_type="application/json",
+        )
+        seen = {}
+        inner = _mock_generate_and_score()
+
+        async def _gen(query_embedding, intent, query_text=""):
+            seen["query_text"] = query_text
+            return await inner(query_embedding, intent, query_text)
+
+        classify = _mock_classify_and_parse(
+            "new_search", semantic_query="crime drama mafia",
+            standalone_query="crime dramas similar to The Godfather",
+        )
+        with patch("movies.views.aclassify_and_parse", classify), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _gen), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views.astream_explanation_parts", _empty_parts_stream):
+            response = await ChatView.as_view()(request)
+            async for _ in response.streaming_content:
+                pass
+
+        assert seen["query_text"] == "crime dramas similar to The Godfather"
+
+    @pytest.mark.asyncio
+    async def test_intent_event_has_no_query_fields(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "хочу комедию"}),
+            content_type="application/json",
+        )
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="комедия")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score()), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views.astream_explanation_parts", _empty_parts_stream):
+            response = await ChatView.as_view()(request)
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+
+        text = body.decode()
+        data_line = text.split("event: movies\n", 1)[1].split("\n", 1)[0]
+        intent = json.loads(data_line.removeprefix("data: "))["intent"]
+        assert "semantic_query" not in intent
+        assert "standalone_query" not in intent
 
     @pytest.mark.asyncio
     async def test_embeds_semantic_query_not_raw_message(self):

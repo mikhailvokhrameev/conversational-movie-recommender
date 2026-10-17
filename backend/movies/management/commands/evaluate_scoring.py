@@ -136,6 +136,11 @@ class PreparedQuery:
     entry: dict
     intent: dict
     query_embedding: list[float]
+    # What the lexical channel and the reranker see: the context-aware
+    # standalone_query in e2e, the raw golden query in oracle.
+    query_text: str
+    # e2e only (None in oracle): the rewritten query that was embedded.
+    semantic_query: str | None
     category: str
     predicted_category: str | None
     # e2e only (None in oracle): the parsed intent has exactly the shape
@@ -323,12 +328,18 @@ class Command(BaseCommand):
             predicted = message_intent.category
             category = predicted
             query_embedding = encode_query(message_intent.semantic_query)
-            intent = message_intent.model_dump(exclude={"category", "semantic_query"})
+            query_text = message_intent.standalone_query
+            semantic_query = message_intent.semantic_query
+            intent = message_intent.model_dump(
+                exclude={"category", "semantic_query", "standalone_query"},
+            )
         else:
             predicted = None
             possible_fallback = None
             category = entry.get("category", "new_search")
             query_embedding = encode_query(query)
+            query_text = query
+            semantic_query = None
             intent = dict(entry.get("oracle_intent", {}))
 
         grades, unresolved = resolve_references(entry["relevant"])
@@ -336,6 +347,8 @@ class Command(BaseCommand):
             entry=entry,
             intent=intent,
             query_embedding=query_embedding,
+            query_text=query_text,
+            semantic_query=semantic_query,
             category=category,
             predicted_category=predicted,
             possible_parse_fallback=possible_fallback,
@@ -346,11 +359,13 @@ class Command(BaseCommand):
     @staticmethod
     def _is_fallback_shape(intent: MessageIntent, query: str) -> bool:
         """True when the parse is indistinguishable from aclassify_and_parse's
-        failure fallback: new_search, semantic_query == the raw message, no
-        filters. A genuine parse can look like this too (a vague query the
+        failure fallback: new_search, semantic_query and standalone_query
+        both the raw message, no filters. A genuine parse can look like this too (a vague query the
         model left as-is), hence "possible" -- but a run where most entries
         match is a run where parsing did not happen."""
-        return intent == MessageIntent(category="new_search", semantic_query=query)
+        return intent == MessageIntent(
+            category="new_search", semantic_query=query, standalone_query=query,
+        )
 
     def _report_unresolved(self, prepared: list[PreparedQuery]) -> None:
         total = sum(len(p.unresolved) for p in prepared)
@@ -381,7 +396,7 @@ class Command(BaseCommand):
         entry = p.entry
         top, pool = generate_and_score(
             p.query_embedding, p.intent,
-            query_text=entry["query"], weights=weights, top_n=k, apply_gate=apply_gate,
+            query_text=p.query_text, weights=weights, top_n=k, apply_gate=apply_gate,
         )
         recommended_ids = [m["tmdb_id"] for m in top]
 
@@ -416,6 +431,8 @@ class Command(BaseCommand):
             "split": entry["split"],
             "context": entry.get("context", []),
             "category": p.category,
+            "semantic_query": p.semantic_query,
+            "query_text": p.query_text,
             "intent": p.intent,
             "recommended": [
                 {

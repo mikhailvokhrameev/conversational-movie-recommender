@@ -161,10 +161,10 @@ class ChatView(View):
             query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
             embed_ms = (time.perf_counter() - t_embed) * 1000
 
-            intent_dict = intent.model_dump(exclude={"category", "semantic_query"})
+            intent_dict = intent.model_dump(exclude={"category", "semantic_query", "standalone_query"})
 
             t_score = time.perf_counter()
-            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, query_text=message)
+            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, query_text=intent.standalone_query)
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]

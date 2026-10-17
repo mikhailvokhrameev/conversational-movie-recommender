@@ -3,6 +3,7 @@
 import pytest
 
 from recommender.settings import (
+    _validate_lexical_stopwords,
     _validate_rerank_weight,
     _validate_revision,
     _validate_score_weights,
@@ -83,3 +84,19 @@ class TestRevision:
 
         for revision in (settings.EMBEDDING_REVISION, settings.RERANKER_REVISION):
             assert isinstance(revision, str) and len(revision) == 40
+
+
+class TestLexicalStopwords:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert "movie" in settings.LEXICAL_STOPWORDS
+        _validate_lexical_stopwords(sorted(settings.LEXICAL_STOPWORDS))
+
+    def test_accepts_an_empty_list(self):
+        _validate_lexical_stopwords([])
+
+    @pytest.mark.parametrize("bad", [["Movie"], ["movie", ""], [5], "movie", None])
+    def test_rejects_uppercase_empty_or_malformed(self, bad):
+        with pytest.raises(ValueError, match=r"retrieval\.lexical\.stopwords"):
+            _validate_lexical_stopwords(bad)
