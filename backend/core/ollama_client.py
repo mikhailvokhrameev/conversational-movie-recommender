@@ -65,7 +65,8 @@ ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 
 JSON fields:
 - "category": one of the four categories above
-- "semantic_query": the core of what the user is looking for, with filler words and pure filter phrases (genre/country/rating/year/runtime/language constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If category is not new_search/refinement, just repeat the message.
+- "semantic_query": the core of what the user is looking for, with filler words and pure filter phrases (genre/country/rating/year/runtime/language constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If the message continues earlier turns, carry over the subject from them too (e.g. the theme of a reference film), still without filter phrases. If category is not new_search/refinement, just repeat the message.
+- "standalone_query": the user's latest request rewritten as one self-contained English request that someone who never saw this conversation would understand -- carry over the subject, genres, reference films and constraints from earlier messages that still apply, drop filler ("something", "please", "show me"). If the latest message already stands on its own, copy it minus filler. If category is not new_search/refinement, just repeat the message.
 - "genres": list of matching genres from the ALLOWED list above
 - "mood": one of: happy, sad, excited, relaxed, romantic, thoughtful, scared, energetic, or ""
 - "themes": list of themes mentioned
@@ -82,19 +83,23 @@ JSON fields:
 
 Example:
 User: "I want something funny, but not horror"
-{{"category": "new_search", "semantic_query": "a fun film", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "new_search", "semantic_query": "a fun film", "standalone_query": "a funny film without horror", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+
+Example:
+Earlier: the user said "I liked The Godfather". Latest message: "suggest something similar"
+{{"category": "refinement", "semantic_query": "mafia family crime saga like The Godfather", "standalone_query": "crime dramas similar to The Godfather", "genres": ["Crime", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": ["The Godfather"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
 User: "tell me about the first movie"
-{{"category": "follow_up", "semantic_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "follow_up", "semantic_query": "tell me about the first movie", "standalone_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
 User: "hi"
-{{"category": "general_chat", "semantic_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
 User: "a highly rated 90s Korean thriller"
-{{"category": "new_search", "semantic_query": "a thriller", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
+{{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
 """
 
 CONVERSATIONAL_SYSTEM_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
@@ -503,6 +508,7 @@ class MessageIntent(BaseModel):
 
     category: Literal["new_search", "follow_up", "refinement", "general_chat"]
     semantic_query: str = ""
+    standalone_query: str = ""
     genres: list[str] = Field(default_factory=list)
     mood: str = ""
     themes: list[str] = Field(default_factory=list)
@@ -611,7 +617,7 @@ def _ollama_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dic
 CLASSIFY_PARSE_SCHEMA = _ollama_schema(MessageIntent)
 # What `_extract_intent` reads: the classify+parse shape minus the two fields
 # only the combined call produces.
-INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=("category", "semantic_query"))
+INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=("category", "semantic_query", "standalone_query"))
 
 
 def _intent_payload(query: str) -> dict:
@@ -956,7 +962,7 @@ async def _request_classify_and_parse(
 
 
 def _fallback_message_intent(message: str) -> MessageIntent:
-    return MessageIntent(category="new_search", semantic_query=message)
+    return MessageIntent(category="new_search", semantic_query=message, standalone_query=message)
 
 
 async def aclassify_and_parse(message: str, history: list[dict] | None = None) -> MessageIntent:
@@ -997,6 +1003,8 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     )()
     if not intent.semantic_query.strip():
         intent.semantic_query = message
+    if not intent.standalone_query.strip():
+        intent.standalone_query = message
     return intent
 
 

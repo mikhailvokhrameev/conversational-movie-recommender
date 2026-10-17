@@ -30,6 +30,7 @@ from core.ollama_client import (
     astream_explanation_parts,
     check_explanation_titles,
     CATALOG_GENRES,
+    CLASSIFY_AND_PARSE_SYSTEM_PROMPT,
     CLASSIFY_PARSE_SCHEMA,
     INTENT_SCHEMA,
     MessageIntent,
@@ -86,6 +87,48 @@ def _mock_streaming_client(lines):
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.stream = MagicMock(return_value=_FakeStreamContextManager(response))
     return mock_client
+
+
+class TestStandaloneQuery:
+    def test_standalone_query_is_in_the_classify_schema_not_the_intent_schema(self):
+        assert "standalone_query" in CLASSIFY_PARSE_SCHEMA["properties"]
+        assert "standalone_query" in CLASSIFY_PARSE_SCHEMA["required"]
+        assert "standalone_query" not in INTENT_SCHEMA["properties"]
+
+    @pytest.mark.asyncio
+    async def test_blank_standalone_query_falls_back_to_message(self):
+        content = json.dumps({
+            "category": "new_search",
+            "semantic_query": "a comedy",
+            "standalone_query": "  ",
+        })
+        mock_client = _mock_ollama_responses(content)
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+            result = await aclassify_and_parse("something funny")
+
+        assert result.standalone_query == "something funny"
+
+    @pytest.mark.asyncio
+    async def test_fallback_intent_carries_the_message(self):
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection failed"))
+
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            result = await aclassify_and_parse("a sad drama")
+
+        assert result.standalone_query == result.semantic_query == "a sad drama"
+
+    def test_prompt_examples_include_standalone_query(self):
+        prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.replace("{{", "{").replace("}}", "}")
+        examples = [
+            json.loads(line) for line in prompt.splitlines() if line.startswith('{"category"')
+        ]
+        assert len(examples) >= 5
+        assert all("standalone_query" in ex for ex in examples)
 
 
 class TestClassifyAndParse:
@@ -1015,7 +1058,8 @@ class TestStructuredOutputSchema:
 
     def test_message_intent_validates_a_reply_shaped_by_the_schema(self):
         reply = {
-            "category": "new_search", "semantic_query": "q", "genres": ["Comedy"], "mood": "",
+            "category": "new_search", "semantic_query": "q", "standalone_query": "q",
+            "genres": ["Comedy"], "mood": "",
             "themes": [], "negations": [], "reference_films": [], "country_exclusions": [],
             "country_inclusions": [], "min_vote_average": None, "min_release_year": None,
             "max_release_year": None, "min_runtime": None, "max_runtime": 90,
