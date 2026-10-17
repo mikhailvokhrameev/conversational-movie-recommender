@@ -7,6 +7,8 @@ import numpy as np
 import pytest
 
 from core.ollama_client import (
+    EXPLANATION_PROMPT,
+    EXPLANATION_SYSTEM_PROMPT,
     ExplanationSplitter,
     _ThinkStreamFilter,
     _parse_json_response,
@@ -522,6 +524,41 @@ class TestExplanationSplitter:
             (None, "Интро\n"),
             (0, "Описание"),
         ]
+
+    def test_placeholder_in_the_intro_is_dropped(self):
+        """The model echoed the prompt's shape literally: '<opening line>' is not text."""
+        assert self._run(["<opening line>\n[[1]]\nПервый."]) == [(0, "Первый.")]
+
+    def test_placeholder_in_a_description_is_dropped(self):
+        assert self._run(["Интро.\n[[1]]\n<description of movie 1>\nПро первый."]) == [
+            (None, "Интро.\n"),
+            (0, "Про первый."),
+        ]
+
+    def test_placeholder_split_across_chunks_is_dropped(self):
+        """'<descr' could still close into a placeholder, so it is held back."""
+        assert self._run(["Интро <descr", "iption of movie 1> и ещё."]) == [
+            (None, "Интро "),
+            (None, "и ещё."),
+        ]
+
+    def test_angle_bracket_that_never_closes_is_released(self):
+        """A '<' the line ends without closing was ordinary text."""
+        assert self._run(["a < b", " and more\n"]) == [
+            (None, "a "),
+            (None, "< b and more\n"),
+        ]
+
+    def test_flush_releases_an_unclosed_angle_bracket(self):
+        splitter = ExplanationSplitter(2)
+        assert splitter.feed("Текст <") == [(None, "Текст ")]
+        assert splitter.flush() == [(None, "<")]
+
+    def test_explanation_prompts_carry_no_angle_bracket_placeholders(self):
+        """The literal '<opening line>' shape is what the model used to copy back."""
+        for prompt in (EXPLANATION_PROMPT, EXPLANATION_SYSTEM_PROMPT):
+            assert "<" not in prompt and ">" not in prompt
+            assert "[[1]]" in prompt and "[[2]]" in prompt
 
 
 class TestBuildChatMessages:

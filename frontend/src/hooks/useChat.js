@@ -133,6 +133,21 @@ function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef)
         return updated
       })
       break
+    case 'intro_final':
+      // The reply ignored the [[n]] markers: keep only its opening line, the
+      // cards fall back to catalog descriptions.
+      setMessages(prev => {
+        const updated = [...prev]
+        const last = updated[updated.length - 1]
+        if (last?.role === 'assistant') {
+          updated[updated.length - 1] = {
+            ...last,
+            explanation: data.text,
+          }
+        }
+        return updated
+      })
+      break
     case 'blurb':
       setMessages(prev => {
         const updated = [...prev]

@@ -167,13 +167,17 @@ PART 2 -- for EACH movie above, in the same order, write its marker ([[1]], [[2]
 alone on a line, then two or three sentences about that one film: what it is about,
 and why it fits the request. Write about that film only, and never mention another one.
 
-Output exactly this shape, with nothing before, between, or after it:
+Format: the first line is the opening line. Then, for each movie, a line containing only
+its marker, followed by that movie's description. Nothing goes before, between, or after
+these lines. For example, for two movies:
 
-<opening line>
+Here are two slow-burning thrillers that keep the tension quiet until the very end.
 [[1]]
-<description of movie 1>
+A detective chases a killer through a rain-soaked city; its patient pacing fits a night
+when you want suspense without action scenes.
 [[2]]
-<description of movie 2>
+A small-town mystery told over a single winter, matching your wish for a moody,
+unhurried story.
 
 Do not add headings, bullet points, numbering, or a closing remark."""
 
@@ -190,13 +194,17 @@ PART 2 -- for EACH movie listed in the user's latest message, in the same order,
 alone on a line, then two or three sentences about that one film: what it is about,
 and why it fits the request. Write about that film only, and never mention another one.
 
-Output exactly this shape, with nothing before, between, or after it:
+Format: the first line is the opening line. Then, for each movie, a line containing only
+its marker, followed by that movie's description. Nothing goes before, between, or after
+these lines. For example, for two movies:
 
-<opening line>
+Here are two slow-burning thrillers that keep the tension quiet until the very end.
 [[1]]
-<description of movie 1>
+A detective chases a killer through a rain-soaked city; its patient pacing fits a night
+when you want suspense without action scenes.
 [[2]]
-<description of movie 2>
+A small-town mystery told over a single winter, matching your wish for a moody,
+unhurried story.
 
 Do not add headings, bullet points, numbering, or a closing remark."""
 
@@ -292,6 +300,12 @@ class _ThinkStreamFilter:
 _MARKER_RE = re.compile(r"\[\[(\d+)\]\]")
 # A tail like '[', '[[', '[[1', '[[12' or '[[1]' could still grow into a marker.
 _PARTIAL_MARKER_RE = re.compile(r"\[\[?\d*\]?$")
+# A prompt-shape placeholder the model echoed back, e.g. '<opening line>': short
+# text in angle brackets on one line. A tail that could still close into one
+# is held back, like a partial marker.
+_PLACEHOLDER_MAX_CHARS = 60
+_PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{1,{_PLACEHOLDER_MAX_CHARS}}}>")
+_PARTIAL_PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{0,{_PLACEHOLDER_MAX_CHARS - 1}}}$")
 
 
 class ExplanationSplitter:
@@ -306,6 +320,11 @@ class ExplanationSplitter:
     A marker can be split between chunks, so a tail that could still turn into
     one is held back rather than emitted -- the same discipline
     `_ThinkStreamFilter` applies to `<think>`.
+
+    Placeholders such as `<opening line>` (the model copying a prompt's shape
+    literally) are dropped from every slot, with the same hold-back for a tail
+    that could still close into one; whitespace right after a dropped
+    placeholder is trimmed like the whitespace after a marker.
 
     Every way the model can deviate degrades silently instead of raising: an
     out-of-range or already-used marker is consumed but leaves the current slot
@@ -325,6 +344,13 @@ class ExplanationSplitter:
         self._trim_leading = False
 
     def _emit(self, out: list, text: str) -> None:
+        pieces = _PLACEHOLDER_RE.split(text)
+        for i, piece in enumerate(pieces):
+            if i:
+                self._trim_leading = True
+            self._emit_text(out, piece)
+
+    def _emit_text(self, out: list, text: str) -> None:
         if self._trim_leading:
             text = text.lstrip()
             if not text:
@@ -350,8 +376,11 @@ class ExplanationSplitter:
             self._pending = self._pending[match.end():]
             self._trim_leading = True
 
-        partial = _PARTIAL_MARKER_RE.search(self._pending)
-        cut = partial.start() if partial else len(self._pending)
+        cut = len(self._pending)
+        for partial_re in (_PARTIAL_MARKER_RE, _PARTIAL_PLACEHOLDER_RE):
+            partial = partial_re.search(self._pending)
+            if partial:
+                cut = min(cut, partial.start())
         self._emit(out, self._pending[:cut])
         self._pending = self._pending[cut:]
         return out

@@ -113,6 +113,9 @@ to the empty state; `App.jsx` wires it to `Header`'s home button.
 - `movies`: sets session_id, movies array, and intent; also reads/sets
   `session_token` from the payload (same as `session`)
 - `token`: appends text to the explanation string (the intro line)
+- `intro_final`: replaces the explanation with `text` -- sent only when the reply had no
+  `[[n]]` markers, so the intro would otherwise hold every description; the cards then
+  show catalog copy
 - `blurb`: appends `text` to `descriptions[index]`, the per-movie description
 - `done`: ignored (stream closes naturally)
 - `error`: sets error message on the assistant message

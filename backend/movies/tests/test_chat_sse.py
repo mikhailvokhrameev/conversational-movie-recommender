@@ -6,7 +6,7 @@ import pytest
 from django.test import AsyncRequestFactory
 
 from core.ollama_client import MessageIntent, aclassify_and_parse, astream_explanation_parts
-from movies.views import ChatView, _generate_and_score
+from movies.views import ChatView, _assistant_turn_text, _first_line, _generate_and_score
 
 
 def _mock_classify_and_parse(category, semantic_query="", standalone_query="", **filters):
@@ -307,17 +307,19 @@ class TestChatSSENewSearch:
             (0, "Про первый фильм."), (1, "Про второй фильм."),
         ]
         assert "error" not in [e for e, _ in events]
+        # Markers arrived, so the intro already holds only the opening line.
+        assert "intro_final" not in [e for e, _ in events]
 
-        # Stored as paragraphs (intro, then each description in slot order),
-        # not the raw concatenation of chunks.
+        # Stored in the shape the model is asked for (intro, then each
+        # description under its [[n]] marker), so later turns see the format.
         append_history_mock.assert_awaited_once()
         call = append_history_mock.await_args
         assert call.args[1] == "assistant"
-        assert call.args[2] == "Вот подборка комедий.\n\nПро первый фильм.\n\nПро второй фильм."
+        assert call.args[2] == "Вот подборка комедий.\n[[1]]\nПро первый фильм.\n[[2]]\nПро второй фильм."
         assert call.kwargs["movies"] == ["Film 1", "Film 2"]
 
     @pytest.mark.asyncio
-    async def test_assistant_turn_joins_intro_and_descriptions_with_blank_lines(self):
+    async def test_assistant_turn_keeps_markers_before_descriptions(self):
         factory = AsyncRequestFactory()
         request = factory.post(
             "/api/chat/",
@@ -344,7 +346,62 @@ class TestChatSSENewSearch:
         assert [d["text"] for e, d in events if e == "token"] == ["Intro."]
         assert [(d["index"], d["text"]) for e, d in events if e == "blurb"] == [(0, "Desc one.")]
         append_history_mock.assert_awaited_once()
-        assert append_history_mock.await_args.args[2] == "Intro.\n\nDesc one."
+        assert append_history_mock.await_args.args[2] == "Intro.\n[[1]]\nDesc one."
+
+    @pytest.mark.asyncio
+    async def test_no_markers_sends_intro_final_and_stores_only_the_first_line(self):
+        """The model wrote every description into the intro: the client swaps the
+        streamed text for the opening line and the cards fall back to catalog copy."""
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "хочу комедию"}),
+            content_type="application/json",
+        )
+        append_history_mock = AsyncMock()
+
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("new_search", semantic_query="хочу комедию")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _mock_generate_and_score(_two_movies())), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history_mock), \
+             patch("movies.views.astream_explanation_parts",
+                   _mock_explanation_parts((None, "Интро.\nПро первый. "), (None, "Про второй."))):
+
+            view = ChatView.as_view()
+            response = await view(request)
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+            events = _parse_sse(body.decode())
+
+        names = [e for e, _ in events]
+        assert [d for e, d in events if e == "intro_final"] == [{"text": "Интро."}]
+        assert names.index("intro_final") < names.index("done")
+        append_history_mock.assert_awaited_once()
+        assert append_history_mock.await_args.args[2] == "Интро."
+
+
+class TestAssistantTurnText:
+    """The stored assistant turn mirrors the format the explanation prompt asks
+    for; pure helpers, so they run without a database."""
+
+    def test_intro_then_each_description_under_its_marker(self):
+        assert _assistant_turn_text("Интро.\n", {0: ["Про ", "первый.\n"], 1: ["Про второй."]}) == (
+            "Интро.\n[[1]]\nПро первый.\n[[2]]\nПро второй."
+        )
+
+    def test_slots_are_written_in_index_order(self):
+        assert _assistant_turn_text("И.", {1: ["Два."], 0: ["Один."]}) == "И.\n[[1]]\nОдин.\n[[2]]\nДва."
+
+    def test_missing_intro_starts_with_the_first_marker(self):
+        assert _assistant_turn_text("", {0: ["Один."]}) == "[[1]]\nОдин."
+
+    def test_nothing_to_store_is_empty(self):
+        assert _assistant_turn_text("  ", {}) == ""
+
+    def test_first_line_skips_leading_blank_lines(self):
+        assert _first_line("\n\nИнтро.\nПро первый.\n\nПро второй.") == "Интро."
 
 
 @pytest.mark.django_db

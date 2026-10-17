@@ -119,7 +119,9 @@ filter fed one chunk at a time. It watches the token stream for `[[n]]` markers 
 routes what follows into the matching slot, returning `(slot, text)` pairs where `slot`
 is `None` for the intro and a 0-based movie index thereafter. Markers can straddle a
 chunk boundary, so a partial match is held back until the marker is either completed or
-ruled out, and never reaches the caller as text. `astream_explanation_parts(query,
+ruled out, and never reaches the caller as text. Placeholders echoed from a prompt shape (`<opening
+line>`-style, short single-line text in angle brackets) are dropped from every slot with
+the same hold-back, and the whitespace after one is trimmed like that after a marker. `astream_explanation_parts(query,
 movies, history)` is the async generator that wraps `astream_explanation` with that
 splitter (forwarding `history`) and yields those pairs; `astream_explanation` itself
 still yields raw tokens for callers that want them.

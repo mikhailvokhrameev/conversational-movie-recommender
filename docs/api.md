@@ -49,6 +49,9 @@ event: blurb           (new_search / refinement turns only)
 data: {"index": 0, "text": "..."}
 ...  (repeated per fragment, grouped by movie, in movie order)
 
+event: intro_final    (new_search / refinement turns only, if the reply had no [[n]] markers)
+data: {"text": "..."}
+
 event: error          (only if explanation generation failed)
 data: {"message": "explanation generation failed"}
 
@@ -93,11 +96,16 @@ maps each slot onto a wire event:
 `blurb` text accumulates exactly like `token` text: a single movie's description arrives
 across several events, appended in arrival order. Markers that straddle a chunk boundary
 are held back until they are complete, so no partial `[[` ever leaks into the text.
+Prompt-shape placeholders the model may echo back (short single-line text in angle
+brackets, such as `<opening line>`) are dropped from the intro and every description,
+with the same hold-back for one split across chunks; the prompts themselves describe
+the format in words and show an example without angle brackets.
 
 **Degradation**: if the model emits no markers at all, every token lands in the intro
-slot. The stream is then indistinguishable from the old single-blob format -- `token`
-events only, zero `blurb` events -- and the client falls back to each movie's catalog
-`description` from the `movies` event.
+slot -- `token` events only, zero `blurb` events. After the stream the server then
+sends one `intro_final` event whose `text` is the first non-empty line of that intro;
+the client replaces the streamed explanation with it, and each card falls back to its
+catalog `description` from the `movies` event.
 
 **Conversational turns**: messages classified `general_chat` or `follow_up` take the
 conversational path. A `session` event is sent first (`{"session_id": "...",
@@ -293,6 +301,7 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
                                   (no_match: movies=[] -> one fixed token, then done)
   SSE Phase 2:   event: token   {text}          ... (intro line, streamed from Ollama)
                  event: blurb   {index, text}   ... (per-movie descriptions, same stream)
+                 event: intro_final {text}      (only if no markers: the opening line)
   SSE Terminal:  event: done    {}
 ```
 
@@ -309,8 +318,12 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
    recommended movie titles (`movies`) and `movie_facts` -- per shown movie,
    in display order, `title`, `year` (`null` if the release date is unknown),
    `genres`, `runtime` (minutes, may be `null`) and `description` truncated to
-   `session.history_movie_description_chars` at storage time. Its text is the
-   opening line plus the per-movie descriptions joined by blank lines. If the
+   `session.history_movie_description_chars` at storage time. Its text keeps the
+   format the explanation prompt asks for -- the opening line, then each
+   description on the line after its `[[n]]` marker -- so the model sees that
+   format on later turns; a reply without markers is stored as the same opening
+   line sent in `intro_final`. `GET /api/sessions/<uuid:session_id>/` returns the content as
+   stored, markers included (the frontend does not render it). If the
    explanation comes back empty (or fails) after the cards were shown, the
    entry is still stored with empty `content` plus `movies`/`movie_facts`.
    Sessions stored before `movie_facts` existed have `movies` only and keep

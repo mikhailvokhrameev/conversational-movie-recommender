@@ -87,6 +87,24 @@ def _save_session(session: ChatSession, query: str, intent: dict, movies: list[d
         fresh.save()
 
 
+def _assistant_turn_text(intro: str, slot_parts: dict[int, list[str]]) -> str:
+    """The stored assistant turn in the shape the explanation prompt asks for:
+    the opening line, then each description under its 1-based [[n]] marker.
+    Replaying the markers in history keeps the model producing them on later
+    turns; a history without them taught it to drop the format."""
+    blocks = [intro.strip()] if intro.strip() else []
+    for slot in sorted(slot_parts):
+        text = "".join(slot_parts[slot]).strip()
+        if text:
+            blocks.append(f"[[{slot + 1}]]\n{text}")
+    return "\n".join(blocks)
+
+
+def _first_line(text: str) -> str:
+    """The opening line of a reply that ignored the marker format."""
+    return text.strip().split("\n", 1)[0].strip()
+
+
 @sync_to_async(thread_sensitive=False)
 def _append_history(session: ChatSession, role: str, content: str,
                     movies: list[str] | None = None, count_turn: bool = True,
@@ -215,13 +233,14 @@ class ChatView(View):
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
 
-            # Intro and each per-movie description are joined with blank lines
-            # (in slot order) so the stored turn reads as separate paragraphs
-            # rather than blurbs glued together.
-            assistant_blocks = ["".join(intro_parts)] + [
-                "".join(slot_parts[slot]) for slot in sorted(slot_parts)
-            ]
-            assistant_text = "\n\n".join(b for b in assistant_blocks if b)
+            intro = "".join(intro_parts)
+            if not slot_parts and intro.strip():
+                # No markers at all: every description landed in the intro. The
+                # client replaces the streamed text with the opening line and the
+                # cards fall back to catalog copy; history gets the same line.
+                intro = _first_line(intro)
+                yield _sse_event("intro_final", {"text": intro})
+            assistant_text = _assistant_turn_text(intro, slot_parts)
             # Skip storing only when there is nothing to keep: with an empty
             # explanation the movies were still shown, so store the entry with
             # empty content and `movies` -- the history formatter turns it into
