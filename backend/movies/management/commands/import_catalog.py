@@ -54,6 +54,13 @@ def _passes_quality_filter(row: dict, min_vote_count: int) -> bool:
     )
 
 
+def _parse_runtime(value: str | None) -> int | None:
+    # TMDB writes 0 where the runtime is unknown; store that as NULL so a
+    # runtime filter cannot match it.
+    runtime = _parse_int(value, default=0)
+    return runtime if runtime > 0 else None
+
+
 def _row_to_movie(row: dict) -> Movie:
     return Movie(
         tmdb_id=_parse_int(row["id"]),
@@ -65,7 +72,7 @@ def _row_to_movie(row: dict) -> Movie:
         keywords=_split_list(row.get("keywords") or ""),
         release_date=_parse_date(row.get("release_date") or ""),
         description=row.get("overview") or "",
-        runtime=_parse_int(row.get("runtime"), default=None) if row.get("runtime") else None,
+        runtime=_parse_runtime(row.get("runtime")),
         popularity=_parse_float(row.get("popularity")),
         vote_average=_parse_float(row.get("vote_average")),
         vote_count=_parse_int(row.get("vote_count")),

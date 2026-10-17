@@ -64,13 +64,16 @@ class TestHardFilters:
         assert "Long film" in names
         assert "Short film" not in names
 
-    def test_min_runtime_keeps_movies_with_null_runtime(self):
+    @pytest.mark.parametrize("bound", ["min_runtime", "max_runtime"])
+    def test_runtime_filter_drops_movies_with_null_runtime(self, bound):
         _make_movie(serial_name="Unknown runtime film", runtime=None)
+        _make_movie(serial_name="Known runtime film", runtime=90)
 
-        results = generate_candidates(EMBEDDING, intent={"min_runtime": 90})
+        results = generate_candidates(EMBEDDING, intent={bound: 90})
 
         names = {m["serial_name"] for m in results}
-        assert "Unknown runtime film" in names
+        assert "Known runtime film" in names
+        assert "Unknown runtime film" not in names
 
     def test_min_release_year_excludes_older_films(self):
         _make_movie(serial_name="Old film", release_date="2005-01-01")
@@ -82,13 +85,24 @@ class TestHardFilters:
         assert "New film" in names
         assert "Old film" not in names
 
-    def test_min_release_year_keeps_movies_with_null_release_date(self):
+    @pytest.mark.parametrize("bound", ["min_release_year", "max_release_year"])
+    def test_release_year_filter_drops_movies_with_null_release_date(self, bound):
         _make_movie(serial_name="Unknown date film", release_date=None)
+        _make_movie(serial_name="Known date film", release_date="2015-06-01")
 
-        results = generate_candidates(EMBEDDING, intent={"min_release_year": 2015})
+        results = generate_candidates(EMBEDDING, intent={bound: 2015})
 
         names = {m["serial_name"] for m in results}
-        assert "Unknown date film" in names
+        assert "Known date film" in names
+        assert "Unknown date film" not in names
+
+    def test_movies_with_unknown_year_and_runtime_pass_without_those_filters(self):
+        _make_movie(serial_name="Unknown film", release_date=None, runtime=None)
+
+        results = generate_candidates(EMBEDDING, intent={"negations": ["Horror"]})
+
+        names = {m["serial_name"] for m in results}
+        assert "Unknown film" in names
 
     def test_hard_filters_combine(self):
         _make_movie(

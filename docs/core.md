@@ -24,8 +24,8 @@ candidate_generation.generate_candidates(query_vec, intent, query_text)
   |        - exclude movies matching negated genres
   |        - exclude/include movies by country
   |        - exclude movies below min_vote_average (nulls pass through)
-  |        - exclude movies outside min/max_release_year (nulls pass through)
-  |        - exclude movies outside min/max_runtime (nulls pass through)
+  |        - exclude movies outside min/max_release_year (unknown dates fail)
+  |        - exclude movies outside min/max_runtime (unknown runtimes fail)
   |        - exclude movies not matching original_languages
   |   2. TWO RETRIEVAL CHANNELS over the survivors:
   |        semantic -- exact cosine distance, top-100
@@ -208,8 +208,8 @@ candidates to the reranker.
    - `exclude(country__contains=excluded_country)` for each excluded country
    - `filter(country__contains=included_country)` (OR-ed) for country inclusions
    - `filter(vote_average__gte=min_vote_average)` (movies with no rating pass through)
-   - `filter(release_date__year__gte/__lte=min/max_release_year)` (movies with no date pass through)
-   - `filter(runtime__gte/__lte=min/max_runtime)` (movies with no runtime pass through)
+   - `filter(release_date__year__gte/__lte=min/max_release_year)` (movies with no date fail)
+   - `filter(runtime__gte/__lte=min/max_runtime)` (movies with no runtime fail)
    - `filter(original_language__in=original_languages)` (exact match, no null pass-through --
      original_language is always known for an imported row)
 2. **Semantic channel**: `CosineDistance` ordering on the embedding column,

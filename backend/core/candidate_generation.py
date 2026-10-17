@@ -147,27 +147,19 @@ def _apply_hard_filters(queryset, intent: dict | None):
 
     min_release_year = intent.get("min_release_year")
     if min_release_year is not None:
-        queryset = queryset.filter(
-            Q(release_date__year__gte=min_release_year) | Q(release_date__isnull=True)
-        )
+        queryset = queryset.filter(release_date__year__gte=min_release_year)
 
     max_release_year = intent.get("max_release_year")
     if max_release_year is not None:
-        queryset = queryset.filter(
-            Q(release_date__year__lte=max_release_year) | Q(release_date__isnull=True)
-        )
+        queryset = queryset.filter(release_date__year__lte=max_release_year)
 
     min_runtime = intent.get("min_runtime")
     if min_runtime is not None:
-        queryset = queryset.filter(
-            Q(runtime__gte=min_runtime) | Q(runtime__isnull=True)
-        )
+        queryset = queryset.filter(runtime__gte=min_runtime)
 
     max_runtime = intent.get("max_runtime")
     if max_runtime is not None:
-        queryset = queryset.filter(
-            Q(runtime__lte=max_runtime) | Q(runtime__isnull=True)
-        )
+        queryset = queryset.filter(runtime__lte=max_runtime)
 
     original_languages = intent.get("original_languages", [])
     if original_languages:

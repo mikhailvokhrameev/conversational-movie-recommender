@@ -168,10 +168,11 @@ failed, an `error` event precedes `done`.
 `original_languages` are all enforced as SQL `WHERE`/`exclude` filters in
 candidate generation, not scoring weights — a movie violating any of them
 never enters the candidate set, regardless of semantic score. Movies with a
-null `vote_average`, `release_date`, or `runtime` are never excluded by these
-filters (treated as "unknown, don't filter" rather than "fails the
-constraint") — `original_languages` is the one exception, since
-`original_language` is always known for an imported row.
+null `vote_average` is never excluded by `min_vote_average` (rating is always known
+for an imported row). A null `release_date` or `runtime` fails an explicit year or
+runtime bound: when the user sets one, movies with an unknown value do not pass
+([ADR 0004](adr/0004-constraints-as-sql-hard-filters.md)). `original_languages` has no
+null case, since `original_language` is always known for an imported row.
 
 **Error responses** (JSON, not SSE):
 

@@ -74,3 +74,15 @@ class TestUpdatedAtIndexMigration:
         assert (
             f"CREATE INDEX IF NOT EXISTS {NEW_UPDATED_AT_INDEX} ON movies_chatsession (updated_at)" in sql
         )
+
+
+class TestZeroRuntimeMigration:
+    """TMDB writes 0 where the runtime is unknown; 0009 turns those into NULL."""
+
+    def test_sql_nulls_non_positive_runtimes_and_reverse_is_noop(self):
+        migration_0009 = importlib.import_module("movies.migrations.0009_null_zero_runtime")
+        (op,) = migration_0009.Migration.operations
+        assert isinstance(op, migrations.RunSQL)
+        assert "SET runtime = NULL" in op.sql
+        assert "runtime <= 0" in op.sql
+        assert op.reverse_sql == migrations.RunSQL.noop
