@@ -12,17 +12,12 @@ User query (natural language)
   |
   v
 ollama_client.aclassify_and_parse()   ──> category + structured intent (one JSON call)
-  |                                        (includes mood detection)
+  |                                        (includes mood detection and standalone_query,
+  |                                        the context-aware query text for lexical + rerank)
   |                                        fallback: empty intent (semantic search still works)
   v
 embedding_service.encode_query()      ──> 1024-dim query vector (BGE-M3)
   |
-  v
-session_manager.vector_for_scoring()  ──> session vector this turn is scored with
-  |                                         (consumed later by scoring.score_candidates()):
-  |                                         refinement -> EMA with alpha_refinement,
-  |                                           applied before scoring
-  |                                         new_search -> pre-turn vector, unchanged
   v
 candidate_generation.generate_candidates(query_vec, intent, query_text)
   |   1. HARD FILTERS (SQL WHERE, not scoring signals):
@@ -39,12 +34,11 @@ candidate_generation.generate_candidates(query_vec, intent, query_text)
   v
 scoring.score_candidates() over the whole candidate set
   |   min-max normalize each signal across the set, then:
-  |   semantic:    cosine_sim(query_vec, movie_vec)   * 0.35
-  |   metadata:    genre_overlap(intent, movie)       * 0.25
-  |   session:     cosine_sim(session_vec, movie_vec) * 0.25
-  |   popularity:  normalized TMDB popularity         * 0.15
+  |   semantic:    cosine_sim(query_vec, movie_vec)   * 0.4667
+  |   metadata:    genre_overlap(intent, movie)       * 0.3333
+  |   popularity:  normalized TMDB popularity         * 0.2
   v
-reranking.rerank_candidates(query, scored)   [optional, GPU cross-encoder]
+reranking.rerank_candidates(query_text, scored)   [optional, GPU cross-encoder]
   |   top-50 by score -> (query, movie) pairs -> blended 50/50 with scorer
   v
 pipeline.apply_relevance_gate(reranked, min_score)   [off by default: min_score null]
@@ -64,10 +58,6 @@ ollama_client.astream_explanation()       ──> streamed RAG explanation (raw 
 ollama_client.astream_explanation_parts() ──> same stream split into (slot, text) pairs
   |                                             slot None = intro, 0..N-1 = movie index
   v
-session_manager.update_preference_vector()  ──> EMA blend into session vector, saved
-  |                                               under the row lock (new_search: alpha,
-  |                                               after scoring; refinement: the same
-  |                                               alpha_refinement vector scored with)
 session_manager.track_explicit_preferences() ──> accumulate liked/disliked genres
 ```
 
@@ -236,15 +226,13 @@ Returns a list of movie dicts with all metadata + embedding for downstream scori
 
 ### `scoring.py` -- Hybrid Reranking + MMR Diversification
 
-**Scoring** -- four signals, weighted sum:
+**Scoring** -- three signals, weighted sum:
 
-- **Semantic (0.35)**: Cosine similarity between the query embedding and the movie's
+- **Semantic (0.4667)**: Cosine similarity between the query embedding and the movie's
   pre-computed embedding. Mapped from [-1, 1] to [0, 1] via `(sim + 1) / 2`.
-- **Metadata (0.25)**: Genre overlap ratio between LLM-extracted intent genres and
+- **Metadata (0.3333)**: Genre overlap ratio between LLM-extracted intent genres and
   movie genres. Direct matching only, no indirect mood-to-genre lookup.
-- **Session (0.25)**: Cosine similarity between the session preference vector and the
-  movie embedding. Zero on the first turn (no session vector yet).
-- **Popularity (0.15)**: TMDB's popularity metric. A scoring signal rather than a
+- **Popularity (0.2)**: TMDB's popularity metric. A scoring signal rather than a
   hard filter, deliberately -- popularity is unbounded and non-linear, so there's
   no absolute threshold an LLM could reliably pick (unlike vote_average's bounded
   0-10 scale, which *is* a hard filter above).
@@ -253,7 +241,7 @@ Signals are min-max normalized across the candidate set before the weighted
 sum, so the declared weights actually hold. Raw signals have very different
 spreads (semantic cosines cluster in a narrow band; genre overlap spans the
 full 0-1 range), and a signal's real influence is `weight * spread`. Without
-normalization metadata's 0.25 could outrank semantic's 0.35. A signal identical
+normalization metadata's 0.3333 could outrank semantic's 0.4667. A signal identical
 across every candidate carries no ranking information and collapses to a
 neutral 0.5. Pre-normalization values are kept per candidate under
 `raw_scores` for debugging and evaluation.
@@ -308,36 +296,19 @@ returns the candidates in scorer order. Reranking is a quality improvement,
 never a correctness dependency, so it cannot break a request. Disable
 entirely with `reranking.enabled: false` in params.yaml.
 
-### `session_manager.py` -- Preference Learning
+### `session_manager.py` -- Preference Tracking
 
-Tracks per-session preferences across conversation turns using two mechanisms:
-
-**Preference vector (implicit)**: Exponential moving average of query embeddings.
-`new = alpha * query_vec + (1 - alpha) * current_vec`, then L2-normalized.
-With `alpha=0.7`, the most recent query contributes 70% of the signal. Turns
-classified `refinement` use `alpha_refinement=0.92` instead, so an explicit
-correction dominates the vector rather than blending with the turn before it
-(see Design Decisions).
-
-**Which vector scores the turn** (`vector_for_scoring(current_vector, query_embedding,
-category)`): returns the vector the `session` scoring signal uses on this turn. For a
-`refinement` it applies the `alpha_refinement` update *before* scoring, so the turn
-that carries the correction is already scored against it, and the vector saved
-afterwards is that same already-updated one. For a `new_search` it returns the pre-turn
-vector unchanged and the regular `alpha` update is applied afterwards, when saving --
-the current query is already in the `semantic` signal, so blending it into the
-`session` signal too would count it twice. With no vector yet (first turn) it returns
-`None`. It is scoring-only: `_save_session` in `movies/views.py` recomputes the stored
-vector from the row-locked session (with `alpha_refinement` for a refinement), which
-equals the scoring-time vector outside a concurrent-turn race and keeps concurrent
-turns from overwriting each other.
+Tracks explicit per-session preferences across conversation turns. There is no
+implicit preference vector: it was removed after an ablation showed it hurt
+ranking (see Design Decisions and
+[ADR 0010](adr/0010-drop-session-vector-contextual-query-text.md)).
 
 **Explicit preferences**: Accumulates liked genres, disliked genres, themes, and
 reference films extracted from parsed intent.
 
 ### `pipeline.py` -- Shared Retrieval Pipeline
 
-`generate_and_score(query_embedding, intent, session_vector, query_text, weights=None,
+`generate_and_score(query_embedding, intent, query_text, weights=None,
 top_n=None, apply_gate=True)` runs `generate_candidates` -> `score_candidates` ->
 `rerank_candidates` -> `apply_relevance_gate` -> `mmr_diversify` and returns
 `(top_movies, reranked_pool)`; the pool is the full reranked pool, not the gated one.
@@ -390,21 +361,19 @@ One algorithm, multi-dimensional diversity.
 to 1. For scoring purposes, negative similarity should contribute 0, not negative
 weight. The mapping `(sim + 1) / 2` gives: -1 to 0, 0 to 0.5, 1 to 1.0.
 
-**Why EMA over simple averaging**: Simple averaging gives equal weight to all turns.
-An early exploratory query permanently dilutes the signal from a later specific
-query. EMA with alpha=0.7 makes recent queries dominate.
+**Why there is no session preference vector**: it was an EMA of query embeddings fed
+into a `session` scoring signal. `evaluate_scoring --session-ablation` on the 18
+multi-turn golden entries found it hurt on average (paired nDCG@5, with minus without:
+-0.0143, 95% CI [-0.0310, +0.0005]; better on 1 query, equal on 3, worse on 14), so the
+signal, the `ChatSession.preference_vector` column and the EMA were removed. Context now
+reaches ranking through the LLM's parse of the history: `semantic_query` for the dense
+embedding and `standalone_query` for lexical search and the reranker.
 
-**Why refinement turns use a higher alpha**: Negated genres are already excluded
-via hard filters in `candidate_generation.py`, but the EMA vector still feeds the
-`session` scoring signal over whatever survives those filters. At the default
-alpha=0.7, 30% of a strongly-aligned prior-turn direction could still bias that
-signal back toward what the user just moved away from ("not horror, something
-lighter" still nudging ranking toward horror-adjacent moods). Raising alpha to 0.92 on
-`refinement` turns makes the new query dominate the vector instead of blending,
-without discarding session history entirely (see `session.alpha_refinement` in
-params.yaml). The candidate pool itself is unaffected -- `generate_candidates`
-builds it fresh each turn from the current query embedding and current-turn
-hard filters, not from session state, so this only changes ranking, not retrieval.
+**Why `query_text` is the standalone query**: on "suggest something similar" after "I liked
+The Godfather" the raw message has no content, so the reranker preferred "Something Like
+Happiness" (0.17) over The Godfather (0.0004). The rewritten "crime dramas similar to The
+Godfather" gives lexical search and the cross-encoder something to match. Stopwords in
+`retrieval.lexical.stopwords` are dropped from the lexical terms for the same reason.
 
 **Why the fallback returns empty intent instead of keyword parsing**: An earlier
 version used Russian keyword stem matching as a fallback. It had two bugs:

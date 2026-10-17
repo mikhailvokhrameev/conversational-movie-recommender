@@ -24,8 +24,8 @@ failed judge call was silently scored 3.
   `aclassify_and_parse`, so parsing is evaluated too. `oracle` uses each entry's labelled
   intent, isolating retrieval. The gap between them is the cost of parsing errors.
 - **The production path.** Retrieval is `core.pipeline.generate_and_score`, the same
-  function the chat view runs. Multi-turn entries get a session vector built like
-  production's.
+  function the chat view runs. Multi-turn entries are parsed with their prior
+  messages as history, as production does.
 - **Dev/test split.** `--sweep` and `--gate-report` read only `dev` and refuse
   `test`/`all`; the default eval reports `test`.
 - **The LLM judge is a secondary signal.** `--llm-judge` is reported beside the

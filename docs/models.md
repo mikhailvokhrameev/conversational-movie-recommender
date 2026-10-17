@@ -71,8 +71,8 @@ Thriller, War, Western
 
 ## ChatSession
 
-Represents a single conversation session with a user. Stores the evolving
-preference profile for session-based recommendation learning.
+Represents a single conversation session with a user. Stores the explicit
+preferences and conversation history.
 
 **Table**: `movies_chatsession`
 
@@ -81,7 +81,6 @@ preference profile for session-based recommendation learning.
 | `id` | BigAutoField | PK | Auto-generated primary key |
 | `session_id` | UUIDField | unique, indexed | Frontend-generated session identifier |
 | `session_token` | CharField(64) | indexed | Cryptographic token for session auth (`secrets.token_urlsafe(32)`) |
-| `preference_vector` | VectorField(1024) | nullable | EMA-updated preference embedding |
 | `preferences` | JSONField | default={} | Explicit preferences (liked/disliked genres, themes) |
 | `history` | JSONField | default=[] | Conversation message history |
 | `turn_count` | IntegerField | default=0 | Number of conversation turns |
@@ -95,8 +94,7 @@ preference profile for session-based recommendation learning.
 **Session lifecycle**:
 1. Frontend generates UUID on first load, stores in localStorage
 2. Backend creates ChatSession via `get_or_create` on first request
-3. Each query updates `preference_vector` (EMA), `preferences` (explicit),
-   and increments `turn_count`
+3. Each query updates `preferences` (explicit) and increments `turn_count`
 4. `manage.py cleanup_sessions` deletes sessions where
    `created_at < now() - 24 hours`
 

@@ -67,8 +67,7 @@ different pins are a mismatch like any other. `generate_embeddings --all` record
 configured revision.
 
 > **Changing `embedding.model` or `embedding.dimensions` is not a config tweak.**
-> `dimensions` is baked into the `Movie.embedding` and `ChatSession.preference_vector`
-> pgvector columns, so either change requires a schema migration *and* a full
+> `dimensions` is baked into the `Movie.embedding` pgvector column, so either change requires a schema migration *and* a full
 > re-run of `manage.py generate_embeddings` over the entire catalog. Existing
 > vectors are not convertible between models or dimensions -- skipping the
 > re-run leaves stale vectors in place that fail comparisons silently rather
@@ -177,13 +176,14 @@ semantic finds meaning.
 the TMDB catalog's English titles and keywords.
 
 **Term extraction tunables** (`retrieval.lexical` in `params.yaml`,
-applied in `candidate_generation.py`'s `_lexical_terms`): the raw user
-message is lowercased and split into words before being turned into a
+applied in `candidate_generation.py`'s `_lexical_terms`): the query text
+(see below) is lowercased and split into words before being turned into a
 `tsquery`.
 
 | Parameter | Value | What it controls |
 |-----------|-------|-------------------|
 | `min_term_length` | 3 | Drops any extracted word shorter than this many characters -- filters out prepositions/articles ("a", "of", "the") that would otherwise pollute the OR-ed query with noise terms. |
+| `stopwords` | movie, like, show, ... | Conversational words that name no film but match titles and keywords ("Movie", "Like", "Show"). Dropped before the `max_terms` cut; if nothing is left the lexical channel is skipped and semantic search carries the query. |
 | `max_terms` | 12 | Caps the number of terms kept (first N after the length filter), bounding `tsquery` size for a long, rambling conversational message. |
 
 **OR, not AND**: query terms are OR-ed. The input is a conversational
@@ -195,7 +195,7 @@ are not comparable quantities, and normalizing them against each other would
 be inventing a relationship that does not exist. RRF fuses by *rank*
 (`weight / (60 + rank)`), which is scale-free by construction. Note the
 contrast with hybrid scoring below, which uses min-max normalization instead:
-there, all four signals rank the same pool and their magnitudes are
+there, all three signals rank the same pool and their magnitudes are
 meaningful, so discarding magnitude would lose real information.
 
 **Channel weights**: semantic 1.0, lexical 0.7. Semantic carries signal for
@@ -203,7 +203,7 @@ every query; lexical only when the user names something. The weighting means
 lexical loses ties rather than being suppressed.
 
 **Interaction with reranking**: fusion decides which candidates enter the
-pool, not the final order -- the four-signal scorer has no lexical term, so
+pool, not the final order -- the three-signal scorer has no lexical term, so
 a movie retrieved purely on an exact title match would enter the pool and
 then rank low. The cross-encoder reranker closes that gap: it reads the query
 and the movie text together, so a literal title match scores highly on
@@ -211,22 +211,24 @@ relevance regardless of what the embeddings thought.
 
 ## Hybrid Scoring
 
-Four signals combined via weighted sum, each min-max normalized across the
+Three signals combined via weighted sum, each min-max normalized across the
 candidate set first:
 
 | Signal | Default Weight | What it measures |
 |--------|---------------|------------------|
-| Semantic | 0.35 | Cosine similarity between query and movie embeddings |
-| Metadata | 0.25 | Genre overlap between LLM-extracted intent and movie genres |
-| Session | 0.25 | Cosine similarity between session preference vector and movie |
-| Popularity | 0.15 | TMDB's popularity metric (a scoring signal, not a hard filter -- it's unbounded and non-linear, unlike vote_average's bounded 0-10 scale) |
+| Semantic | 0.4667 | Cosine similarity between query and movie embeddings |
+| Metadata | 0.3333 | Genre overlap between LLM-extracted intent and movie genres |
+| Popularity | 0.2 | TMDB's popularity metric (a scoring signal, not a hard filter -- it's unbounded and non-linear, unlike vote_average's bounded 0-10 scale) |
+
+The weights are the old ones with the `session` signal removed ([ADR 0010](adr/0010-drop-session-vector-contextual-query-text.md)):
+semantic and metadata keep their 7:5 proportion and share `1 - popularity`.
 
 **Cosine similarity mapping**: Raw cosine similarity ranges [-1, 1].
 Mapped to [0, 1] via `(sim + 1) / 2` so negative similarity contributes 0,
 not negative weight.
 
 **Why normalize before summing**: the raw signals have very different spreads.
-Semantic and session cosines cluster in a narrow band, popularity is unbounded
+The semantic cosine clusters in a narrow band, popularity is unbounded
 and heavily right-skewed, while genre overlap spans the full 0-1 range and
 moves in large discrete jumps. A signal's real influence on the ranking is
 `weight * spread`, not weight alone, so un-normalized the declared weights
@@ -242,7 +244,7 @@ by numerical noise. Pre-normalization values are retained per candidate under
 This is deliberately a different technique from the RRF used to fuse the two
 retrieval channels above. Retrieval fuses incomparable scores across
 independent systems, where only rank is trustworthy. Scoring ranks one shared
-pool with four commensurable signals, where magnitude is real information
+pool with three commensurable signals, where magnitude is real information
 worth keeping.
 
 **Weight tuning**: Pre-swap grid search (old Okko catalog, old embedder,
@@ -292,8 +294,8 @@ mpnet embedder's footprint; see `params.yaml`'s VRAM budget comment for the
 current breakdown.
 
 **Why blend rather than replace**: the cross-encoder judges query-document
-relevance and knows nothing about session preference or extracted genre
-intent. Replacing the scorer total would discard personalization entirely.
+relevance and knows nothing about the extracted genre intent or popularity.
+Replacing the scorer total would discard those signals entirely.
 Both sides are min-max normalized across the slice before blending, so
 `reranking.weight` means what it says.
 
@@ -377,50 +379,27 @@ diversity. 0.7 means 70% relevance, 30% diversity penalty.
 only handle one dimension. MMR uses embedding similarity to catch all forms
 of redundancy: same director, same sub-genre, same narrative structure.
 
-## Session-Based Preference Learning
+## Query Text for Lexical Search and Reranking
 
-**Choice**: Exponential Moving Average (EMA) of query embeddings
+The lexical channel and the cross-encoder compare text, so the text matters. They
+used to get the raw last message, which on a follow-up such as "suggest something
+similar" carries nothing: after "I liked The Godfather" the reranker scored
+"Something Like Happiness" 0.17 and The Godfather 0.0004. The classify+parse call now
+also returns `standalone_query`, the request rewritten to stand on its own ("crime
+dramas similar to The Godfather"). `ChatView` and `evaluate_scoring --intent e2e`
+pass it as `query_text` to `generate_candidates` (lexical channel) and
+`rerank_candidates`; an empty value falls back to the raw message. The dense query
+embedding still comes from `semantic_query`. Conversational stopwords
+(`retrieval.lexical.stopwords`) are dropped from the lexical terms. `--intent oracle`
+has no `standalone_query` and ranks on the raw golden query. See
+[ADR 0010](adr/0010-drop-session-vector-contextual-query-text.md), which also records
+why the session preference vector was removed (ablation: mean nDCG@5 difference
+-0.0143, 95% CI [-0.0310, +0.0005], helped 1 / neutral 3 / hurt 14 of 18 multi-turn
+queries).
 
-**Formula**: `new_vec = alpha * query_vec + (1 - alpha) * current_vec`,
-then L2-normalized.
-
-**alpha = 0.7** (`session.alpha` in params.yaml): Recent queries contribute
-70% of the signal. After 5 turns, the first query's weight decays to ~0.8%.
-
-**alpha_refinement = 0.92** (`session.alpha_refinement`): used instead of
-`alpha` on turns classified `refinement` ("something funnier?", "no horror").
-Hard filters (negations, exclusions) already drop disallowed genres from the
-candidate pool outright, but the EMA vector still feeds the `session`
-scoring signal on whatever survives those filters -- at alpha=0.7, 30% of a
-strongly-aligned prior-turn direction could still bias that signal back
-toward what the user just corrected away from. The higher alpha makes an
-explicit refinement dominate the vector instead of blending.
-
-**Which vector scores the current turn**: `vector_for_scoring()`
-(`core/session_manager.py`) decides. On a `refinement` turn the high-alpha
-update is applied *before* scoring, so the `session` signal of that very turn
-already points at the correction -- applying it only when saving would have
-fixed the *next* turn and left this one scored against the stale direction.
-The saved vector is recomputed from the row-locked session in `_save_session`
-(same formula, `alpha_refinement` for a refinement), so it equals the scored one
-outside a concurrent-turn race and can differ from it during one. On a `new_search` turn the pre-turn vector is used
-for scoring and the regular `alpha` update is applied afterwards when saving:
-the current query is already in the `semantic` signal, so folding it into the
-`session` signal as well would count it twice. On the first turn there is no
-vector yet, so the `session` signal is absent.
-
-**What feeds the vector**: only the `semantic_query` embedding of `new_search`
-and `refinement` turns. Movies shown or accepted, and `follow_up` /
-`general_chat` turns, do not change it.
-
-**Why EMA over simple averaging**: Simple averaging gives equal weight to all
-turns. An early exploratory query permanently dilutes the signal from a later
-specific query. EMA makes recent queries dominate.
-
-**Explicit preferences**: Alongside the implicit vector, the session tracks
-liked genres, disliked genres, themes, and reference films extracted from
-parsed intent. Not currently read back into scoring or filtering -- exposed
-read-only via `GET /api/sessions/<id>/`.
+**Explicit preferences**: the session tracks liked genres, disliked genres, themes,
+and reference films extracted from parsed intent. Not currently read back into
+scoring or filtering -- exposed read-only via `GET /api/sessions/<id>/`.
 
 ## Evaluation Framework
 
@@ -492,54 +471,6 @@ against `oracle` on the same split separates parsing errors from retrieval
 errors (oracle intents are labels too, so they are only as good as the
 draft).
 
-### Session Vector
-
-Entries with `context` get a session preference vector built the way
-production builds one: each prior message is embedded and folded in with
-`update_preference_vector` (default alpha -- prior turns' categories are not
-labelled), then `vector_for_scoring(current, query_embedding, category)`
-applies the refinement update for the final message. Entries without context
-use `session_vector=None`, as a first turn does. Without this, the `session`
-signal was identical for every candidate and the session axis of `--sweep`
-changed nothing; it now matters on the multi-turn entries.
-
-### Session-Vector Ablation
-
-`evaluate_scoring --session-ablation` answers whether the session vector earns
-its upkeep (the `ChatSession.preference_vector` column tied to the embedding
-dimensions, the EMA bookkeeping under a row lock). It parses each multi-turn
-entry once (all splits by default; single-turn entries have no vector and are
-skipped) and scores it three ways:
-
-| Arm | Session vector |
-|-----|----------------|
-| `with_vector` | as production builds it |
-| `without_vector` | none -- the same as deleting the `session` signal |
-| `refinement_only` | only on turns scored as `refinement` (the candidate fix for topic switches) |
-
-A missing vector gives every candidate the same `session` value, which adds one
-constant to every scorer total; the min-max before the rerank blend cancels it,
-so `without_vector` ranks exactly as if the signal were removed and the other
-weights renormalized. (With the reranker off, MMR sees the raw total, so the
-match is close rather than exact; the report warns when that happens.)
-
-The decision uses paired per-query nDCG@k differences, `with - without`, with a
-percentile bootstrap interval (`evaluation.session_ablation` in params.yaml):
-
-- **KEEP**: mean gain >= `min_ndcg_gain` and the interval is above 0.
-- **REMOVE**: the interval's upper end is below `min_ndcg_gain` -- a
-  worthwhile gain is ruled out (the reason says whether the vector also hurts).
-- **INCONCLUSIVE**: fewer than `min_queries` scored queries, or an interval that
-  straddles the bar.
-
-The report also breaks the difference down by labelled category (topic-switch
-`new_search` vs `refinement`), gives `refinement_only - with` for the partial
-fix, and counts how many top-k lists the vector changed at all. Run it with the
-default `--intent e2e`: in production the LLM parse already carries context
-from the history, and the question is whether the vector adds anything on top.
-`--intent oracle` isolates retrieval but embeds the raw last message, which
-favours the vector.
-
 ### Metrics
 
 | Metric | What it measures | Implementation |
@@ -573,7 +504,7 @@ and timeout are `evaluation.judge_description_chars` /
 **Known limitation (circularity)**: the judge is the same model family that
 parses intent and writes explanations, so it shares the system's blind
 spots. `--sweep` ranks configurations by golden-set nDCG, never by the judge.
-The swept semantic, metadata and session weights (and `--weights`) are scaled to
+The swept semantic and metadata weights (and `--weights`, which takes `semantic,metadata`) are scaled to
 `1 - popularity`, with popularity held at its configured value, so every printed or
 recorded configuration sums to 1.0 and the best one can be pasted into
 `scoring.weights`.

@@ -99,7 +99,7 @@ overridable by an environment variable -- change the file and restart.
 | `scoring` | Signal weights (non-negative, sum to 1.0, checked at load), neutral score |
 | `diversification` | MMR top_n and lambda |
 | `reranking` | Cross-encoder model and revision, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
-| `session` | EMA alpha, session TTL, LLM history replay caps |
+| `session` | session TTL, LLM history replay caps |
 | `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
 | `intent` | Genre-match threshold |
 | `catalog` | Import and embedding batch sizes, the import vote-count floor, poster URL parts |

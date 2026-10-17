@@ -301,14 +301,9 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
 Sessions auto-expire after `session.ttl_hours` (default 24) via
 `ChatSession.is_expired()`. On each turn:
 
-1. The preference vector (`embedding.dimensions` wide) is updated via an
-   exponential moving average
-   (alpha from `session.alpha` in params.yaml, default 0.7; turns classified
-   `refinement` use the higher `session.alpha_refinement`, default 0.92, so
-   an explicit correction dominates the vector instead of blending).
-2. Explicit preferences (liked genres, disliked genres, themes, reference films)
+1. Explicit preferences (liked genres, disliked genres, themes, reference films)
    are accumulated from the parsed intent.
-3. The conversation history gets a `user` entry for the query, and once the
+2. The conversation history gets a `user` entry for the query, and once the
    reply has finished streaming, an `assistant` entry with the reply text.
    For search and refinement turns the assistant entry also carries the
    recommended movie titles (`movies`) and `movie_facts` -- per shown movie,
@@ -329,7 +324,7 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
    "which one is shorter?" are answered from catalog data; every older entry
    (and every legacy entry without `movie_facts`) replays as
    "(Recommended: ...)" with titles only, to stay inside `llm.num_ctx`.
-4. `turn_count` increments once per user turn; the assistant entry from step 3
+3. `turn_count` increments once per user turn; the assistant entry from step 2
    does not increment it again.
 
 Session updates use `SELECT FOR UPDATE` inside a transaction to prevent
@@ -361,7 +356,7 @@ these can be changed -- no environment variable overrides them.
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
-| `scoring.weights.*` | 0.35 / 0.25 / 0.25 / 0.15 | Signal weights (semantic / metadata / session / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
+| `scoring.weights.*` | 0.4667 / 0.3333 / 0.2 | Signal weights (semantic / metadata / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
 | `diversification.top_n` | `5` | Results returned |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
 | `reranking.enabled` | `true` | Cross-encoder reranking on/off |
@@ -372,8 +367,6 @@ these can be changed -- no environment variable overrides them.
 | `reranking.weight` | `0.5` | Share of final score from the cross-encoder. Must lie in [0, 1] |
 | `reranking.min_score` | `null` | "Nothing suitable" gate: minimum `rerank_score` (strictly between 0 and 1) to keep a candidate; `null` = off. Uncalibrated, so off (see ML.md) |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
-| `session.alpha` | `0.7` | EMA alpha for preference vector updates |
-| `session.alpha_refinement` | `0.92` | EMA alpha used instead, on `refinement` turns |
 | `session.ttl_hours` | `24` | Session expiry |
 | `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so a heavy-use prompt fits `llm.num_ctx` with room to spare. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |

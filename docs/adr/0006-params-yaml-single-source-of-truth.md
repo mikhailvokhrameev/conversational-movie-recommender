@@ -5,7 +5,7 @@ Status: Accepted
 ## Context
 
 A recommender has many numbers that interact: LLM and embedder names, RRF constants,
-four scoring weights, the blend weight, thresholds, token budgets, caps. Scattered
+three scoring weights, the blend weight, thresholds, token budgets, caps. Scattered
 across code, env vars and Docker files they drift apart, and a result cannot be tied
 to the settings that produced it. Some values are coupled -- `session.history_max_turns`
 must fit inside `llm.num_ctx`, which must fit the VRAM budget -- and only make sense

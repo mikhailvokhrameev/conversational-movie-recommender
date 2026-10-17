@@ -1,11 +1,11 @@
 # 0003. Min-max weighted scoring, cross-encoder blend, MMR
 
-Status: Accepted
+Status: Accepted; partially superseded by [0010](0010-drop-session-vector-contextual-query-text.md) (the session signal is gone, weights renormalized)
 
 ## Context
 
 The ~100 fused candidates must become five results. Signals have very different
-spreads: semantic and session cosines sit in a narrow band, popularity is unbounded and
+spreads: the semantic cosine sits in a narrow band, popularity is unbounded and
 right-skewed, genre overlap spans 0-1 in jumps. A bi-encoder compares query and movie
 without seeing both together. A top-5 by relevance alone tends to return one franchise.
 
@@ -14,13 +14,14 @@ without seeing both together. A top-5 by relevance alone tends to return one fra
 Three stages, in this order, all in `core/`:
 
 1. **Weighted sum of min-max normalized signals** (`scoring.score_candidates`):
-   semantic 0.35, metadata 0.25, session 0.25, popularity 0.15. Normalizing each signal
+   semantic 0.4667, metadata 0.3333, popularity 0.2 (originally semantic 0.35, metadata
+   0.25, session 0.25, popularity 0.15; the session signal was dropped in 0010). Normalizing each signal
    across the candidate set first makes a weight equal its actual influence
    (`weight * spread`). A signal identical for every candidate collapses to a neutral 0.5.
    Popularity is a signal, not a filter, because TMDB's metric is unbounded.
 2. **Cross-encoder rerank** (`bge-reranker-v2-m3`, top 50), blended 50/50 with the
    scorer total after min-max on both sides (`reranking.weight`). Blend, not replace:
-   the cross-encoder knows nothing about the session or the parsed genre intent.
+   the cross-encoder knows nothing about the parsed genre intent.
 3. **MMR** (`lambda` 0.7, `diversification.top_n` 5) using embedding similarity, which
    catches same-franchise and same-sub-genre redundancy that "max 2 per genre" rules
    cannot.
