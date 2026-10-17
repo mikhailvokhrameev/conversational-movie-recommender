@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import httpx
 import numpy as np
 import pytest
+from pydantic import ValidationError
 
 from core.ollama_client import (
     EXPLANATION_PROMPT,
@@ -32,7 +33,9 @@ from core.ollama_client import (
     astream_explanation_parts,
     check_explanation_titles,
     CATALOG_GENRES,
+    CLARIFY_SYSTEM_PROMPT,
     CLASSIFY_AND_PARSE_SYSTEM_PROMPT,
+    CONVERSATIONAL_SYSTEM_PROMPT,
     CLASSIFY_PARSE_SCHEMA,
     INTENT_SCHEMA,
     MessageIntent,
@@ -318,6 +321,47 @@ class TestMessageIntentValidation:
         assert intent.country_exclusions == ["США"]
         assert intent.min_vote_average is None
         assert intent.min_release_year is None
+
+    def test_accepts_clarify_category(self):
+        intent = MessageIntent.model_validate({"category": "clarify", "semantic_query": "movies"})
+        assert intent.category == "clarify"
+
+    def test_rejects_unknown_category(self):
+        with pytest.raises(ValidationError):
+            MessageIntent.model_validate({"category": "chit_chat"})
+
+
+class TestConversationalSystemPrompt:
+    async def _system_prompt_sent(self, **kwargs):
+        sent = {}
+
+        def _capture(messages):
+            sent["messages"] = messages
+            raise httpx.ConnectError("no ollama in tests")
+
+        with patch("core.ollama_client._stream_chat_payload", side_effect=_capture):
+            tokens = [t async for t in astream_conversational("movies", [], **kwargs)]
+        assert tokens == []
+        return sent["messages"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_defaults_to_conversational_prompt(self):
+        assert await self._system_prompt_sent() == CONVERSATIONAL_SYSTEM_PROMPT
+
+    @pytest.mark.asyncio
+    async def test_uses_given_system_prompt(self):
+        prompt = await self._system_prompt_sent(system_prompt=CLARIFY_SYSTEM_PROMPT)
+        assert prompt == CLARIFY_SYSTEM_PROMPT
+
+
+class TestClassifyPromptClarify:
+    def test_lists_clarify_category_and_moves_what_should_i_watch(self):
+        new_search_line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "new_search"')
+        )
+        assert "what should I watch" not in new_search_line
+        assert '- "clarify"' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        assert '"category": "clarify"' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
 
 
 class TestNormalizeGenres:
@@ -1052,7 +1096,7 @@ class TestStructuredOutputSchema:
         schema = CLASSIFY_PARSE_SCHEMA
         assert schema["type"] == "object"
         assert schema["properties"]["category"]["enum"] == [
-            "new_search", "follow_up", "refinement", "general_chat",
+            "new_search", "follow_up", "refinement", "general_chat", "clarify",
         ]
         assert set(schema["required"]) == set(MessageIntent.model_fields)
         assert set(schema["properties"]) == set(MessageIntent.model_fields)

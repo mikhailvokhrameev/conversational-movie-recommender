@@ -128,7 +128,7 @@ class TestE2eIntent:
             "query q1", [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}],
         )
 
-    @pytest.mark.parametrize("category", ["follow_up", "general_chat"])
+    @pytest.mark.parametrize("category", ["follow_up", "general_chat", "clarify"])
     def test_non_search_category_still_searches_and_counts_misclassified(self, tmp_path, category):
         run = _Run(tmp_path, [_entry()], intent=MessageIntent(category=category, semantic_query="x"))
         record = run()

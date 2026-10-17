@@ -14,6 +14,7 @@ from rest_framework.views import APIView
 
 from core.embedding_service import encode_query
 from core.ollama_client import (
+    CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT,
     aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation_parts,
 )
@@ -161,7 +162,7 @@ class ChatView(View):
             logger.exception("ChatView classification error")
             return JsonResponse({"error": "internal error"}, status=500)
 
-        if intent.category in ("follow_up", "general_chat"):
+        if intent.category in ("follow_up", "general_chat", "clarify"):
             return await self._handle_conversational(session, message, intent.category, classify_parse_ms)
         else:
             return await self._handle_search_like(session, message, intent, classify_parse_ms)
@@ -317,7 +318,8 @@ class ChatView(View):
             yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
             t_explain = time.perf_counter()
             reply_parts = []
-            async for token in astream_conversational(message, history):
+            system_prompt = CLARIFY_SYSTEM_PROMPT if category == "clarify" else CONVERSATIONAL_SYSTEM_PROMPT
+            async for token in astream_conversational(message, history, system_prompt=system_prompt):
                 reply_parts.append(token)
                 yield _sse_event("token", {"text": token})
             explain_ms = (time.perf_counter() - t_explain) * 1000

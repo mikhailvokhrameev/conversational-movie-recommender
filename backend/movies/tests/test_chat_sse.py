@@ -5,7 +5,7 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from django.test import AsyncRequestFactory
 
-from core.ollama_client import MessageIntent, aclassify_and_parse, astream_explanation_parts
+from core.ollama_client import CLARIFY_SYSTEM_PROMPT, MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import ChatView, _assistant_turn_text, _first_line, _generate_and_score
 
 
@@ -495,6 +495,37 @@ class TestChatSSEConversational:
             assert "event: done" in text
 
         assert append_history_mock.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_clarify_asks_with_clarify_prompt_and_no_movies(self):
+        factory = AsyncRequestFactory()
+        request = factory.post(
+            "/api/chat/",
+            data=json.dumps({"message": "movies"}),
+            content_type="application/json",
+        )
+
+        conversational = MagicMock(side_effect=_one_token_stream)
+        generate_mock = AsyncMock()
+        with patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("clarify", semantic_query="movies")), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views._generate_and_score", generate_mock), \
+             patch("movies.views.astream_conversational", conversational):
+
+            view = ChatView.as_view()
+            response = await view(request)
+
+            assert response.status_code == 200
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+
+            text = body.decode()
+            assert "event: movies" not in text
+            assert "event: done" in text
+
+        generate_mock.assert_not_called()
+        assert conversational.call_args.kwargs["system_prompt"] == CLARIFY_SYSTEM_PROMPT
 
 
 @pytest.mark.django_db

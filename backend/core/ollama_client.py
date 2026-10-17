@@ -53,10 +53,11 @@ CATALOG_GENRES = [
 CLASSIFY_AND_PARSE_SYSTEM_PROMPT = """You are a message classifier and intent parser for a movie recommendation chatbot. Given the conversation so far and the user's latest message, return ONE JSON object with all of the fields below.
 
 Categories (put the best match in "category"):
-- "new_search": user wants movie recommendations (e.g. "I want a comedy", "show me thrillers", "what should I watch")
+- "new_search": user wants movie recommendations and gives at least one thing to search on -- a genre, mood, theme, era, country, language, rating, runtime or a film they liked (e.g. "I want a comedy", "show me thrillers", "funny movies", "movies from the 90s")
 - "follow_up": user asks about previously recommended movies (e.g. "tell me about the first one", "who directed that?", "what's it about?")
 - "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
 - "general_chat": greetings, thanks, questions about the bot (e.g. "hi", "thanks", "how do you work?")
+- "clarify": user wants a recommendation but neither the message nor the earlier conversation gives a single thing to search on (e.g. "movies", "recommend something", "what should I watch"). If earlier messages already name a genre, mood or film, it is new_search or refinement instead
 
 The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the earlier messages of this conversation, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
 
@@ -64,7 +65,7 @@ ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
 
 JSON fields:
-- "category": one of the four categories above
+- "category": one of the five categories above
 - "semantic_query": the core of what the user is looking for, with filler words and pure filter phrases (genre/country/rating/year/runtime/language constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If the message continues earlier turns, carry over the subject from them too (e.g. the theme of a reference film), still without filter phrases. If category is not new_search/refinement, just repeat the message.
 - "standalone_query": the user's latest request rewritten as one self-contained English request that someone who never saw this conversation would understand -- carry over the subject, genres, reference films and constraints from earlier messages that still apply, drop filler ("something", "please", "show me"). If the latest message already stands on its own, copy it minus filler. If category is not new_search/refinement, just repeat the message.
 - "genres": list of matching genres from the ALLOWED list above
@@ -98,6 +99,10 @@ User: "hi"
 {{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
 
 Example:
+User: "recommend something"
+{{"category": "clarify", "semantic_query": "recommend something", "standalone_query": "recommend something", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+
+Example:
 User: "a highly rated 90s Korean thriller"
 {{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
 """
@@ -111,6 +116,14 @@ Rules:
 - Use the earlier messages in this conversation to understand what the user is referring to, especially short replies like agreements or follow-up questions
 - The most recent "(Recommended movies: ...)" block in the conversation lists the movies shown to the user, with year, genres, runtime and description from our catalog. Treat those facts as the source of truth when the user asks about those movies (which is shorter, what year, what it is about)
 - Our catalog has no director, cast, awards or box-office data. If asked for a detail that is not in the listed facts, say that detail is not in your catalog data; do not state it as fact. You may add general knowledge only if you clearly mark it as such (for example "from general knowledge, not our catalog: ...")
+"""
+
+CLARIFY_SYSTEM_PROMPT = """You are a movie recommendation assistant. The user wants a movie but has not said anything to search on yet.
+
+Rules:
+- Always respond in English
+- Ask ONE short question about the genre, the mood, or a film they liked
+- Do not recommend or name any movie titles
 """
 
 INTENT_PROMPT = """You are a movie intent parser. Given a user query, return a JSON object.
@@ -535,7 +548,7 @@ class MessageIntent(BaseModel):
     losing a filter is far less costly than losing the routing decision.
     """
 
-    category: Literal["new_search", "follow_up", "refinement", "general_chat"]
+    category: Literal["new_search", "follow_up", "refinement", "general_chat", "clarify"]
     semantic_query: str = ""
     standalone_query: str = ""
     genres: list[str] = Field(default_factory=list)
@@ -1037,12 +1050,14 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     return intent
 
 
-async def astream_conversational(message: str, history: list[dict] | None = None):
+async def astream_conversational(
+    message: str, history: list[dict] | None = None, system_prompt: str = CONVERSATIONAL_SYSTEM_PROMPT,
+):
     """Stream a conversational response (no movie search). Yields tokens."""
     history = history or []
     messages = _build_chat_messages(
         history=history,
-        system_prompt=CONVERSATIONAL_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
         current_content=message,
         max_turns=settings.SESSION_HISTORY_MAX_TURNS,
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,

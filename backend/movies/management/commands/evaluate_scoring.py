@@ -68,7 +68,7 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # query classified as one of these is still searched (so it still gets
 # metrics) but counted as misclassified -- in production it would have
 # returned no recommendations at all.
-NON_SEARCH_CATEGORIES = ("follow_up", "general_chat")
+NON_SEARCH_CATEGORIES = ("follow_up", "general_chat", "clarify")
 OWN_OPTIONS = (
     "golden_set", "split", "intent", "k", "sweep", "gate_report", "weights",
     "llm_judge", "output",
