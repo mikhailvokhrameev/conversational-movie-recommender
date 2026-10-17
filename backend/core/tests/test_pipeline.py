@@ -21,21 +21,21 @@ class TestGenerateAndScore:
         pool = [{"id": i, "total": 1.0 - i / 10} for i in range(4)]
         gen, score, rerank, mmr = _stages(pool)
         with gen as g, score as s, rerank as r, mmr as m:
-            top, reranked = generate_and_score([0.1], {"genres": ["Drama"]}, [0.2], query_text="q")
+            top, reranked = generate_and_score([0.1], {"genres": ["Drama"]}, query_text="q")
 
         assert top == pool[:2]
         assert reranked == pool
         g.assert_called_once_with([0.1], {"genres": ["Drama"]}, query_text="q")
-        s.assert_called_once_with(pool, [0.1], {"genres": ["Drama"]}, [0.2], weights=None)
+        s.assert_called_once_with(pool, [0.1], {"genres": ["Drama"]}, weights=None)
         r.assert_called_once_with("q", pool)
         m.assert_called_once_with(pool, top_n=2)
 
     def test_eval_overrides_for_weights_and_top_n(self):
         pool = [{"id": i, "total": 0.5} for i in range(5)]
-        weights = {"semantic": 1.0, "metadata": 0.0, "session": 0.0, "popularity": 0.0}
+        weights = {"semantic": 1.0, "metadata": 0.0, "popularity": 0.0}
         gen, score, rerank, mmr = _stages(pool)
         with gen, score as s, rerank, mmr as m:
-            top, _ = generate_and_score([0.1], {}, None, query_text="q", weights=weights, top_n=3)
+            top, _ = generate_and_score([0.1], {}, query_text="q", weights=weights, top_n=3)
 
         assert len(top) == 3
         assert s.call_args.kwargs["weights"] == weights
@@ -56,7 +56,7 @@ class TestRelevanceGate:
         rerank = patch("core.pipeline.rerank_candidates", side_effect=lambda q, c: c)
         mmr = patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n])
         with gen, score, rerank, mmr as m:
-            top, reranked = generate_and_score([0.1], {}, None, query_text="q", top_n=top_n)
+            top, reranked = generate_and_score([0.1], {}, query_text="q", top_n=top_n)
         return top, reranked, m
 
     def test_off_by_default_leaves_output_unchanged(self, settings):
@@ -104,7 +104,7 @@ class TestRelevanceGate:
              patch("core.reranking.get_model", return_value=None), \
              patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]), \
              caplog.at_level("WARNING", logger="core.pipeline"):
-            top, _ = generate_and_score([0.1], {}, None, query_text="q", top_n=5)
+            top, _ = generate_and_score([0.1], {}, query_text="q", top_n=5)
         assert [m["id"] for m in top] == [1, 2]
         assert any("gate skipped" in r.getMessage() for r in caplog.records)
 
@@ -122,5 +122,5 @@ class TestRelevanceGate:
              patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c), \
              patch("core.pipeline.rerank_candidates", side_effect=lambda q, c: c), \
              patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]):
-            top, _ = generate_and_score([0.1], {}, None, query_text="q", apply_gate=False)
+            top, _ = generate_and_score([0.1], {}, query_text="q", apply_gate=False)
         assert top == pool

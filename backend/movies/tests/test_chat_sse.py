@@ -22,7 +22,7 @@ def _mock_encode(embedding=None):
 
 
 def _mock_generate_and_score(movies=None):
-    async def _gen(query_embedding, intent, session_vector, query_text=""):
+    async def _gen(query_embedding, intent, query_text=""):
         result = movies or [
             {
                 "id": 1, "tmdb_id": 1, "serial_name": "Test Film", "original_title": "Test Film",
@@ -482,7 +482,7 @@ class TestChatSSENoMatch:
         )
 
     @staticmethod
-    async def _no_results(query_embedding, intent, session_vector, query_text=""):
+    async def _no_results(query_embedding, intent, query_text=""):
         return [], []
 
     @pytest.mark.asyncio

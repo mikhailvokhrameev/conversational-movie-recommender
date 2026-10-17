@@ -11,7 +11,7 @@ from core.scoring import (
 )
 
 
-WEIGHTS = {"semantic": 0.4, "metadata": 0.3, "session": 0.3}
+WEIGHTS = {"semantic": 0.5, "metadata": 0.3, "popularity": 0.2}
 
 
 def _make_movie(embedding=None, genres=None, movie_id=1):
@@ -57,8 +57,17 @@ class TestScoreCandidates:
         ]
         result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
         assert all(
-            key in result[0] for key in ("total", "semantic", "metadata", "session", "raw_scores")
+            key in result[0] for key in ("total", "semantic", "metadata", "popularity", "raw_scores")
         )
+
+    def test_session_is_not_a_signal(self):
+        candidates = [
+            _make_movie(embedding=[1.0, 0.0, 0.0], movie_id=1),
+            _make_movie(embedding=[0.0, 1.0, 0.0], movie_id=2),
+        ]
+        result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        assert "session" not in result[0]
+        assert set(result[0]["raw_scores"]) == {"semantic", "metadata", "popularity"}
 
     def test_does_not_mutate_input_candidates(self):
         candidates = [_make_movie(embedding=[1.0, 0.0, 0.0])]
@@ -87,16 +96,16 @@ class TestScoreCandidates:
         assert result[1]["raw_scores"]["semantic"] == pytest.approx(0.0)
 
     def test_uninformative_signal_does_not_change_ranking(self):
-        """With no session vector every session score ties, so ordering is
+        """A signal that ties across the pool scores neutral, so ordering is
         decided by the signals that actually vary."""
         candidates = [
             _make_movie(embedding=[1.0, 0.0, 0.0], movie_id=1),
             _make_movie(embedding=[0.0, 1.0, 0.0], movie_id=2),
         ]
         result = score_candidates(
-            candidates, [1.0, 0.0, 0.0], {"genres": []}, session_vector=None, weights=WEIGHTS
+            candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS
         )
-        assert all(r["session"] == settings.NEUTRAL_SCORE for r in result)
+        assert all(r["popularity"] == settings.NEUTRAL_SCORE for r in result)
         assert result[0]["total"] > result[1]["total"]
 
     def test_metadata_no_longer_dominates_semantic(self):

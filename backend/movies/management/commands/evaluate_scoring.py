@@ -6,9 +6,8 @@ Usage:
   python manage.py evaluate_scoring --split dev            # dev | test | all
   python manage.py evaluate_scoring --llm-judge            # + LLM judge (secondary signal)
   python manage.py evaluate_scoring --sweep                # weight grid search, dev split only
-  python manage.py evaluate_scoring --weights 0.5,0.3,0.2  # custom weights
+  python manage.py evaluate_scoring --weights 0.6,0.4      # custom semantic,metadata weights
   python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
-  python manage.py evaluate_scoring --session-ablation     # is the session vector worth keeping?
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -20,18 +19,12 @@ What makes this an honest measurement:
     in the labelled intent to isolate retrieval from parsing.
   - Retrieval is `core.pipeline.generate_and_score`, the function ChatView
     runs, so eval and production cannot drift.
-  - Multi-turn entries get a session vector built the way production builds it.
   - `--sweep` only ever selects on the dev split; the plain eval defaults to
     the held-out test split.
   - `--gate-report` runs with the relevance gate off and prints how rerank_score
     separates labelled hits from the rest, plus what each candidate threshold
     would drop. It informs a human choice of reranking.min_score and never
     writes params.yaml.
-  - `--session-ablation` scores the multi-turn entries three ways from one
-    parse -- with the session vector, without it, and with it on refinement
-    turns only -- and prints a KEEP / REMOVE / INCONCLUSIVE verdict from paired
-    nDCG differences. It compares fixed variants instead of choosing weights,
-    so it defaults to every split.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
@@ -41,7 +34,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,8 +49,6 @@ from core.evaluation import (
     evaluate_query,
     gate_report,
     llm_relevance_score,
-    paired_bootstrap,
-    session_ablation_verdict,
 )
 from core.golden_set import (
     default_golden_set_path,
@@ -68,7 +59,6 @@ from core.golden_set import (
 )
 from core.ollama_client import MessageIntent, aclassify_and_parse, ais_available
 from core.pipeline import generate_and_score
-from core.session_manager import update_preference_vector, vector_for_scoring
 from movies.models import Movie
 
 logger = logging.getLogger(__name__)
@@ -80,14 +70,9 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat")
 OWN_OPTIONS = (
-    "golden_set", "split", "intent", "k", "sweep", "gate_report", "session_ablation", "weights",
+    "golden_set", "split", "intent", "k", "sweep", "gate_report", "weights",
     "llm_judge", "output",
 )
-# --session-ablation variants. A missing vector is exactly a removed `session`
-# signal: it is then the same for every candidate, so it adds one constant to
-# every scorer total, which the min-max before the rerank blend cancels out.
-ABLATION_ARMS = ("with_vector", "without_vector", "refinement_only")
-
 
 def _catalog_stats() -> tuple[dict[str, float], int]:
     """Genre frequencies (for novelty) and catalog size (for coverage)."""
@@ -95,23 +80,22 @@ def _catalog_stats() -> tuple[dict[str, float], int]:
     return compute_genre_frequency(catalog_genres), len(catalog_genres)
 
 
-def _scoring_weights(semantic: float, metadata: float, session: float) -> dict:
-    """Full scoring weights from the three signals this command varies.
+def _scoring_weights(semantic: float, metadata: float) -> dict:
+    """Full scoring weights from the two signals this command varies.
 
-    The three are taken as relative proportions and scaled to `1 - popularity`,
+    The pair is taken as relative proportions and scaled to `1 - popularity`,
     with popularity held at its configured value, so the result sums to 1.0 and
     can be pasted into params.yaml as-is (settings refuses weights that do not
-    sum to 1). Session takes the rounding remainder to keep the sum exact.
+    sum to 1). Metadata takes the rounding remainder to keep the sum exact.
     """
-    popularity = settings.SCORE_WEIGHTS.get("popularity", 0.0)
-    total = semantic + metadata + session
+    popularity = settings.SCORE_WEIGHTS["popularity"]
+    total = semantic + metadata
     if total <= 0:
         raise CommandError("weights must have a positive sum")
-    scale = (1.0 - popularity) / total
-    sem, met = round(semantic * scale, 4), round(metadata * scale, 4)
+    sem = round(semantic * (1.0 - popularity) / total, 4)
     return {
-        "semantic": sem, "metadata": met,
-        "session": round(1.0 - popularity - sem - met, 4),
+        "semantic": sem,
+        "metadata": round(1.0 - popularity - sem, 4),
         "popularity": popularity,
     }
 
@@ -152,7 +136,6 @@ class PreparedQuery:
     entry: dict
     intent: dict
     query_embedding: list[float]
-    session_vector: list[float] | None
     category: str
     predicted_category: str | None
     # e2e only (None in oracle): the parsed intent has exactly the shape
@@ -208,18 +191,11 @@ class Command(BaseCommand):
                  "(dev split only)",
         )
         parser.add_argument(
-            "--session-ablation",
-            action="store_true",
-            help="Score the multi-turn entries with the session vector, without it, and "
-                 "with it on refinement turns only, and print whether it is worth keeping "
-                 "(default split: all)",
-        )
-        parser.add_argument(
             "--weights",
             type=str,
             default=None,
             help=(
-                "Custom weights as comma-separated values: semantic,metadata,session. "
+                "Custom weights as comma-separated values: semantic,metadata. "
                 "Taken as proportions and scaled to 1 - popularity (popularity stays at "
                 "its params.yaml value), so the result sums to 1."
             ),
@@ -246,15 +222,7 @@ class Command(BaseCommand):
         report_gate = options["gate_report"]
         if sweep and report_gate:
             raise CommandError("--sweep and --gate-report are separate runs; pick one.")
-        ablation = options["session_ablation"]
-        if ablation and (sweep or report_gate):
-            raise CommandError("--session-ablation is a separate run from --sweep and --gate-report; pick one.")
-        if ablation and options["llm_judge"]:
-            raise CommandError(
-                "--session-ablation decides on golden-set nDCG only; the judge is the same model "
-                "family as the system, so it cannot settle this. Drop --llm-judge."
-            )
-        split = options["split"] or ("dev" if sweep or report_gate else "all" if ablation else "test")
+        split = options["split"] or ("dev" if sweep or report_gate else "test")
         if sweep and split != "dev":
             raise CommandError(
                 f"--sweep selects weights, so it only runs on the dev split (got --split {split}); "
@@ -282,12 +250,6 @@ class Command(BaseCommand):
         entries = select_split(load_golden_set(golden_path), split)
         if not entries:
             raise CommandError(f"no golden-set entries in split {split!r}")
-        if ablation:
-            # A single-turn entry has no vector in any arm, so it would only
-            # add ties; skipping it also skips its LLM parse.
-            entries = [entry for entry in entries if entry.get("context")]
-            if not entries:
-                raise CommandError(f"no multi-turn golden-set entries (with a context) in split {split!r}")
         self.stdout.write(f"Loaded {len(entries)} {split} queries from {golden_path} (intent: {intent_mode})")
         if use_llm:
             self.stdout.write("LLM-as-judge enabled (this will be slow)")
@@ -300,10 +262,7 @@ class Command(BaseCommand):
 
         record = {
             "timestamp": started.isoformat(),
-            "mode": (
-                "sweep" if sweep else "gate_report" if report_gate
-                else "session_ablation" if ablation else "eval"
-            ),
+            "mode": "sweep" if sweep else "gate_report" if report_gate else "eval",
             "git": _git_state(),
             "params_file": str(settings.PARAMS_FILE),
             "params_sha256": _sha256(settings.PARAMS_FILE),
@@ -319,9 +278,6 @@ class Command(BaseCommand):
         if sweep:
             record["configs"] = self._run_sweep(prepared, k, use_llm)
             record["best_weights"] = record["configs"][0]["weights"]
-        elif ablation:
-            record["weights"] = weights
-            record["session_ablation"] = self._run_session_ablation(prepared, k, weights)
         else:
             record["weights"] = weights
             # The report needs every returned movie's score, including the ones
@@ -345,11 +301,11 @@ class Command(BaseCommand):
             parts = [float(x) for x in weights_str.split(",")]
         except ValueError:
             parts = []
-        if len(parts) != 3:
-            raise CommandError("--weights needs three numbers: semantic,metadata,session")
+        if len(parts) != 2:
+            raise CommandError("--weights needs two numbers: semantic,metadata")
         # popularity is held at its configured value -- --weights only varies
-        # the three signals it always has, so it doesn't silently zero popularity.
-        # The three are scaled to 1 - popularity so the weights stay pasteable.
+        # semantic and metadata, so it doesn't silently zero popularity.
+        # The pair is scaled to 1 - popularity so the weights stay pasteable.
         return _scoring_weights(*parts)
 
     # --- Per-entry preparation (weight-independent) ---
@@ -380,7 +336,6 @@ class Command(BaseCommand):
             entry=entry,
             intent=intent,
             query_embedding=query_embedding,
-            session_vector=self._session_vector(context, query_embedding, category),
             category=category,
             predicted_category=predicted,
             possible_parse_fallback=possible_fallback,
@@ -396,17 +351,6 @@ class Command(BaseCommand):
         model left as-is), hence "possible" -- but a run where most entries
         match is a run where parsing did not happen."""
         return intent == MessageIntent(category="new_search", semantic_query=query)
-
-    @staticmethod
-    def _session_vector(context: list[str], query_embedding: list[float], category: str):
-        """The preference vector production would score this turn with: each
-        prior message folded in by EMA, then `vector_for_scoring` for the final
-        message. Prior turns use the default alpha -- their categories are not
-        labelled. No context means a first turn: None, as in production."""
-        current = None
-        for message in context:
-            current = update_preference_vector(current, encode_query(message))
-        return vector_for_scoring(current, query_embedding, category)
 
     def _report_unresolved(self, prepared: list[PreparedQuery]) -> None:
         total = sum(len(p.unresolved) for p in prepared)
@@ -436,7 +380,7 @@ class Command(BaseCommand):
     ) -> dict:
         entry = p.entry
         top, pool = generate_and_score(
-            p.query_embedding, p.intent, p.session_vector,
+            p.query_embedding, p.intent,
             query_text=entry["query"], weights=weights, top_n=k, apply_gate=apply_gate,
         )
         recommended_ids = [m["tmdb_id"] for m in top]
@@ -538,7 +482,7 @@ class Command(BaseCommand):
     def _run_eval(self, prepared, k, weights, use_llm, apply_gate=True) -> dict:
         self.stdout.write(
             f"Weights: semantic={weights['semantic']}, metadata={weights['metadata']}, "
-            f"session={weights['session']}, popularity={weights['popularity']}"
+            f"popularity={weights['popularity']}"
         )
         result = self._evaluate(prepared, k, weights, use_llm, apply_gate)
 
@@ -613,35 +557,22 @@ class Command(BaseCommand):
         )
 
     def _run_sweep(self, prepared, k, use_llm) -> list[dict]:
+        grid = [(s, round(1 - s, 2)) for s in (0.3, 0.4, 0.5, 0.6, 0.7, 0.8)]
         if use_llm:
-            grid = [
-                (0.7, 0.2, 0.1),
-                (0.6, 0.2, 0.2),
-                (0.5, 0.3, 0.2),
-                (0.4, 0.3, 0.3),
-                (0.3, 0.4, 0.3),
-                (0.5, 0.2, 0.3),
-            ]
             self.stdout.write(
                 f"Running weight grid search with LLM judge ({len(grid)} configs, "
                 f"~{len(grid) * len(prepared) * k * 2}s estimated)..."
             )
         else:
-            grid = [
-                (sem, met, round(1.0 - sem - met, 2))
-                for sem in [0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
-                for met in [0.1, 0.2, 0.3, 0.4]
-                if round(1.0 - sem - met, 2) >= 0
-            ]
             self.stdout.write(f"Running weight grid search ({len(grid)} configs)...")
 
         configs = []
-        for i, (sem, met, ses) in enumerate(grid):
-            weights = _scoring_weights(sem, met, ses)
+        for i, (sem, met) in enumerate(grid):
+            weights = _scoring_weights(sem, met)
             if use_llm:
                 self.stdout.write(
                     f"  Config {i+1}/{len(grid)}: sem={weights['semantic']} "
-                    f"met={weights['metadata']} ses={weights['session']}..."
+                    f"met={weights['metadata']}..."
                 )
             configs.append({"weights": weights, **self._evaluate(prepared, k, weights, use_llm)})
 
@@ -652,7 +583,7 @@ class Command(BaseCommand):
         header_llm = f" {'LLM':>6} {'jNDCG':>6}" if use_llm else ""
         self.stdout.write(f"\nWeight configurations by ndcg_at_k (dev split, k={k}):")
         self.stdout.write(
-            f"{'Semantic':>8} {'Meta':>6} {'Session':>8} {'P@k':>6} {'R@k':>6} {'NDCG':>6} {'Nov':>6}{header_llm}"
+            f"{'Semantic':>8} {'Meta':>6} {'P@k':>6} {'R@k':>6} {'NDCG':>6} {'Nov':>6}{header_llm}"
         )
         self.stdout.write("-" * (55 + (14 if use_llm else 0)))
         for config in configs:
@@ -661,143 +592,10 @@ class Command(BaseCommand):
                 f" {m.get('llm_relevance', 0):>6.2f} {m.get('judge_ndcg', 0):>6.3f}" if use_llm else ""
             )
             self.stdout.write(
-                f"{w['semantic']:>8.2f} {w['metadata']:>6.2f} {w['session']:>8.2f} "
+                f"{w['semantic']:>8.2f} {w['metadata']:>6.2f} "
                 f"{m.get('precision_at_k', 0):>6.3f} {m.get('recall_at_k', 0):>6.3f} "
                 f"{m.get('ndcg_at_k', 0):>6.3f} {m.get('novelty', 0):>6.3f}{llm_cols}"
             )
         self.stdout.write("")
         self._write_counters(configs[0]["counters"])
         return configs
-
-    # --- Session-vector ablation ---
-
-    def _run_session_ablation(self, prepared: list[PreparedQuery], k: int, weights: dict) -> dict:
-        config = settings.EVAL_SESSION_ABLATION
-        arms = {
-            "with_vector": prepared,
-            "without_vector": [replace(p, session_vector=None) for p in prepared],
-            # Candidate fix: vector_for_scoring returning None unless the turn
-            # is a refinement. p.category is what production would act on --
-            # the predicted category in e2e.
-            "refinement_only": [
-                p if p.category == "refinement" else replace(p, session_vector=None) for p in prepared
-            ],
-        }
-        results = {name: self._evaluate(arm, k, weights, use_llm=False) for name, arm in arms.items()}
-
-        rows = []
-        for i, p in enumerate(prepared):
-            per_arm = {name: results[name]["queries"][i] for name in ABLATION_ARMS}
-            with_ids = [r["tmdb_id"] for r in per_arm["with_vector"]["recommended"]]
-            without_ids = [r["tmdb_id"] for r in per_arm["without_vector"]["recommended"]]
-            rows.append({
-                "id": p.entry["id"],
-                "split": p.entry["split"],
-                "category": p.entry.get("category", "new_search"),
-                "scored_as": p.category,
-                "unscorable": per_arm["with_vector"]["unscorable"],
-                "ndcg": {name: per_arm[name]["metrics"].get("ndcg_at_k") for name in ABLATION_ARMS},
-                "top_changed": with_ids != without_ids,
-                "reranked": per_arm["with_vector"]["pool_max_rerank_score"] is not None,
-            })
-
-        def compare(better, baseline, category=None):
-            deltas = [
-                row["ndcg"][better] - row["ndcg"][baseline]
-                for row in rows
-                if not row["unscorable"] and (category is None or row["category"] == category)
-            ]
-            return paired_bootstrap(
-                deltas, config["bootstrap_resamples"], config["confidence"], config["seed"],
-            )
-
-        categories = sorted({row["category"] for row in rows})
-        comparisons = {
-            "with_minus_without": {
-                "all": compare("with_vector", "without_vector"),
-                **{c: compare("with_vector", "without_vector", c) for c in categories},
-            },
-            "refinement_only_minus_with": {
-                "all": compare("refinement_only", "with_vector"),
-                **{c: compare("refinement_only", "with_vector", c) for c in categories},
-            },
-        }
-        verdict, reason = session_ablation_verdict(
-            comparisons["with_minus_without"]["all"], config["min_ndcg_gain"], config["min_queries"],
-        )
-        report = {
-            "settings": config,
-            "arms": {
-                name: {
-                    "aggregate": results[name]["aggregate"],
-                    "counters": results[name]["counters"],
-                    "queries": results[name]["queries"],
-                }
-                for name in ABLATION_ARMS
-            },
-            "queries": rows,
-            "comparisons": comparisons,
-            "verdict": verdict,
-            "reason": reason,
-        }
-        self._write_session_ablation(report, k)
-        return report
-
-    def _write_session_ablation(self, report: dict, k: int) -> None:
-        rows = report["queries"]
-        self.stdout.write("\n" + "=" * 70)
-        self.stdout.write(f"SESSION VECTOR ABLATION: {len(rows)} multi-turn queries, nDCG@{k}")
-        self.stdout.write(
-            f"\n  {'id':32s} {'category':10s} {'scored as':10s} {'with':>6} {'without':>8} "
-            f"{'ref-only':>8} {'delta':>7}  top-{k}"
-        )
-        for row in rows:
-            if row["unscorable"]:
-                self.stdout.write(f"  {row['id'][:32]:32s} {row['category']:10s} {row['scored_as']:10s} UNSCORED")
-                continue
-            ndcg = row["ndcg"]
-            delta = ndcg["with_vector"] - ndcg["without_vector"]
-            self.stdout.write(
-                f"  {row['id'][:32]:32s} {row['category']:10s} {row['scored_as']:10s} "
-                f"{ndcg['with_vector']:>6.3f} {ndcg['without_vector']:>8.3f} "
-                f"{ndcg['refinement_only']:>8.3f} {delta:>+7.3f}  "
-                f"{'changed' if row['top_changed'] else 'same'}"
-            )
-
-        self.stdout.write(f"\n  {'arm':16s} {'nDCG':>7} {'P@k':>7} {'R@k':>7} {'neg':>5}")
-        for name in ABLATION_ARMS:
-            aggregate = report["arms"][name]["aggregate"]
-            negations = sum(q["metrics"]["negation_violations"] for q in report["arms"][name]["queries"])
-            self.stdout.write(
-                f"  {name:16s} {aggregate.get('ndcg_at_k', 0):>7.4f} "
-                f"{aggregate.get('precision_at_k', 0):>7.4f} {aggregate.get('recall_at_k', 0):>7.4f} {negations:>5}"
-            )
-
-        confidence = report["settings"]["confidence"]
-        titles = {
-            "with_minus_without": "with vector - without (positive = the vector helps)",
-            "refinement_only_minus_with": (
-                "refinement-only - with vector (positive = dropping it on new_search turns helps)"
-            ),
-        }
-        for key, title in titles.items():
-            self.stdout.write(f"\n  {title}")
-            self.stdout.write(
-                f"    {'group':12s} {'n':>3} {'mean':>8} {f'{confidence:.0%} CI':>20} {'win/loss/tie':>13}"
-            )
-            for group, stats in report["comparisons"][key].items():
-                if not stats["n"]:
-                    continue
-                ci = f"[{stats['ci_low']:+.4f}, {stats['ci_high']:+.4f}]"
-                signs = f"{stats['wins']}/{stats['losses']}/{stats['ties']}"
-                self.stdout.write(f"    {group:12s} {stats['n']:>3} {stats['mean']:>+8.4f} {ci:>20} {signs:>13}")
-
-        changed = sum(1 for row in rows if row["top_changed"])
-        self.stdout.write(f"\n  The vector changed the top {k} on {changed} of {len(rows)} queries.")
-        if not all(row["reranked"] for row in rows):
-            self.stdout.write(self.style.WARNING(
-                "  Some queries had no rerank scores: without the reranker, MMR works on the raw "
-                "scorer total, so 'without_vector' is close to, not exactly, a removed signal."
-            ))
-        style = {"KEEP": self.style.SUCCESS, "REMOVE": self.style.ERROR}.get(report["verdict"], self.style.WARNING)
-        self.stdout.write("\n" + style(f"VERDICT: {report['verdict']} -- {report['reason']}"))

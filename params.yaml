@@ -226,14 +226,15 @@ scoring:
   # set, so these weights describe actual influence. Must be >= 0 and sum to
   # 1.0: settings.py refuses to load otherwise.
   weights:
-    semantic: 0.35
-    metadata: 0.25
-    session: 0.25
+    # The session signal was removed (ADR 0010); the remaining weights are the
+    # old ones renormalized proportionally.
+    semantic: 0.4667
+    metadata: 0.3333
     # Biases toward well-known titles. Deliberately a scoring signal, not a
     # hard filter -- TMDB's popularity metric is unbounded and non-linear,
     # so there's no absolute threshold an LLM could reliably pick (unlike
     # vote_average's bounded 0-10 scale, which *is* a hard filter below).
-    popularity: 0.15
+    popularity: 0.2
   # Value given to a signal that is identical across every candidate and so
   # carries no ranking information.
   neutral_score: 0.5
@@ -357,24 +358,6 @@ evaluation:
   # One short JSON reply per call. A judge call that runs past this counts as
   # a judge failure (no substitute score).
   judge_timeout_seconds: 30
-  # Session-vector ablation (manage.py evaluate_scoring --session-ablation):
-  # scores the multi-turn golden entries with and without the session
-  # preference vector and decides whether it earns its place. Paired per-query
-  # nDCG@k deltas with a bootstrap confidence interval on their mean.
-  session_ablation:
-    # Smallest mean nDCG@k gain (with vector minus without) worth the vector's
-    # upkeep. KEEP needs the mean at or above this and the interval above 0;
-    # REMOVE needs the whole interval below it, i.e. a gain this large is ruled
-    # out. Anything between is INCONCLUSIVE.
-    min_ndcg_gain: 0.02
-    # Below this many scored multi-turn queries the verdict is INCONCLUSIVE
-    # whatever the numbers say -- a handful of queries decides nothing.
-    min_queries: 12
-    bootstrap_resamples: 10000
-    # Two-sided confidence level of the interval.
-    confidence: 0.95
-    # Bootstrap RNG seed, so two runs over the same results agree.
-    seed: 0
 
 intent:
   # Minimum cosine similarity for mapping an LLM-produced genre name onto a

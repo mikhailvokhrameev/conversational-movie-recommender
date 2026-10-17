@@ -2,7 +2,7 @@
 
 No DB and no models: the catalog stats, golden-reference resolution, encoder,
 LLM, and pipeline are patched at the command module, so these exercise the
-command's own logic -- intent modes, session vectors, relevance, splits,
+command's own logic -- intent modes, relevance, splits,
 counters, and the run record."""
 
 import json
@@ -99,7 +99,6 @@ class TestE2eIntent:
         assert args[1] == MessageIntent(
             category="new_search", genres=["Drama"],
         ).model_dump(exclude={"category", "semantic_query"})
-        assert args[2] is None
         assert kwargs["query_text"] == "query q1"
         assert record["intent_mode"] == "e2e"
         assert record["queries"][0]["predicted_category"] == "new_search"
@@ -178,35 +177,6 @@ class TestOracleIntent:
         run = _Run(tmp_path, [_entry()])
         run("--intent", "oracle")
         assert run.pipeline.call_args.args[1] == {}
-
-
-class TestSessionVector:
-    def test_no_context_means_no_session_vector(self, tmp_path):
-        run = _Run(tmp_path, [_entry()])
-        run("--intent", "oracle")
-        assert run.pipeline.call_args.args[2] is None
-
-    def test_context_folds_like_production(self, tmp_path):
-        from core.session_manager import update_preference_vector, vector_for_scoring
-
-        run = _Run(tmp_path, [_entry(context=["a sci-fi movie", "with robots"], category="refinement")])
-        run("--intent", "oracle")
-
-        expected = update_preference_vector(None, _vec("a sci-fi movie"))
-        expected = update_preference_vector(expected, _vec("with robots"))
-        expected = vector_for_scoring(expected, _vec("query q1"), "refinement")
-        assert run.pipeline.call_args.args[2] == pytest.approx(expected)
-
-    def test_e2e_uses_predicted_category_for_scoring_vector(self, tmp_path):
-        from core.session_manager import update_preference_vector, vector_for_scoring
-
-        intent = MessageIntent(category="refinement", semantic_query="funnier sci-fi")
-        run = _Run(tmp_path, [_entry(context=["a sci-fi movie"], category="new_search")], intent=intent)
-        run()
-
-        prior = update_preference_vector(None, _vec("a sci-fi movie"))
-        expected = vector_for_scoring(prior, _vec("funnier sci-fi"), "refinement")
-        assert run.pipeline.call_args.args[2] == pytest.approx(expected)
 
 
 class TestRelevance:
@@ -380,112 +350,6 @@ class TestGateReport:
 
 
 
-class TestSessionAblation:
-    """--session-ablation: multi-turn entries scored with, without, and with the
-    vector on refinement turns only, from one parse."""
-
-    def _entries(self):
-        return [
-            _entry("single", "dev"),
-            _entry("ref", "dev", context=["a sci-fi movie"], category="refinement"),
-            _entry("switch", "test", context=["some horror"], category="new_search"),
-        ]
-
-    def _run(self, tmp_path, entries=None, pipeline=None, *args):
-        run = _Run(tmp_path, entries or self._entries())
-        if pipeline is not None:
-            run.pipeline.side_effect = pipeline
-        run("--session-ablation", "--intent", "oracle", *args)
-        return run
-
-    def _vectors_by_query(self, run):
-        """{query_text: [session_vector passed on each pipeline call]}"""
-        seen = {}
-        for call in run.pipeline.call_args_list:
-            seen.setdefault(call.kwargs["query_text"], []).append(call.args[2])
-        return seen
-
-    def test_defaults_to_all_splits_and_only_multi_turn_entries(self, tmp_path):
-        run = self._run(tmp_path)
-        assert run.record["mode"] == "session_ablation"
-        assert run.record["split"] == "all"
-        assert [q["id"] for q in run.record["session_ablation"]["queries"]] == ["ref", "switch"]
-
-    def test_each_arm_gets_the_right_vector(self, tmp_path):
-        run = self._run(tmp_path)
-        vectors = self._vectors_by_query(run)
-        # Arm order: with_vector, without_vector, refinement_only.
-        ref_with, ref_without, ref_only = vectors["query ref"]
-        assert ref_with is not None and ref_without is None and ref_only == ref_with
-        switch_with, switch_without, switch_only = vectors["query switch"]
-        assert switch_with is not None and switch_without is None and switch_only is None
-
-    def test_e2e_parses_each_query_once_for_all_arms(self, tmp_path):
-        run = _Run(tmp_path, self._entries())
-        run("--session-ablation")
-        assert run.classify.await_count == 2
-        assert run.pipeline.call_count == 2 * 3
-
-    def test_refinement_only_follows_the_predicted_category_in_e2e(self, tmp_path):
-        intent = MessageIntent(category="refinement", semantic_query="rewritten")
-        run = _Run(tmp_path, [_entry("switch", context=["some horror"], category="new_search")], intent=intent)
-        run("--session-ablation")
-        # Labelled new_search, but the parse said refinement -- production would
-        # keep the vector, so the refinement-only arm does too.
-        with_vector, _, refinement_only = [c.args[2] for c in run.pipeline.call_args_list]
-        assert with_vector is not None
-        assert refinement_only == with_vector
-
-    def test_paired_deltas_and_verdict_are_recorded(self, tmp_path, settings):
-        settings.EVAL_SESSION_ABLATION = {**settings.EVAL_SESSION_ABLATION, "min_queries": 1}
-        hit, miss = _movie(1), _movie(9)
-
-        def pipeline(query_embedding, intent, session_vector, **kwargs):
-            # The vector puts the golden movie first; without it, it drops out.
-            top = [hit, miss] if session_vector is not None else [miss, _movie(8)]
-            return top, top
-
-        run = self._run(tmp_path, pipeline=pipeline)
-        report = run.record["session_ablation"]
-        overall = report["comparisons"]["with_minus_without"]["all"]
-        assert overall["n"] == 2 and overall["wins"] == 2 and overall["mean"] > 0
-        assert report["comparisons"]["with_minus_without"]["refinement"]["n"] == 1
-        assert report["comparisons"]["with_minus_without"]["new_search"]["n"] == 1
-        assert all(row["top_changed"] for row in report["queries"])
-        assert report["verdict"] == "KEEP"
-        assert "VERDICT: KEEP" in run.stdout
-
-    def test_identical_results_rule_out_a_gain(self, tmp_path, settings):
-        settings.EVAL_SESSION_ABLATION = {**settings.EVAL_SESSION_ABLATION, "min_queries": 1}
-        run = self._run(tmp_path)
-        report = run.record["session_ablation"]
-        assert report["comparisons"]["with_minus_without"]["all"]["ties"] == 2
-        assert report["verdict"] == "REMOVE"
-        assert not any(row["top_changed"] for row in report["queries"])
-
-    def test_too_few_queries_is_inconclusive(self, tmp_path):
-        run = self._run(tmp_path)
-        assert run.record["session_ablation"]["verdict"] == "INCONCLUSIVE"
-
-    def test_unscorable_query_is_left_out_of_the_deltas(self, tmp_path):
-        run = _Run(tmp_path, self._entries(), grades={})
-        run("--session-ablation", "--intent", "oracle")
-        assert run.record["session_ablation"]["comparisons"]["with_minus_without"]["all"]["n"] == 0
-
-    def test_no_multi_turn_entries_is_an_error(self, tmp_path):
-        with pytest.raises(CommandError, match="multi-turn"):
-            _Run(tmp_path, [_entry("single")])("--session-ablation", "--intent", "oracle")
-
-    @pytest.mark.parametrize("other", ["--sweep", "--gate-report"])
-    def test_cannot_combine_with_other_modes(self, tmp_path, other):
-        with pytest.raises(CommandError, match="separate run"):
-            _Run(tmp_path, self._entries())("--session-ablation", other)
-
-    def test_refuses_the_llm_judge(self, tmp_path):
-        with pytest.raises(CommandError, match="llm-judge"):
-            _Run(tmp_path, self._entries())("--session-ablation", "--llm-judge")
-
-
 class TestEmptyResults:
     def test_counts_queries_the_gate_left_empty(self, tmp_path):
         run = _Run(tmp_path, [_entry()], movies=[])
@@ -498,33 +362,39 @@ class TestEmptyResults:
 class TestScoringWeights:
     """Swept and --weights values must sum to 1.0 so a winner can go into params.yaml."""
 
-    @pytest.mark.parametrize("triple", [(0.7, 0.2, 0.1), (0.3, 0.4, 0.3), (0.5, 0.3, 0.2), (3, 1, 1)])
-    def test_sums_to_one_with_popularity_held(self, triple, settings):
+    @pytest.mark.parametrize("pair", [(0.8, 0.2), (0.3, 0.7), (0.5, 0.5), (3, 1)])
+    def test_sums_to_one_with_popularity_held(self, pair, settings):
         from movies.management.commands.evaluate_scoring import _scoring_weights
         from recommender.settings import _validate_score_weights
-        weights = _scoring_weights(*triple)
+        weights = _scoring_weights(*pair)
+        assert set(weights) == {"semantic", "metadata", "popularity"}
         assert weights["popularity"] == settings.SCORE_WEIGHTS["popularity"]
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-9)
         _validate_score_weights(weights)
 
     def test_keeps_the_proportions(self):
         from movies.management.commands.evaluate_scoring import _scoring_weights
-        weights = _scoring_weights(0.6, 0.2, 0.2)
+        weights = _scoring_weights(0.6, 0.2)
         assert weights["semantic"] / weights["metadata"] == pytest.approx(3.0, rel=1e-3)
-        assert weights["metadata"] == pytest.approx(weights["session"], abs=1e-3)
+
+
+class TestSessionAblationFlagIsGone:
+    def test_session_ablation_flag_is_gone(self, tmp_path):
+        with pytest.raises(CommandError):
+            _Run(tmp_path, [_entry()])("--session-ablation")
 
 
 class TestRunRecord:
     def test_contains_provenance_and_counters(self, tmp_path, settings):
         run = _Run(tmp_path, [_entry()])
-        record = run("--k", "2", "--weights", "0.5,0.3,0.2")
+        record = run("--k", "2", "--weights", "0.6,0.4")
 
         assert len(record["params_sha256"]) == 64
         assert set(record["git"]) == {"commit", "dirty"}
         assert record["k"] == 2
-        assert record["options"]["weights"] == "0.5,0.3,0.2"
+        assert record["options"]["weights"] == "0.6,0.4"
         pop = settings.SCORE_WEIGHTS["popularity"]
-        assert record["weights"]["semantic"] == pytest.approx(0.5 * (1 - pop), abs=1e-4)
+        assert record["weights"]["semantic"] == pytest.approx(0.6 * (1 - pop), abs=1e-4)
         assert record["weights"]["popularity"] == pop
         assert sum(record["weights"].values()) == pytest.approx(1.0, abs=1e-9)
         assert record["timestamp"]
@@ -553,8 +423,8 @@ class TestRunRecord:
         assert json.loads(written[0].read_text())["mode"] == "eval"
 
     def test_bad_weights_rejected(self, tmp_path):
-        with pytest.raises(CommandError, match="weights"):
-            _Run(tmp_path, [_entry()])("--weights", "0.5,0.5")
+        with pytest.raises(CommandError, match="--weights needs two numbers: semantic,metadata"):
+            _Run(tmp_path, [_entry()])("--weights", "0.5,0.3,0.2")
 
 
 class TestGitState:

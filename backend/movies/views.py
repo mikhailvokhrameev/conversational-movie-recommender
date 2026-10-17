@@ -20,7 +20,6 @@ from core.ollama_client import (
 from core.pipeline import generate_and_score
 from core.session_manager import (
     build_movie_facts, track_explicit_preferences, update_preference_vector,
-    vector_for_scoring,
 )
 from .models import ChatSession, Movie
 
@@ -80,9 +79,8 @@ async def _get_or_create_session(session_id: str | None, token: str) -> ChatSess
 def _save_session(session: ChatSession, query: str, intent: dict,
                   query_embedding: list[float], movies: list[dict], category: str):
     """The EMA is recomputed here from the *locked* row, with the refinement alpha
-    for a refinement. Outside a race that equals the vector the turn was scored
-    with (`vector_for_scoring`); recomputing under the lock, rather than storing
-    the scoring-time vector, keeps concurrent turns from overwriting each other."""
+    for a refinement. Recomputing under the lock keeps concurrent turns from
+    overwriting each other."""
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
         alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
@@ -115,10 +113,10 @@ def _append_history(session: ChatSession, role: str, content: str,
 
 
 @sync_to_async(thread_sensitive=False)
-def _generate_and_score(query_embedding, intent, session_vector, query_text=""):
+def _generate_and_score(query_embedding, intent, query_text=""):
     """Async wrapper over `core.pipeline.generate_and_score` -- the same function
     `evaluate_scoring` runs, so what is evaluated is what ships."""
-    return generate_and_score(query_embedding, intent, session_vector, query_text=query_text)
+    return generate_and_score(query_embedding, intent, query_text=query_text)
 
 
 def _log_turn_latency(category, **stage_ms):
@@ -160,10 +158,7 @@ class ChatView(View):
 
     async def _handle_search_like(self, session, message, intent, classify_parse_ms):
         """Handles both `new_search` and `refinement`: identical pipeline, differing
-        only in the preference vector used for scoring (see `vector_for_scoring`):
-        a refinement scores against the already-updated high-alpha vector, a
-        new_search against the pre-turn one. `_save_session` recomputes the stored
-        vector itself under the row lock."""
+        only in the alpha `_save_session` uses to update the stored vector."""
         # Captured before _save_session/_append_history run below -- both write
         # via a separately-fetched row and never mutate this in-memory `session`,
         # so this deliberately reflects history *before* this turn: the current
@@ -176,11 +171,9 @@ class ChatView(View):
             embed_ms = (time.perf_counter() - t_embed) * 1000
 
             intent_dict = intent.model_dump(exclude={"category", "semantic_query"})
-            current_vector = [float(x) for x in session.preference_vector] if session.preference_vector is not None else None
-            session_vector = vector_for_scoring(current_vector, query_embedding, intent.category)
 
             t_score = time.perf_counter()
-            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, session_vector, query_text=message)
+            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, query_text=message)
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]

@@ -8,7 +8,7 @@ from recommender.settings import (
     _validate_score_weights,
 )
 
-GOOD_WEIGHTS = {"semantic": 0.35, "metadata": 0.25, "session": 0.25, "popularity": 0.15}
+GOOD_WEIGHTS = {"semantic": 0.4667, "metadata": 0.3333, "popularity": 0.2}
 
 
 class TestScoreWeights:
@@ -20,8 +20,7 @@ class TestScoreWeights:
 
     def test_accepts_a_sum_of_one_within_tolerance(self):
         _validate_score_weights(GOOD_WEIGHTS)
-        _validate_score_weights({"a": 1, "b": 0})
-        _validate_score_weights({"a": 0.5 + 5e-7, "b": 0.5})
+        _validate_score_weights({**GOOD_WEIGHTS, "semantic": 0.4667 + 5e-7})
 
     @pytest.mark.parametrize("scale", [0.9, 1.1, 2.0])
     def test_rejects_a_sum_other_than_one(self, scale):
@@ -31,16 +30,21 @@ class TestScoreWeights:
 
     def test_rejects_a_sum_just_outside_tolerance(self):
         with pytest.raises(ValueError, match="sum to 1.0"):
-            _validate_score_weights({"a": 0.5 + 1e-5, "b": 0.5})
+            _validate_score_weights({**GOOD_WEIGHTS, "semantic": 0.4667 + 1e-5})
 
     def test_rejects_a_negative_weight_even_when_the_sum_is_one(self):
         with pytest.raises(ValueError, match=r"scoring.weights.popularity"):
-            _validate_score_weights({"semantic": 1.15, "popularity": -0.15})
+            _validate_score_weights({"semantic": 0.95, "metadata": 0.2, "popularity": -0.15})
 
     @pytest.mark.parametrize("bad", ["0.5", None, True, [0.5]])
     def test_rejects_non_numeric_weights(self, bad):
         with pytest.raises(ValueError, match="scoring.weights.b"):
-            _validate_score_weights({"a": 0.5, "b": bad})
+            _validate_score_weights({**GOOD_WEIGHTS, "b": bad})
+
+    def test_rejects_unknown_or_missing_signal(self):
+        for weights in ({**GOOD_WEIGHTS, "session": 0.0}, {"semantic": 0.5, "metadata": 0.5}):
+            with pytest.raises(ValueError, match=r"scoring\.weights.*semantic, metadata, popularity"):
+                _validate_score_weights(weights)
 
     @pytest.mark.parametrize("bad", [None, {}, [0.5, 0.5]])
     def test_rejects_a_missing_or_malformed_mapping(self, bad):

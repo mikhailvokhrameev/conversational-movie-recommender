@@ -2,7 +2,7 @@ from django.conf import settings
 
 from core.embedding_service import cosine_similarity
 
-SIGNALS = ("semantic", "metadata", "session", "popularity")
+SIGNALS = ("semantic", "metadata", "popularity")
 
 # scoring.neutral_score and diversification.* come from params.yaml.
 # Avoiding division by a near-zero range
@@ -13,7 +13,6 @@ def score_candidates(
     candidates: list[dict],
     query_embedding: list[float],
     intent: dict,
-    session_vector: list[float] | None = None,
     weights: dict | None = None,
 ) -> list[dict]:
     """Score every candidate, normalizing each signal across the whole set.
@@ -33,10 +32,6 @@ def score_candidates(
     raw = {
         "semantic": [_semantic_score(c, query_embedding) for c in candidates],
         "metadata": [_metadata_score(c, intent) for c in candidates],
-        "session": [
-            _session_score(c, session_vector) if session_vector else 0.0
-            for c in candidates
-        ],
         "popularity": [_popularity_score(c) for c in candidates],
     }
     normalized = {signal: normalize_scores(values) for signal, values in raw.items()}
@@ -159,10 +154,6 @@ def _metadata_score(movie: dict, intent: dict) -> float:
 
     overlap = len(intent_genres & movie_genres)
     return overlap / len(intent_genres)
-
-
-def _session_score(movie: dict, session_vector: list[float]) -> float:
-    return _embedding_similarity(session_vector, movie)
 
 
 def _popularity_score(movie: dict) -> float:

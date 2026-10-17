@@ -49,7 +49,6 @@ def apply_relevance_gate(candidates: list[dict], min_score: float | None) -> lis
 def generate_and_score(
     query_embedding: list[float],
     intent: dict,
-    session_vector: list[float] | None,
     query_text: str = "",
     weights: dict | None = None,
     top_n: int | None = None,
@@ -67,7 +66,7 @@ def generate_and_score(
     the full reranked pool.
     """
     candidates = generate_candidates(query_embedding, intent, query_text=query_text)
-    scored = score_candidates(candidates, query_embedding, intent, session_vector, weights=weights)
+    scored = score_candidates(candidates, query_embedding, intent, weights=weights)
     reranked = rerank_candidates(query_text, scored)
     gated = apply_relevance_gate(reranked, settings.RERANK_MIN_SCORE) if apply_gate else reranked
     top_movies = mmr_diversify(gated, top_n=top_n if top_n is not None else settings.TOP_N)
