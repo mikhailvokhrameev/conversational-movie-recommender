@@ -525,7 +525,6 @@ class TestChatSSENoMatch:
             {"role": "assistant", "content": NO_MATCH_MESSAGE},
         ]
         assert session.turn_count == 1
-        assert session.preference_vector is not None
 
     @pytest.mark.asyncio
     async def test_fewer_than_top_n_movies_take_the_normal_explanation_path(self):
@@ -576,3 +575,9 @@ class TestChatSSERefinement:
             text = body.decode()
             assert "event: movies" in text
             assert "event: done" in text
+
+
+def test_chat_session_has_no_preference_vector():
+    from movies.models import ChatSession
+
+    assert "preference_vector" not in {f.name for f in ChatSession._meta.get_fields()}

@@ -339,8 +339,6 @@ def _validate_history_limits(session: dict) -> None:
 
 _session = PARAMS["session"]
 _validate_history_limits(_session)
-SESSION_ALPHA = _session["alpha"]
-SESSION_ALPHA_REFINEMENT = _session["alpha_refinement"]
 SESSION_TTL_HOURS = _session["ttl_hours"]
 SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]

@@ -1,13 +1,12 @@
 import asyncio
 import json
 import time
-from unittest.mock import patch, AsyncMock
 
 import pytest
 from django.conf import settings
 from django.test import AsyncRequestFactory
 
-from core.session_manager import update_preference_vector
+from core.session_manager import track_explicit_preferences
 from movies.views import (
     ChatView, SessionHistoryView, _get_or_create_session, _save_session, _serialize_movie,
 )
@@ -132,130 +131,37 @@ class TestGetOrCreateSession:
         assert session.pk != existing.pk
 
 
-@pytest.mark.django_db
-class TestSaveSession:
-    @pytest.mark.asyncio
-    async def test_refinement_uses_higher_alpha_than_new_search(self):
-        from movies.models import ChatSession
-
-        existing_vector = [0.1] * 1024
-        new_embedding = [0.9] + [0.0] * 1023
-
-        session_new_search = await ChatSession.objects.acreate(preference_vector=existing_vector)
-        await _save_session(session_new_search, "q", {}, new_embedding, [], category="new_search")
-        await session_new_search.arefresh_from_db()
-
-        session_refinement = await ChatSession.objects.acreate(preference_vector=existing_vector)
-        await _save_session(session_refinement, "q", {}, new_embedding, [], category="refinement")
-        await session_refinement.arefresh_from_db()
-
-        expected_new_search = update_preference_vector(existing_vector, new_embedding, alpha=settings.SESSION_ALPHA)
-        expected_refinement = update_preference_vector(existing_vector, new_embedding, alpha=settings.SESSION_ALPHA_REFINEMENT)
-
-        assert list(session_new_search.preference_vector) == pytest.approx(expected_new_search)
-        assert list(session_refinement.preference_vector) == pytest.approx(expected_refinement)
-        assert list(session_new_search.preference_vector) != pytest.approx(list(session_refinement.preference_vector))
-
-
 class TestSaveSessionConcurrency:
     @pytest.mark.django_db(transaction=True)
     @pytest.mark.asyncio
     async def test_concurrent_saves_both_apply_under_row_lock(self, monkeypatch):
-        """Two concurrent saves must compose (v0 -> e1 -> e2 in some order), not
-        overwrite each other. The slow wrapper below widens the read-modify-write
-        window so the test fails deterministically if the row lock is removed:
-        without it both threads read v0 and one update is lost."""
+        """Two concurrent saves must compose, not overwrite each other. The slow
+        wrapper widens the read-modify-write window so the test fails
+        deterministically if the row lock is removed: without it both threads
+        read the same preferences and one update is lost."""
         from movies.models import ChatSession
 
-        real_update = update_preference_vector
+        real_track = track_explicit_preferences
 
-        def _slow_update(*args, **kwargs):
-            result = real_update(*args, **kwargs)
+        def _slow_track(*args, **kwargs):
+            result = real_track(*args, **kwargs)
             time.sleep(0.2)
             return result
 
-        monkeypatch.setattr("movies.views.update_preference_vector", _slow_update)
+        monkeypatch.setattr("movies.views.track_explicit_preferences", _slow_track)
 
-        v0 = [0.1] * 1024
-        e1 = [0.9] + [0.0] * 1023
-        e2 = [0.0, 0.9] + [0.0] * 1022
-        session = await ChatSession.objects.acreate(preference_vector=v0)
+        session = await ChatSession.objects.acreate()
 
         await asyncio.gather(
-            _save_session(session, "q1", {}, e1, [], category="new_search"),
-            _save_session(session, "q2", {}, e2, [], category="new_search"),
+            _save_session(session, "q1", {"genres": ["Drama"]}, []),
+            _save_session(session, "q2", {"genres": ["Comedy"]}, []),
         )
         await session.arefresh_from_db()
 
-        order_12 = real_update(real_update(v0, e1), e2)
-        order_21 = real_update(real_update(v0, e2), e1)
-        final = list(session.preference_vector)
-        assert final == pytest.approx(order_12) or final == pytest.approx(order_21)
+        assert set(session.preferences["liked_genres"]) == {"Drama", "Comedy"}
         assert {e["content"] for e in session.history if e["role"] == "user"} == {"q1", "q2"}
         assert len(session.history) == 2
         assert session.turn_count == 2
-
-
-@pytest.mark.django_db
-class TestPreferenceVectorUsedForScoring:
-    @staticmethod
-    async def _run_turn(category, existing_vector, query_embedding):
-        from core.ollama_client import MessageIntent
-        from movies.models import ChatSession
-
-        session = await ChatSession.objects.acreate(preference_vector=existing_vector)
-        intent = MessageIntent(category=category, semantic_query="q")
-
-        async def _classify(message, history=None):
-            return intent
-
-        generate = AsyncMock(return_value=([], []))
-        factory = AsyncRequestFactory()
-        request = factory.post(
-            "/api/chat/",
-            data=json.dumps({"message": "q", "session_id": str(session.session_id)}),
-            content_type="application/json",
-            headers={"X-Session-Token": session.session_token},
-        )
-
-        async def _no_parts(query, movies, history=None):
-            return
-            yield
-
-        with patch("movies.views.aclassify_and_parse", _classify), \
-             patch("movies.views.encode_query", return_value=query_embedding), \
-             patch("movies.views._generate_and_score", generate), \
-             patch("movies.views._append_history", AsyncMock()), \
-             patch("movies.views.astream_explanation_parts", _no_parts):
-            response = await ChatView.as_view()(request)
-            async for _ in response.streaming_content:
-                pass
-
-        await session.arefresh_from_db()
-        return generate.await_args.args[2], session
-
-    @pytest.mark.asyncio
-    async def test_refinement_scores_with_updated_vector_and_saves_the_same(self):
-        existing = [0.1] * 1024
-        query = [0.9] + [0.0] * 1023
-
-        scored, session = await self._run_turn("refinement", existing, query)
-
-        expected = update_preference_vector(existing, query, alpha=settings.SESSION_ALPHA_REFINEMENT)
-        assert list(scored) == pytest.approx(expected)
-        assert list(session.preference_vector) == pytest.approx(list(scored))
-
-    @pytest.mark.asyncio
-    async def test_new_search_scores_with_pre_turn_vector(self):
-        existing = [0.1] * 1024
-        query = [0.9] + [0.0] * 1023
-
-        scored, session = await self._run_turn("new_search", existing, query)
-
-        assert list(scored) == pytest.approx(existing)
-        assert list(session.preference_vector) == pytest.approx(
-            update_preference_vector(existing, query, alpha=settings.SESSION_ALPHA)
-        )
 
 
 @pytest.mark.django_db

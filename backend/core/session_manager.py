@@ -1,65 +1,8 @@
-"""Session-based preference learning via exponential moving average (EMA).
+"""Session state helpers: explicit-preference tracking and per-movie history facts.
 
-Maintains one preference vector per conversation session, sized to
-embedding.dimensions. Each query embedding is blended into the running vector
-with alpha, then L2-normalized so cosine similarity stays comparable
-regardless of turn count.
-
-Alpha lives in params.yaml under session.alpha. Tune it with:
-  manage.py evaluate_scoring --sweep
+A session stores no embedding. Each turn's retrieval is driven by the query
+itself (the LLM's `semantic_query` plus, in the lexical leg, the user's message).
 """
-
-import numpy as np
-from django.conf import settings
-
-
-
-def update_preference_vector(
-    current_vector: list[float] | None,
-    query_embedding: list[float],
-    alpha: float | None = None,
-) -> list[float]:
-    if alpha is None:
-        alpha = settings.SESSION_ALPHA
-
-    query_vec = np.array(query_embedding)
-
-    if current_vector is None:
-        normalized = query_vec / (np.linalg.norm(query_vec) or 1.0)
-        return normalized.tolist()
-
-    current_vec = np.array(current_vector)
-    updated = alpha * query_vec + (1 - alpha) * current_vec
-
-    norm = np.linalg.norm(updated)
-    if norm > 0:
-        updated = updated / norm
-
-    return updated.tolist()
-
-
-def vector_for_scoring(
-    current_vector: list[float] | None,
-    query_embedding: list[float],
-    category: str,
-) -> list[float] | None:
-    """Preference vector the `session` scoring signal should use on this turn.
-
-    A refinement ("no horror", "something funnier") must steer the very turn it
-    is issued on, so the high-alpha EMA update is applied *before* scoring
-    rather than only afterwards. A new_search keeps the pre-turn vector: the
-    current query is already in the semantic signal, so folding it into the
-    session signal too would count it twice. With no vector yet (first turn)
-    there is nothing stale to correct, so None stays None.
-
-    Scoring-only: the stored vector is recomputed from the locked row in
-    `_save_session`, which matches this one outside a concurrent-turn race.
-    """
-    if category != "refinement" or current_vector is None:
-        return current_vector
-    return update_preference_vector(
-        current_vector, query_embedding, alpha=settings.SESSION_ALPHA_REFINEMENT,
-    )
 
 
 def track_explicit_preferences(

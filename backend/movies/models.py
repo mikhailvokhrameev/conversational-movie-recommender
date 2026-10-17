@@ -117,9 +117,6 @@ class EmbeddingIndex(models.Model):
 class ChatSession(models.Model):
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
     session_token = models.CharField(max_length=64, default=generate_token, db_index=True)
-    preference_vector = VectorField(
-        dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
-    )
     preferences = models.JSONField(default=dict)
     history = models.JSONField(default=list)
     turn_count = models.IntegerField(default=0)

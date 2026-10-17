@@ -164,7 +164,7 @@ embedding:
   # content fine even though the product itself is English now.
   #
   # CHANGING EITHER VALUE IS NOT FREE. `dimensions` is baked into the
-  # Movie.embedding and ChatSession.preference_vector columns, so a change
+  # Movie.embedding column, so a change
   # needs a schema migration AND a full re-run of
   # `manage.py generate_embeddings` over the catalog. Existing vectors are
   # not convertible between models or dimensions.
@@ -304,16 +304,6 @@ reranking:
   description_chars: 400
 
 session:
-  # EMA weight on the newest query when updating the preference vector.
-  alpha: 0.7
-  # EMA weight used instead of `alpha` on turns classified as `refinement`
-  # ("something funnier?", "no horror"). Explicit corrections should dominate
-  # the session vector, not get diluted 70/30 by whatever the user asked for
-  # one turn ago -- hard filters (negations, exclusions) already drop
-  # disallowed genres outright, but the EMA vector still feeds the
-  # `session` scoring signal, so a low alpha here let a stale direction
-  # bias ranking among the movies that survive the filters.
-  alpha_refinement: 0.92
   ttl_hours: 24
   # Cap on how much conversation history gets replayed into every LLM call
   # (classification, conversational replies, explanations) as native

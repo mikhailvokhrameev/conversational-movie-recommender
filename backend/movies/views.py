@@ -19,7 +19,7 @@ from core.ollama_client import (
 )
 from core.pipeline import generate_and_score
 from core.session_manager import (
-    build_movie_facts, track_explicit_preferences, update_preference_vector,
+    build_movie_facts, track_explicit_preferences,
 )
 from .models import ChatSession, Movie
 
@@ -76,19 +76,11 @@ async def _get_or_create_session(session_id: str | None, token: str) -> ChatSess
 
 
 @sync_to_async(thread_sensitive=False)
-def _save_session(session: ChatSession, query: str, intent: dict,
-                  query_embedding: list[float], movies: list[dict], category: str):
-    """The EMA is recomputed here from the *locked* row, with the refinement alpha
-    for a refinement. Recomputing under the lock keeps concurrent turns from
-    overwriting each other."""
+def _save_session(session: ChatSession, query: str, intent: dict, movies: list[dict]):
+    """Read-modify-write under a row lock, so concurrent turns compose instead
+    of overwriting each other's preferences, history and turn count."""
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
-        alpha = settings.SESSION_ALPHA_REFINEMENT if category == "refinement" else None
-        fresh.preference_vector = update_preference_vector(
-            [float(x) for x in fresh.preference_vector] if fresh.preference_vector is not None else None,
-            query_embedding,
-            alpha=alpha,
-        )
         fresh.preferences = track_explicit_preferences(fresh.preferences, intent)
         fresh.history = list(fresh.history) + [{"role": "user", "content": query}]
         fresh.turn_count += 1
@@ -157,8 +149,7 @@ class ChatView(View):
             return await self._handle_search_like(session, message, intent, classify_parse_ms)
 
     async def _handle_search_like(self, session, message, intent, classify_parse_ms):
-        """Handles both `new_search` and `refinement`: identical pipeline, differing
-        only in the alpha `_save_session` uses to update the stored vector."""
+        """Handles both `new_search` and `refinement`: one identical pipeline."""
         # Captured before _save_session/_append_history run below -- both write
         # via a separately-fetched row and never mutate this in-memory `session`,
         # so this deliberately reflects history *before* this turn: the current
@@ -177,9 +168,7 @@ class ChatView(View):
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]
-            await _save_session(
-                session, message, intent_dict, query_embedding, top_movies, category=intent.category,
-            )
+            await _save_session(session, message, intent_dict, top_movies)
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)
