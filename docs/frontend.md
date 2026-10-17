@@ -38,7 +38,7 @@ frontend/
 │       ├── ChatInput.jsx      Textarea + send button form
 │       ├── ChatMessage.jsx    User bubble or assistant response (intro text + carousel)
 │       ├── MovieCarousel.jsx  Fanned poster deck, arrows, dots, description panel
-│       ├── WelcomeScreen.jsx  Empty state: arc-text heading, input, suggestion chips, poster arc hero
+│       ├── WelcomeScreen.jsx  Empty state: arc-text heading, input, poster arc hero
 │       └── PosterArc.jsx      Decorative rotating arc of static poster images (welcome screen only)
 └── public/
     └── favicon.svg

@@ -50,6 +50,10 @@ export default function WelcomeScreen({ onSuggestionClick }) {
             <input
               id="hero-input"
               type="text"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               value={text}
               onChange={e => setText(e.target.value)}
               placeholder={PLACEHOLDER}

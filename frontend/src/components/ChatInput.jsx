@@ -24,6 +24,10 @@ export default function ChatInput({ onSend, disabled }) {
       <textarea
         id="chat-input"
         ref={inputRef}
+        autoComplete="off"
+        autoCorrect="off"
+        autoCapitalize="off"
+        spellCheck={false}
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={handleKeyDown}

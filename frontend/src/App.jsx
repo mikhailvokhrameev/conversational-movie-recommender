@@ -20,7 +20,7 @@ export default function App() {
   }, [messages])
 
   return (
-    <div className="flex flex-col h-svh">
+    <div className="flex flex-col h-dvh overflow-hidden">
       <Header
         onHomeClick={reset}
         themeSlot={<ThemeToggle theme={theme} onToggle={toggleTheme} />}
@@ -31,7 +31,7 @@ export default function App() {
       ) : (
         <main
           ref={scrollRef}
-          className="flex-1 overflow-y-auto px-4 py-6"
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-6"
         >
           <div className="max-w-2xl mx-auto space-y-6">
             {messages.map((msg, i) => (
@@ -47,7 +47,7 @@ export default function App() {
       )}
 
       {!isEmpty && (
-        <footer className="sticky bottom-0 bg-bg/80 backdrop-blur-sm border-t border-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <footer className="shrink-0 bg-bg/80 backdrop-blur-sm border-t border-surface px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="max-w-2xl mx-auto">
             <ChatInput onSend={sendMessage} disabled={isStreaming} />
           </div>

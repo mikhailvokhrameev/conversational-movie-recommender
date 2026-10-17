@@ -41,8 +41,14 @@ body {
   transition: background-color 0.2s, color 0.2s;
 }
 
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 #root {
-  min-height: 100svh;
+  height: 100%;
   display: flex;
   flex-direction: column;
 }
