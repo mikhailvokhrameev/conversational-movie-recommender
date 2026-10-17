@@ -361,10 +361,34 @@ def _validate_evaluation(evaluation: dict) -> None:
         )
 
 
+def _validate_session_ablation(ablation: dict) -> None:
+    """Fail at load on an evaluation.session_ablation value that would make the
+    verdict meaningless: a negative gain bar, no queries required, no resamples,
+    or a confidence level outside (0, 1)."""
+    def is_number(value):
+        return not isinstance(value, bool) and isinstance(value, (int, float))
+
+    def is_int(value):
+        return not isinstance(value, bool) and isinstance(value, int)
+
+    prefix = "params.yaml: evaluation.session_ablation"
+    if not is_number(ablation["min_ndcg_gain"]) or ablation["min_ndcg_gain"] < 0:
+        raise ValueError(f"{prefix}.min_ndcg_gain must be a number >= 0 (got {ablation['min_ndcg_gain']!r}).")
+    for key in ("min_queries", "bootstrap_resamples"):
+        if not is_int(ablation[key]) or ablation[key] < 1:
+            raise ValueError(f"{prefix}.{key} must be an integer >= 1 (got {ablation[key]!r}).")
+    if not is_number(ablation["confidence"]) or not 0 < ablation["confidence"] < 1:
+        raise ValueError(f"{prefix}.confidence must be a number in (0, 1) (got {ablation['confidence']!r}).")
+    if not is_int(ablation["seed"]):
+        raise ValueError(f"{prefix}.seed must be an integer (got {ablation['seed']!r}).")
+
+
 _evaluation = PARAMS["evaluation"]
 _validate_evaluation(_evaluation)
+_validate_session_ablation(_evaluation["session_ablation"])
 EVAL_JUDGE_DESCRIPTION_CHARS = _evaluation["judge_description_chars"]
 EVAL_JUDGE_TIMEOUT_SECONDS = _evaluation["judge_timeout_seconds"]
+EVAL_SESSION_ABLATION = dict(_evaluation["session_ablation"])
 
 _catalog = PARAMS["catalog"]
 IMPORT_BATCH_SIZE = _catalog["import_batch_size"]

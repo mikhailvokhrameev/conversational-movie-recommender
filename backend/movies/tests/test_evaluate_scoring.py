@@ -379,6 +379,113 @@ class TestGateReport:
         assert settings.PARAMS_FILE.read_bytes() == before
 
 
+
+class TestSessionAblation:
+    """--session-ablation: multi-turn entries scored with, without, and with the
+    vector on refinement turns only, from one parse."""
+
+    def _entries(self):
+        return [
+            _entry("single", "dev"),
+            _entry("ref", "dev", context=["a sci-fi movie"], category="refinement"),
+            _entry("switch", "test", context=["some horror"], category="new_search"),
+        ]
+
+    def _run(self, tmp_path, entries=None, pipeline=None, *args):
+        run = _Run(tmp_path, entries or self._entries())
+        if pipeline is not None:
+            run.pipeline.side_effect = pipeline
+        run("--session-ablation", "--intent", "oracle", *args)
+        return run
+
+    def _vectors_by_query(self, run):
+        """{query_text: [session_vector passed on each pipeline call]}"""
+        seen = {}
+        for call in run.pipeline.call_args_list:
+            seen.setdefault(call.kwargs["query_text"], []).append(call.args[2])
+        return seen
+
+    def test_defaults_to_all_splits_and_only_multi_turn_entries(self, tmp_path):
+        run = self._run(tmp_path)
+        assert run.record["mode"] == "session_ablation"
+        assert run.record["split"] == "all"
+        assert [q["id"] for q in run.record["session_ablation"]["queries"]] == ["ref", "switch"]
+
+    def test_each_arm_gets_the_right_vector(self, tmp_path):
+        run = self._run(tmp_path)
+        vectors = self._vectors_by_query(run)
+        # Arm order: with_vector, without_vector, refinement_only.
+        ref_with, ref_without, ref_only = vectors["query ref"]
+        assert ref_with is not None and ref_without is None and ref_only == ref_with
+        switch_with, switch_without, switch_only = vectors["query switch"]
+        assert switch_with is not None and switch_without is None and switch_only is None
+
+    def test_e2e_parses_each_query_once_for_all_arms(self, tmp_path):
+        run = _Run(tmp_path, self._entries())
+        run("--session-ablation")
+        assert run.classify.await_count == 2
+        assert run.pipeline.call_count == 2 * 3
+
+    def test_refinement_only_follows_the_predicted_category_in_e2e(self, tmp_path):
+        intent = MessageIntent(category="refinement", semantic_query="rewritten")
+        run = _Run(tmp_path, [_entry("switch", context=["some horror"], category="new_search")], intent=intent)
+        run("--session-ablation")
+        # Labelled new_search, but the parse said refinement -- production would
+        # keep the vector, so the refinement-only arm does too.
+        with_vector, _, refinement_only = [c.args[2] for c in run.pipeline.call_args_list]
+        assert with_vector is not None
+        assert refinement_only == with_vector
+
+    def test_paired_deltas_and_verdict_are_recorded(self, tmp_path, settings):
+        settings.EVAL_SESSION_ABLATION = {**settings.EVAL_SESSION_ABLATION, "min_queries": 1}
+        hit, miss = _movie(1), _movie(9)
+
+        def pipeline(query_embedding, intent, session_vector, **kwargs):
+            # The vector puts the golden movie first; without it, it drops out.
+            top = [hit, miss] if session_vector is not None else [miss, _movie(8)]
+            return top, top
+
+        run = self._run(tmp_path, pipeline=pipeline)
+        report = run.record["session_ablation"]
+        overall = report["comparisons"]["with_minus_without"]["all"]
+        assert overall["n"] == 2 and overall["wins"] == 2 and overall["mean"] > 0
+        assert report["comparisons"]["with_minus_without"]["refinement"]["n"] == 1
+        assert report["comparisons"]["with_minus_without"]["new_search"]["n"] == 1
+        assert all(row["top_changed"] for row in report["queries"])
+        assert report["verdict"] == "KEEP"
+        assert "VERDICT: KEEP" in run.stdout
+
+    def test_identical_results_rule_out_a_gain(self, tmp_path, settings):
+        settings.EVAL_SESSION_ABLATION = {**settings.EVAL_SESSION_ABLATION, "min_queries": 1}
+        run = self._run(tmp_path)
+        report = run.record["session_ablation"]
+        assert report["comparisons"]["with_minus_without"]["all"]["ties"] == 2
+        assert report["verdict"] == "REMOVE"
+        assert not any(row["top_changed"] for row in report["queries"])
+
+    def test_too_few_queries_is_inconclusive(self, tmp_path):
+        run = self._run(tmp_path)
+        assert run.record["session_ablation"]["verdict"] == "INCONCLUSIVE"
+
+    def test_unscorable_query_is_left_out_of_the_deltas(self, tmp_path):
+        run = _Run(tmp_path, self._entries(), grades={})
+        run("--session-ablation", "--intent", "oracle")
+        assert run.record["session_ablation"]["comparisons"]["with_minus_without"]["all"]["n"] == 0
+
+    def test_no_multi_turn_entries_is_an_error(self, tmp_path):
+        with pytest.raises(CommandError, match="multi-turn"):
+            _Run(tmp_path, [_entry("single")])("--session-ablation", "--intent", "oracle")
+
+    @pytest.mark.parametrize("other", ["--sweep", "--gate-report"])
+    def test_cannot_combine_with_other_modes(self, tmp_path, other):
+        with pytest.raises(CommandError, match="separate run"):
+            _Run(tmp_path, self._entries())("--session-ablation", other)
+
+    def test_refuses_the_llm_judge(self, tmp_path):
+        with pytest.raises(CommandError, match="llm-judge"):
+            _Run(tmp_path, self._entries())("--session-ablation", "--llm-judge")
+
+
 class TestEmptyResults:
     def test_counts_queries_the_gate_left_empty(self, tmp_path):
         run = _Run(tmp_path, [_entry()], movies=[])

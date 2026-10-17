@@ -6,7 +6,9 @@ Three categories of metrics:
   LLM-as-judge:    graded relevance scoring via Ollama (opt-in, slow)
 
 plus `gate_report`, the calibration aid for the reranking.min_score relevance
-gate (it informs a human choice of threshold; it measures no ranking quality).
+gate (it informs a human choice of threshold; it measures no ranking quality),
+and `paired_bootstrap` / `session_ablation_verdict` for the session-vector
+ablation.
 
 Relevance is membership in the golden set's resolved movie ids, with optional
 grades -- never genre overlap: the `metadata` scoring signal *is* genre
@@ -261,6 +263,63 @@ def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
         "non_hits": _distribution(non_hit_scores),
         "thresholds": rows,
     }
+
+
+def paired_bootstrap(deltas: list[float], resamples: int, confidence: float, seed: int) -> dict:
+    """Mean of per-query paired differences with a percentile bootstrap interval.
+
+    Paired because both arms score the same queries with the same parsed
+    intent, so the per-query difference removes how hard each query is.
+    `wins`/`losses`/`ties` count the sign of each difference. With no
+    differences every statistic is None.
+    """
+    n = len(deltas)
+    signs = {
+        "wins": sum(1 for d in deltas if d > 0),
+        "losses": sum(1 for d in deltas if d < 0),
+        "ties": sum(1 for d in deltas if d == 0),
+    }
+    if not n:
+        return {"n": 0, "mean": None, "ci_low": None, "ci_high": None, **signs}
+    values = np.asarray(deltas, dtype=float)
+    rng = np.random.default_rng(seed)
+    means = values[rng.integers(0, n, size=(resamples, n))].mean(axis=1)
+    tail = (1 - confidence) / 2 * 100
+    low, high = np.percentile(means, [tail, 100 - tail])
+    return {
+        "n": n, "mean": float(values.mean()), "ci_low": float(low), "ci_high": float(high), **signs,
+    }
+
+
+def session_ablation_verdict(stats: dict, min_gain: float, min_queries: int) -> tuple[str, str]:
+    """KEEP / REMOVE / INCONCLUSIVE for the session vector, from the bootstrap
+    stats of (nDCG with vector - nDCG without it).
+
+    The vector has upkeep (a pgvector column tied to the embedding dimensions,
+    EMA bookkeeping under a row lock), so it has to show a gain of at least
+    `min_gain` to stay: KEEP needs the mean there and the interval above zero.
+    REMOVE needs the interval's upper end below `min_gain` -- a worthwhile gain
+    is ruled out, whether the vector is neutral or harmful. An interval that
+    straddles `min_gain` cannot tell the two apart: INCONCLUSIVE.
+    """
+    n = stats["n"]
+    if n < min_queries:
+        return "INCONCLUSIVE", (
+            f"only {n} scored multi-turn queries, {min_queries} needed "
+            "(evaluation.session_ablation.min_queries) -- add multi-turn entries to the golden set"
+        )
+    mean, low, high = stats["mean"], stats["ci_low"], stats["ci_high"]
+    interval = f"mean {mean:+.4f}, CI [{low:+.4f}, {high:+.4f}]"
+    if mean >= min_gain and low > 0:
+        return "KEEP", f"the vector raises nDCG by at least the {min_gain} bar ({interval})"
+    if high < 0:
+        return "REMOVE", f"the vector measurably lowers nDCG ({interval})"
+    if high < min_gain:
+        return "REMOVE", f"a gain of {min_gain} or more is ruled out ({interval}); not worth its upkeep"
+    return "INCONCLUSIVE", (
+        f"the interval straddles the {min_gain} bar ({interval}) -- "
+        "more multi-turn entries would narrow it"
+    )
 
 
 def evaluate_query(

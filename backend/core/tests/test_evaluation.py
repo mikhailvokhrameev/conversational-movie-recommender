@@ -13,8 +13,10 @@ from core.evaluation import (
     judge_ndcg,
     llm_relevance_score,
     ndcg_at_k,
+    paired_bootstrap,
     precision_at_k,
     recall_at_k,
+    session_ablation_verdict,
 )
 
 
@@ -262,3 +264,84 @@ class TestGateReport:
         grid = [row["min_score"] for row in gate_report([])["thresholds"]]
         assert grid == sorted(grid)
         assert all(0 < t < 1 for t in grid)
+
+
+class TestPairedBootstrap:
+    def test_constant_deltas_give_a_point_interval(self):
+        stats = paired_bootstrap([0.1, 0.1, 0.1], resamples=200, confidence=0.95, seed=0)
+        assert stats["mean"] == pytest.approx(0.1)
+        assert stats["ci_low"] == pytest.approx(0.1)
+        assert stats["ci_high"] == pytest.approx(0.1)
+
+    def test_interval_brackets_the_mean(self):
+        stats = paired_bootstrap([-0.2, 0.0, 0.1, 0.3, 0.5], resamples=2000, confidence=0.95, seed=0)
+        assert stats["ci_low"] < stats["mean"] < stats["ci_high"]
+
+    def test_counts_signs(self):
+        stats = paired_bootstrap([0.2, -0.1, 0.0, 0.0], resamples=10, confidence=0.9, seed=0)
+        assert (stats["n"], stats["wins"], stats["losses"], stats["ties"]) == (4, 1, 1, 2)
+
+    def test_same_seed_same_interval(self):
+        deltas = [-0.3, 0.1, 0.2, 0.4, -0.1, 0.0]
+        first = paired_bootstrap(deltas, resamples=500, confidence=0.95, seed=7)
+        assert paired_bootstrap(deltas, resamples=500, confidence=0.95, seed=7) == first
+
+    def test_no_deltas_gives_nulls(self):
+        stats = paired_bootstrap([], resamples=10, confidence=0.95, seed=0)
+        assert stats["n"] == 0
+        assert stats["mean"] is None and stats["ci_low"] is None and stats["ci_high"] is None
+
+
+def _stats(mean, low, high, n=20):
+    return {"n": n, "mean": mean, "ci_low": low, "ci_high": high}
+
+
+class TestSessionAblationVerdict:
+    def test_too_few_queries_is_inconclusive_whatever_the_numbers(self):
+        verdict, reason = session_ablation_verdict(_stats(0.3, 0.2, 0.4, n=5), min_gain=0.02, min_queries=12)
+        assert verdict == "INCONCLUSIVE"
+        assert "5" in reason and "12" in reason
+
+    def test_clear_gain_keeps(self):
+        assert session_ablation_verdict(_stats(0.05, 0.01, 0.09), 0.02, 12)[0] == "KEEP"
+
+    def test_gain_below_the_bar_does_not_keep(self):
+        # Positive and significant, but smaller than the bar on average.
+        assert session_ablation_verdict(_stats(0.01, 0.005, 0.03), 0.02, 12)[0] == "INCONCLUSIVE"
+
+    def test_harm_removes(self):
+        verdict, reason = session_ablation_verdict(_stats(-0.05, -0.09, -0.01), 0.02, 12)
+        assert verdict == "REMOVE"
+        assert "lowers" in reason
+
+    def test_worthwhile_gain_ruled_out_removes(self):
+        verdict, reason = session_ablation_verdict(_stats(0.0, -0.01, 0.015), 0.02, 12)
+        assert verdict == "REMOVE"
+        assert "ruled out" in reason
+
+    def test_wide_interval_is_inconclusive(self):
+        assert session_ablation_verdict(_stats(0.01, -0.05, 0.08), 0.02, 12)[0] == "INCONCLUSIVE"
+
+
+class TestSessionAblationSettingsValidation:
+    def _valid(self):
+        return {"min_ndcg_gain": 0.02, "min_queries": 12, "bootstrap_resamples": 10000,
+                "confidence": 0.95, "seed": 0}
+
+    def test_accepts_configured_values(self):
+        from recommender.settings import _validate_session_ablation
+
+        _validate_session_ablation(self._valid())
+        _validate_session_ablation({**self._valid(), "min_ndcg_gain": 0})
+
+    @pytest.mark.parametrize("key, bad", [
+        ("min_ndcg_gain", -0.01), ("min_ndcg_gain", "0.02"), ("min_ndcg_gain", True),
+        ("min_queries", 0), ("min_queries", 1.5), ("bootstrap_resamples", 0),
+        ("confidence", 0), ("confidence", 1), ("confidence", 95),
+        ("seed", 0.5), ("seed", None),
+    ])
+    def test_rejects_bad_values(self, key, bad):
+        from recommender.settings import _validate_session_ablation
+
+        with pytest.raises(ValueError, match=f"evaluation.session_ablation.{key}"):
+            _validate_session_ablation({**self._valid(), key: bad})

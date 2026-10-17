@@ -357,6 +357,24 @@ evaluation:
   # One short JSON reply per call. A judge call that runs past this counts as
   # a judge failure (no substitute score).
   judge_timeout_seconds: 30
+  # Session-vector ablation (manage.py evaluate_scoring --session-ablation):
+  # scores the multi-turn golden entries with and without the session
+  # preference vector and decides whether it earns its place. Paired per-query
+  # nDCG@k deltas with a bootstrap confidence interval on their mean.
+  session_ablation:
+    # Smallest mean nDCG@k gain (with vector minus without) worth the vector's
+    # upkeep. KEEP needs the mean at or above this and the interval above 0;
+    # REMOVE needs the whole interval below it, i.e. a gain this large is ruled
+    # out. Anything between is INCONCLUSIVE.
+    min_ndcg_gain: 0.02
+    # Below this many scored multi-turn queries the verdict is INCONCLUSIVE
+    # whatever the numbers say -- a handful of queries decides nothing.
+    min_queries: 12
+    bootstrap_resamples: 10000
+    # Two-sided confidence level of the interval.
+    confidence: 0.95
+    # Bootstrap RNG seed, so two runs over the same results agree.
+    seed: 0
 
 intent:
   # Minimum cosine similarity for mapping an LLM-produced genre name onto a

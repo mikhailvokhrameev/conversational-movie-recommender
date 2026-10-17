@@ -8,6 +8,7 @@ Usage:
   python manage.py evaluate_scoring --sweep                # weight grid search, dev split only
   python manage.py evaluate_scoring --weights 0.5,0.3,0.2  # custom weights
   python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
+  python manage.py evaluate_scoring --session-ablation     # is the session vector worth keeping?
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -26,6 +27,11 @@ What makes this an honest measurement:
     separates labelled hits from the rest, plus what each candidate threshold
     would drop. It informs a human choice of reranking.min_score and never
     writes params.yaml.
+  - `--session-ablation` scores the multi-turn entries three ways from one
+    parse -- with the session vector, without it, and with it on refinement
+    turns only -- and prints a KEEP / REMOVE / INCONCLUSIVE verdict from paired
+    nDCG differences. It compares fixed variants instead of choosing weights,
+    so it defaults to every split.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
@@ -35,7 +41,7 @@ import hashlib
 import json
 import logging
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -50,6 +56,8 @@ from core.evaluation import (
     evaluate_query,
     gate_report,
     llm_relevance_score,
+    paired_bootstrap,
+    session_ablation_verdict,
 )
 from core.golden_set import (
     default_golden_set_path,
@@ -72,8 +80,13 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat")
 OWN_OPTIONS = (
-    "golden_set", "split", "intent", "k", "sweep", "gate_report", "weights", "llm_judge", "output",
+    "golden_set", "split", "intent", "k", "sweep", "gate_report", "session_ablation", "weights",
+    "llm_judge", "output",
 )
+# --session-ablation variants. A missing vector is exactly a removed `session`
+# signal: it is then the same for every candidate, so it adds one constant to
+# every scorer total, which the min-max before the rerank blend cancels out.
+ABLATION_ARMS = ("with_vector", "without_vector", "refinement_only")
 
 
 def _catalog_stats() -> tuple[dict[str, float], int]:
@@ -195,6 +208,13 @@ class Command(BaseCommand):
                  "(dev split only)",
         )
         parser.add_argument(
+            "--session-ablation",
+            action="store_true",
+            help="Score the multi-turn entries with the session vector, without it, and "
+                 "with it on refinement turns only, and print whether it is worth keeping "
+                 "(default split: all)",
+        )
+        parser.add_argument(
             "--weights",
             type=str,
             default=None,
@@ -226,7 +246,15 @@ class Command(BaseCommand):
         report_gate = options["gate_report"]
         if sweep and report_gate:
             raise CommandError("--sweep and --gate-report are separate runs; pick one.")
-        split = options["split"] or ("dev" if sweep or report_gate else "test")
+        ablation = options["session_ablation"]
+        if ablation and (sweep or report_gate):
+            raise CommandError("--session-ablation is a separate run from --sweep and --gate-report; pick one.")
+        if ablation and options["llm_judge"]:
+            raise CommandError(
+                "--session-ablation decides on golden-set nDCG only; the judge is the same model "
+                "family as the system, so it cannot settle this. Drop --llm-judge."
+            )
+        split = options["split"] or ("dev" if sweep or report_gate else "all" if ablation else "test")
         if sweep and split != "dev":
             raise CommandError(
                 f"--sweep selects weights, so it only runs on the dev split (got --split {split}); "
@@ -254,6 +282,12 @@ class Command(BaseCommand):
         entries = select_split(load_golden_set(golden_path), split)
         if not entries:
             raise CommandError(f"no golden-set entries in split {split!r}")
+        if ablation:
+            # A single-turn entry has no vector in any arm, so it would only
+            # add ties; skipping it also skips its LLM parse.
+            entries = [entry for entry in entries if entry.get("context")]
+            if not entries:
+                raise CommandError(f"no multi-turn golden-set entries (with a context) in split {split!r}")
         self.stdout.write(f"Loaded {len(entries)} {split} queries from {golden_path} (intent: {intent_mode})")
         if use_llm:
             self.stdout.write("LLM-as-judge enabled (this will be slow)")
@@ -266,7 +300,10 @@ class Command(BaseCommand):
 
         record = {
             "timestamp": started.isoformat(),
-            "mode": "sweep" if sweep else "gate_report" if report_gate else "eval",
+            "mode": (
+                "sweep" if sweep else "gate_report" if report_gate
+                else "session_ablation" if ablation else "eval"
+            ),
             "git": _git_state(),
             "params_file": str(settings.PARAMS_FILE),
             "params_sha256": _sha256(settings.PARAMS_FILE),
@@ -282,6 +319,9 @@ class Command(BaseCommand):
         if sweep:
             record["configs"] = self._run_sweep(prepared, k, use_llm)
             record["best_weights"] = record["configs"][0]["weights"]
+        elif ablation:
+            record["weights"] = weights
+            record["session_ablation"] = self._run_session_ablation(prepared, k, weights)
         else:
             record["weights"] = weights
             # The report needs every returned movie's score, including the ones
@@ -628,3 +668,136 @@ class Command(BaseCommand):
         self.stdout.write("")
         self._write_counters(configs[0]["counters"])
         return configs
+
+    # --- Session-vector ablation ---
+
+    def _run_session_ablation(self, prepared: list[PreparedQuery], k: int, weights: dict) -> dict:
+        config = settings.EVAL_SESSION_ABLATION
+        arms = {
+            "with_vector": prepared,
+            "without_vector": [replace(p, session_vector=None) for p in prepared],
+            # Candidate fix: vector_for_scoring returning None unless the turn
+            # is a refinement. p.category is what production would act on --
+            # the predicted category in e2e.
+            "refinement_only": [
+                p if p.category == "refinement" else replace(p, session_vector=None) for p in prepared
+            ],
+        }
+        results = {name: self._evaluate(arm, k, weights, use_llm=False) for name, arm in arms.items()}
+
+        rows = []
+        for i, p in enumerate(prepared):
+            per_arm = {name: results[name]["queries"][i] for name in ABLATION_ARMS}
+            with_ids = [r["tmdb_id"] for r in per_arm["with_vector"]["recommended"]]
+            without_ids = [r["tmdb_id"] for r in per_arm["without_vector"]["recommended"]]
+            rows.append({
+                "id": p.entry["id"],
+                "split": p.entry["split"],
+                "category": p.entry.get("category", "new_search"),
+                "scored_as": p.category,
+                "unscorable": per_arm["with_vector"]["unscorable"],
+                "ndcg": {name: per_arm[name]["metrics"].get("ndcg_at_k") for name in ABLATION_ARMS},
+                "top_changed": with_ids != without_ids,
+                "reranked": per_arm["with_vector"]["pool_max_rerank_score"] is not None,
+            })
+
+        def compare(better, baseline, category=None):
+            deltas = [
+                row["ndcg"][better] - row["ndcg"][baseline]
+                for row in rows
+                if not row["unscorable"] and (category is None or row["category"] == category)
+            ]
+            return paired_bootstrap(
+                deltas, config["bootstrap_resamples"], config["confidence"], config["seed"],
+            )
+
+        categories = sorted({row["category"] for row in rows})
+        comparisons = {
+            "with_minus_without": {
+                "all": compare("with_vector", "without_vector"),
+                **{c: compare("with_vector", "without_vector", c) for c in categories},
+            },
+            "refinement_only_minus_with": {
+                "all": compare("refinement_only", "with_vector"),
+                **{c: compare("refinement_only", "with_vector", c) for c in categories},
+            },
+        }
+        verdict, reason = session_ablation_verdict(
+            comparisons["with_minus_without"]["all"], config["min_ndcg_gain"], config["min_queries"],
+        )
+        report = {
+            "settings": config,
+            "arms": {
+                name: {
+                    "aggregate": results[name]["aggregate"],
+                    "counters": results[name]["counters"],
+                    "queries": results[name]["queries"],
+                }
+                for name in ABLATION_ARMS
+            },
+            "queries": rows,
+            "comparisons": comparisons,
+            "verdict": verdict,
+            "reason": reason,
+        }
+        self._write_session_ablation(report, k)
+        return report
+
+    def _write_session_ablation(self, report: dict, k: int) -> None:
+        rows = report["queries"]
+        self.stdout.write("\n" + "=" * 70)
+        self.stdout.write(f"SESSION VECTOR ABLATION: {len(rows)} multi-turn queries, nDCG@{k}")
+        self.stdout.write(
+            f"\n  {'id':32s} {'category':10s} {'scored as':10s} {'with':>6} {'without':>8} "
+            f"{'ref-only':>8} {'delta':>7}  top-{k}"
+        )
+        for row in rows:
+            if row["unscorable"]:
+                self.stdout.write(f"  {row['id'][:32]:32s} {row['category']:10s} {row['scored_as']:10s} UNSCORED")
+                continue
+            ndcg = row["ndcg"]
+            delta = ndcg["with_vector"] - ndcg["without_vector"]
+            self.stdout.write(
+                f"  {row['id'][:32]:32s} {row['category']:10s} {row['scored_as']:10s} "
+                f"{ndcg['with_vector']:>6.3f} {ndcg['without_vector']:>8.3f} "
+                f"{ndcg['refinement_only']:>8.3f} {delta:>+7.3f}  "
+                f"{'changed' if row['top_changed'] else 'same'}"
+            )
+
+        self.stdout.write(f"\n  {'arm':16s} {'nDCG':>7} {'P@k':>7} {'R@k':>7} {'neg':>5}")
+        for name in ABLATION_ARMS:
+            aggregate = report["arms"][name]["aggregate"]
+            negations = sum(q["metrics"]["negation_violations"] for q in report["arms"][name]["queries"])
+            self.stdout.write(
+                f"  {name:16s} {aggregate.get('ndcg_at_k', 0):>7.4f} "
+                f"{aggregate.get('precision_at_k', 0):>7.4f} {aggregate.get('recall_at_k', 0):>7.4f} {negations:>5}"
+            )
+
+        confidence = report["settings"]["confidence"]
+        titles = {
+            "with_minus_without": "with vector - without (positive = the vector helps)",
+            "refinement_only_minus_with": (
+                "refinement-only - with vector (positive = dropping it on new_search turns helps)"
+            ),
+        }
+        for key, title in titles.items():
+            self.stdout.write(f"\n  {title}")
+            self.stdout.write(
+                f"    {'group':12s} {'n':>3} {'mean':>8} {f'{confidence:.0%} CI':>20} {'win/loss/tie':>13}"
+            )
+            for group, stats in report["comparisons"][key].items():
+                if not stats["n"]:
+                    continue
+                ci = f"[{stats['ci_low']:+.4f}, {stats['ci_high']:+.4f}]"
+                signs = f"{stats['wins']}/{stats['losses']}/{stats['ties']}"
+                self.stdout.write(f"    {group:12s} {stats['n']:>3} {stats['mean']:>+8.4f} {ci:>20} {signs:>13}")
+
+        changed = sum(1 for row in rows if row["top_changed"])
+        self.stdout.write(f"\n  The vector changed the top {k} on {changed} of {len(rows)} queries.")
+        if not all(row["reranked"] for row in rows):
+            self.stdout.write(self.style.WARNING(
+                "  Some queries had no rerank scores: without the reranker, MMR works on the raw "
+                "scorer total, so 'without_vector' is close to, not exactly, a removed signal."
+            ))
+        style = {"KEEP": self.style.SUCCESS, "REMOVE": self.style.ERROR}.get(report["verdict"], self.style.WARNING)
+        self.stdout.write("\n" + style(f"VERDICT: {report['verdict']} -- {report['reason']}"))
