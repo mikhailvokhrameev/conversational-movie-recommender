@@ -147,6 +147,12 @@ llm:
   # inflating a prompt that is already budgeted against llm.num_ctx. Minimum 1.
   explanation_description_chars: 200
 
+  explanation:
+    # Longest angle-bracket span (in characters between < and >) the explanation
+    # stream drops as an echoed prompt placeholder such as "<opening line>".
+    # Longer spans are kept as real text. Minimum 1.
+    placeholder_max_chars: 60
+
   timeout_seconds:
     # Combined classify+intent call used by the live chat view (aclassify_and_parse).
     classify_parse: 45
@@ -376,6 +382,11 @@ intent:
   genre_match_threshold: 0.5
 
 catalog:
+  # What the catalog has no data for. Rendered into the classify prompt (the
+  # model lists such conditions as unsupported_constraints) and into the reply
+  # that asks before searching without them. Keep "silent" and
+  # "black-and-white": the prompt's example relies on them.
+  unchecked_attributes: [cast, director, silent, black-and-white, awards, studio]
   import_batch_size: 500
   embedding_batch_size: 64
   # Quality floor applied at import time: rows below this vote_count are
@@ -388,3 +399,8 @@ catalog:
   # "{poster_base_url}{poster_size}{poster_path}".
   poster_base_url: "https://image.tmdb.org/t/p/"
   poster_size: w500
+
+# Console log level of the app's own loggers (core, movies): a stdlib level
+# name. INFO carries the per-call Ollama stats and per-turn latency lines.
+logging:
+  level: INFO

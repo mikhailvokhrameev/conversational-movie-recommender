@@ -374,6 +374,9 @@ these can be changed -- no environment variable overrides them.
 | `llm.temperature.*` | 0.0 / 0.7 | Sampling temperature (structured / generation): 0.0 for every schema-constrained call (classify+parse, intent, eval judge) so parsing is reproducible; 0.7 for explanations and conversational replies. Validated in [0, 2] at settings load |
 | `llm.seed` | `42` | Fixed `options.seed` on every LLM call, for reproducible outputs. Must be an int |
 | `llm.explanation_description_chars` | `200` | Description chars per movie in the explanation prompt (`_build_movies_context`). Minimum 1 |
+| `llm.explanation.placeholder_max_chars` | `60` | Longest `<...>` span the explanation stream drops as an echoed prompt placeholder. Minimum 1 |
+| `catalog.unchecked_attributes` | `[cast, director, silent, black-and-white, awards, studio]` | Data the catalog lacks; rendered into the classify prompt and the "can't check" reply |
+| `logging.level` | `INFO` | Console level of the `core` and `movies` loggers (stdlib level name) |
 | `llm.timeout_seconds.*` | 45 / 60 / 120 | Per-call timeouts (classify_parse / intent / explanation) |
 | `embedding.model` | `BAAI/bge-m3` | Embedding model |
 | `embedding.dimensions` | `1024` | Vector width (changing needs a migration + re-embed) |

@@ -81,7 +81,7 @@ JSON fields:
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
-- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know actors, director, silent or black-and-white, awards or studio (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
+- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
 
 Example:
 User: "I want something funny, but not horror"
@@ -325,7 +325,7 @@ _PARTIAL_MARKER_RE = re.compile(r"\[\[?\d*\]?$")
 # A prompt-shape placeholder the model echoed back, e.g. '<opening line>': short
 # text in angle brackets on one line. A tail that could still close into one
 # is held back, like a partial marker.
-_PLACEHOLDER_MAX_CHARS = 60
+_PLACEHOLDER_MAX_CHARS = settings.OLLAMA_PLACEHOLDER_MAX_CHARS
 _PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{1,{_PLACEHOLDER_MAX_CHARS}}}>")
 _PARTIAL_PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{0,{_PLACEHOLDER_MAX_CHARS - 1}}}$")
 
@@ -696,7 +696,9 @@ def _intent_payload(query: str) -> dict:
 def _classify_and_parse_payload(
     message: str, history: list[dict], repair_note: str | None = None
 ) -> dict:
-    system_prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(genres=", ".join(CATALOG_GENRES))
+    system_prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(
+        genres=", ".join(CATALOG_GENRES), unchecked=settings.CATALOG_UNCHECKED_TEXT
+    )
     current_content = message
     if repair_note:
         current_content += (

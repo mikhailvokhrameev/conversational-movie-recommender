@@ -34,8 +34,8 @@ NO_MATCH_MESSAGE = (
     "Try rephrasing your request or loosening some of the constraints."
 )
 UNSUPPORTED_MESSAGE = (
-    "I can't check {constraints} -- the catalog has no cast, director, awards, studio "
-    "or silent/black-and-white data. Want me to search without that?"
+    "I can't check {constraints} -- the catalog has no data on {unchecked}. "
+    "Want me to search without that?"
 )
 
 
@@ -355,7 +355,10 @@ class ChatView(View):
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)
-        text = UNSUPPORTED_MESSAGE.format(constraints=", ".join(f'"{c}"' for c in unchecked))
+        text = UNSUPPORTED_MESSAGE.format(
+            constraints=", ".join(f'"{c}"' for c in unchecked),
+            unchecked=settings.CATALOG_UNCHECKED_TEXT,
+        )
 
         async def event_stream():
             yield _sse_event("movies", {

@@ -175,6 +175,18 @@ def _validate_explanation_description_chars(llm: dict) -> None:
         )
 
 
+def _validate_placeholder_max_chars(llm: dict) -> None:
+    """Fail at load if llm.explanation.placeholder_max_chars is not a positive
+    integer: it is the longest <...> span the explanation stream treats as an
+    echoed prompt placeholder, and 0 would let every one through."""
+    explanation = llm.get("explanation")
+    value = explanation.get("placeholder_max_chars") if isinstance(explanation, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"params.yaml: llm.explanation.placeholder_max_chars must be an integer >= 1 (got {value!r})."
+        )
+
+
 _validate_num_ctx(_llm)
 _validate_sampling(_llm)
 _validate_explanation_description_chars(_llm)
@@ -186,6 +198,8 @@ OLLAMA_NUM_CTX = _llm["num_ctx"]
 OLLAMA_TEMPERATURE = _llm["temperature"]
 OLLAMA_SEED = _llm["seed"]
 OLLAMA_EXPLANATION_DESCRIPTION_CHARS = _llm["explanation_description_chars"]
+_validate_placeholder_max_chars(_llm)
+OLLAMA_PLACEHOLDER_MAX_CHARS = _llm["explanation"]["placeholder_max_chars"]
 
 def _validate_embedding_text(embedding: dict) -> None:
     """Fail at load if embedding.text.* is not a pair of positive integers.
@@ -386,7 +400,34 @@ _validate_evaluation(_evaluation)
 EVAL_JUDGE_DESCRIPTION_CHARS = _evaluation["judge_description_chars"]
 EVAL_JUDGE_TIMEOUT_SECONDS = _evaluation["judge_timeout_seconds"]
 
+def _validate_unchecked_attributes(catalog: dict) -> None:
+    """Fail at load if catalog.unchecked_attributes is not a non-empty list of
+    distinct, non-blank strings -- it is rendered into the classify prompt and
+    the "can't check" reply."""
+    value = catalog.get("unchecked_attributes")
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(a, str) and a.strip() for a in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(
+            "params.yaml: catalog.unchecked_attributes must be a non-empty list of "
+            f"distinct non-blank strings (got {value!r})."
+        )
+
+
+def _unchecked_text(attributes: list) -> str:
+    """'a, b and c' -- the one wording both the prompt and the reply use."""
+    if len(attributes) == 1:
+        return attributes[0]
+    return ", ".join(attributes[:-1]) + " and " + attributes[-1]
+
+
 _catalog = PARAMS["catalog"]
+_validate_unchecked_attributes(_catalog)
+CATALOG_UNCHECKED_ATTRIBUTES = tuple(_catalog["unchecked_attributes"])
+CATALOG_UNCHECKED_TEXT = _unchecked_text(_catalog["unchecked_attributes"])
 IMPORT_BATCH_SIZE = _catalog["import_batch_size"]
 EMBEDDING_BATCH_SIZE = _catalog["embedding_batch_size"]
 MIN_VOTE_COUNT = _catalog["min_vote_count"]
@@ -397,8 +438,21 @@ CATALOG_CSV_PATH = os.environ.get(
     "CATALOG_CSV_PATH", str(BASE_DIR / "TMDB Movie Dataset v11.csv")
 )
 
+def _validate_logging_level(logging_params) -> None:
+    """Fail at load if logging.level is not an upper-case stdlib level name."""
+    value = logging_params.get("level") if isinstance(logging_params, dict) else None
+    if value not in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        raise ValueError(
+            "params.yaml: logging.level must be one of DEBUG, INFO, WARNING, ERROR, "
+            f"CRITICAL (got {value!r})."
+        )
+
+
+_validate_logging_level(PARAMS.get("logging"))
+LOG_LEVEL = PARAMS["logging"]["level"]
+
 # The app's own loggers log per-call stats (`Ollama call=...`) and per-turn
-# latency at INFO. Without this, Python's last-resort handler drops everything
+# latency at INFO (logging.level in params.yaml). Without this, Python's last-resort handler drops everything
 # below WARNING and those lines never reach `docker compose logs backend`.
 LOGGING = {
     "version": 1,
@@ -410,7 +464,7 @@ LOGGING = {
         "console": {"class": "logging.StreamHandler", "formatter": "plain"},
     },
     "loggers": {
-        "core": {"handlers": ["console"], "level": "INFO", "propagate": True},
-        "movies": {"handlers": ["console"], "level": "INFO", "propagate": True},
+        "core": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": True},
+        "movies": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": True},
     },
 }

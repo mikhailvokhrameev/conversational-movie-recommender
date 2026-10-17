@@ -3,6 +3,10 @@
 import pytest
 
 from recommender.settings import (
+    _unchecked_text,
+    _validate_logging_level,
+    _validate_placeholder_max_chars,
+    _validate_unchecked_attributes,
     _validate_lexical_stopwords,
     _validate_rerank_weight,
     _validate_revision,
@@ -100,3 +104,83 @@ class TestLexicalStopwords:
     def test_rejects_uppercase_empty_or_malformed(self, bad):
         with pytest.raises(ValueError, match=r"retrieval\.lexical\.stopwords"):
             _validate_lexical_stopwords(bad)
+
+
+class TestPlaceholderMaxChars:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert settings.OLLAMA_PLACEHOLDER_MAX_CHARS >= 1
+
+    def test_accepts_a_positive_integer(self):
+        _validate_placeholder_max_chars({"explanation": {"placeholder_max_chars": 60}})
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "60", None, True])
+    def test_rejects_a_non_positive_or_non_integer_value(self, bad):
+        with pytest.raises(ValueError, match=r"llm\.explanation\.placeholder_max_chars"):
+            _validate_placeholder_max_chars({"explanation": {"placeholder_max_chars": bad}})
+
+    @pytest.mark.parametrize("llm", [{}, {"explanation": {}}, {"explanation": None}])
+    def test_rejects_a_missing_key(self, llm):
+        with pytest.raises(ValueError, match=r"llm\.explanation\.placeholder_max_chars"):
+            _validate_placeholder_max_chars(llm)
+
+
+class TestLoggingLevel:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert settings.LOGGING["loggers"]["core"]["level"] == settings.LOG_LEVEL
+
+    @pytest.mark.parametrize("level", ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
+    def test_accepts_stdlib_level_names(self, level):
+        _validate_logging_level({"level": level})
+
+    @pytest.mark.parametrize("bad", ["info", "VERBOSE", "NOTSET", "", 20, None])
+    def test_rejects_anything_else(self, bad):
+        with pytest.raises(ValueError, match=r"logging\.level"):
+            _validate_logging_level({"level": bad})
+
+    @pytest.mark.parametrize("section", [{}, None])
+    def test_rejects_a_missing_key(self, section):
+        with pytest.raises(ValueError, match=r"logging\.level"):
+            _validate_logging_level(section)
+
+
+class TestUncheckedAttributes:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert "silent" in settings.CATALOG_UNCHECKED_ATTRIBUTES
+        assert "black-and-white" in settings.CATALOG_UNCHECKED_ATTRIBUTES
+
+    def test_both_texts_render_from_the_configured_list(self):
+        from django.conf import settings
+        from core.ollama_client import CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        from movies.views import UNSUPPORTED_MESSAGE
+
+        text = settings.CATALOG_UNCHECKED_TEXT
+        assert all(a in text for a in settings.CATALOG_UNCHECKED_ATTRIBUTES)
+        assert text in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(
+            genres="G", unchecked=text
+        )
+        assert text in UNSUPPORTED_MESSAGE.format(constraints="x", unchecked=text)
+
+    def test_text_joins_with_and(self):
+        assert _unchecked_text(["cast"]) == "cast"
+        assert _unchecked_text(["cast", "awards"]) == "cast and awards"
+        assert _unchecked_text(["cast", "director", "awards"]) == "cast, director and awards"
+
+    def test_accepts_a_list_of_non_empty_strings(self):
+        _validate_unchecked_attributes({"unchecked_attributes": ["cast", "silent"]})
+
+    @pytest.mark.parametrize(
+        "bad", [[], "cast", None, ["cast", ""], ["cast", 3], ["cast", "cast"], [" "]]
+    )
+    def test_rejects_anything_else(self, bad):
+        with pytest.raises(ValueError, match=r"catalog\.unchecked_attributes"):
+            _validate_unchecked_attributes({"unchecked_attributes": bad})
+
+    def test_rejects_a_missing_key(self):
+        with pytest.raises(ValueError, match=r"catalog\.unchecked_attributes"):
+            _validate_unchecked_attributes({})
