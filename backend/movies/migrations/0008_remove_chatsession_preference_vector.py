@@ -10,10 +10,32 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
-        migrations.RenameIndex(
-            model_name="chatsession",
-            new_name="movies_chat_updated_926282_idx",
-            old_name="movies_chats_updated_5765c7_idx",
+        # Some databases do not have the updated_at index under the name 0001
+        # gives it, and a plain RenameIndex fails there with "relation ... does
+        # not exist". Rename it when it is there, create it when it is not; the
+        # migration state records the same rename either way.
+        migrations.SeparateDatabaseAndState(
+            state_operations=[
+                migrations.RenameIndex(
+                    model_name="chatsession",
+                    new_name="movies_chat_updated_926282_idx",
+                    old_name="movies_chats_updated_5765c7_idx",
+                ),
+            ],
+            database_operations=[
+                migrations.RunSQL(
+                    sql=[
+                        "ALTER INDEX IF EXISTS movies_chats_updated_5765c7_idx "
+                        "RENAME TO movies_chat_updated_926282_idx",
+                        "CREATE INDEX IF NOT EXISTS movies_chat_updated_926282_idx "
+                        "ON movies_chatsession (updated_at)",
+                    ],
+                    reverse_sql=[
+                        "ALTER INDEX IF EXISTS movies_chat_updated_926282_idx "
+                        "RENAME TO movies_chats_updated_5765c7_idx",
+                    ],
+                ),
+            ],
         ),
         migrations.RemoveField(
             model_name="chatsession",
