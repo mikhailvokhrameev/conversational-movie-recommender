@@ -396,3 +396,21 @@ TMDB_POSTER_SIZE = _catalog["poster_size"]
 CATALOG_CSV_PATH = os.environ.get(
     "CATALOG_CSV_PATH", str(BASE_DIR / "TMDB Movie Dataset v11.csv")
 )
+
+# The app's own loggers log per-call stats (`Ollama call=...`) and per-turn
+# latency at INFO. Without this, Python's last-resort handler drops everything
+# below WARNING and those lines never reach `docker compose logs backend`.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "plain": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "console": {"class": "logging.StreamHandler", "formatter": "plain"},
+    },
+    "loggers": {
+        "core": {"handlers": ["console"], "level": "INFO", "propagate": True},
+        "movies": {"handlers": ["console"], "level": "INFO", "propagate": True},
+    },
+}
