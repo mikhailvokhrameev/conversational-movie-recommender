@@ -179,7 +179,6 @@
       "split": "dev",
       "oracle_intent": {"genres": ["Mystery"]},
       "relevant": [
-        {"title": "Sherlock Holmes", "year": 2009, "grade": 2},
         {"title": "Sherlock Holmes: A Game of Shadows", "year": 2011, "grade": 2},
         {"title": "Enola Holmes", "year": 2020, "grade": 2},
         {"title": "Mr. Holmes", "year": 2015},

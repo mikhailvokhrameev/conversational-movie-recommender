@@ -124,3 +124,44 @@ class TestRelevanceGate:
              patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]):
             top, _ = generate_and_score([0.1], {}, query_text="q", apply_gate=False)
         assert top == pool
+
+
+def _film(id_, title, original=None):
+    return {"id": id_, "tmdb_id": id_, "serial_name": title,
+            "original_title": original or title, "total": 0.5}
+
+
+class TestExclusion:
+    def _run(self, pool, intent=None, top_n=3, **kwargs):
+        gen, score, rerank, mmr = _stages(pool)
+        with gen, score, rerank, mmr:
+            return generate_and_score(
+                [0.1], intent or {}, query_text="q", top_n=top_n, **kwargs
+            )
+
+    def test_reference_film_is_excluded(self):
+        pool = [_film(1, "The Matrix"), _film(2, "Dark City")]
+        top, _ = self._run(pool, {"reference_films": ["the matrix"]})
+        assert [c["tmdb_id"] for c in top] == [2]
+
+    def test_reference_film_matched_by_original_title(self):
+        pool = [_film(1, "Amelie", original="Le Fabuleux Destin d'Amélie Poulain"),
+                _film(2, "Dark City")]
+        top, _ = self._run(pool, {"reference_films": ["Le fabuleux destin d'Amélie Poulain"]})
+        assert [c["tmdb_id"] for c in top] == [2]
+
+    def test_similar_title_is_kept(self):
+        pool = [_film(1, "Sherlock Holmes"), _film(2, "Sherlock Holmes: A Game of Shadows")]
+        top, reranked = self._run(pool, {"reference_films": ["Sherlock Holmes"]})
+        assert [c["tmdb_id"] for c in top] == [2]
+        assert len(reranked) == 2
+
+    def test_exclude_ids_are_dropped(self):
+        pool = [_film(1, "A One"), _film(2, "B Two"), _film(3, "C Three")]
+        top, _ = self._run(pool, exclude_ids={1, 3})
+        assert [c["tmdb_id"] for c in top] == [2]
+
+    def test_exclusion_runs_before_mmr(self):
+        pool = [_film(i, f"Film {i}") for i in range(1, 6)]
+        top, _ = self._run(pool, exclude_ids={1, 2}, top_n=3)
+        assert [c["tmdb_id"] for c in top] == [3, 4, 5]

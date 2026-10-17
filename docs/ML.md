@@ -361,6 +361,16 @@ golden-set evaluation run (with reviewed labels) is the thing that would
 actually prove it. Treat
 `reranking.weight` and `reranking.top_k` as untuned defaults until then.
 
+## Exclusion
+
+Before the relevance gate and MMR, `core.pipeline.exclude_candidates` drops the
+movies already shown (`exclude_ids`, a set of `tmdb_id`) and the reference films
+themselves: a candidate whose `serial_name` or `original_title` equals an
+`intent["reference_films"]` entry after `normalize_title` (lowercase, no
+punctuation, no leading the/a/an) is never recommended. Matching is exact, so
+asking for "Sherlock Holmes" removes that film but keeps "Sherlock Holmes: A
+Game of Shadows". The returned candidate pool stays the full reranked pool.
+
 ## MMR Diversification
 
 **Choice**: Maximal Marginal Relevance (Carbonell & Goldstein, 1998)
@@ -413,7 +423,7 @@ It is built so that a number it prints measures what ships:
 - **The intent is parsed by the production LLM call** by default (`--intent
   e2e`), so the most fragile link -- parsing -- is evaluated too.
 - **Retrieval is the production function.** `core.pipeline.generate_and_score`
-  (candidates -> scoring -> reranking -> MMR) is what `ChatView` runs through a
+  (candidates -> scoring -> reranking -> exclusion -> gate -> MMR) is what `ChatView` runs through a
   thin `sync_to_async` wrapper, so eval and production cannot drift.
 - **Weights are selected on dev, reported on test**, and every run leaves a
   JSON record behind.

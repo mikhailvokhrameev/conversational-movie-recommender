@@ -9,6 +9,7 @@ and the two drift apart the first time either side changes.
 """
 
 import logging
+import re
 
 from django.conf import settings
 
@@ -46,6 +47,32 @@ def apply_relevance_gate(candidates: list[dict], min_score: float | None) -> lis
     ]
 
 
+def normalize_title(title: str) -> str:
+    """Lowercase, strip punctuation and a leading the/a/an, collapse whitespace."""
+    words = re.sub(r"[^\w\s]", " ", (title or "").lower()).split()
+    if words and words[0] in ("the", "a", "an"):
+        words = words[1:]
+    return " ".join(words)
+
+
+def exclude_candidates(
+    candidates: list[dict], reference_films: list[str], exclude_ids: set[int] | None
+) -> list[dict]:
+    """Drop already-shown movies (`tmdb_id in exclude_ids`) and the reference
+    films themselves: a candidate whose normalized serial_name or original_title
+    equals a normalized reference title. Exact match only, so "Sherlock Holmes"
+    goes but "Sherlock Holmes: A Game of Shadows" stays."""
+    references = {normalize_title(t) for t in reference_films or []} - {""}
+    excluded = exclude_ids or set()
+    if not references and not excluded:
+        return candidates
+    return [
+        c for c in candidates
+        if c.get("tmdb_id") not in excluded
+        and not references & {normalize_title(c.get("serial_name")), normalize_title(c.get("original_title"))}
+    ]
+
+
 def generate_and_score(
     query_embedding: list[float],
     intent: dict,
@@ -53,6 +80,7 @@ def generate_and_score(
     weights: dict | None = None,
     top_n: int | None = None,
     apply_gate: bool = True,
+    exclude_ids: set[int] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Returns (top_movies, candidate_pool): candidate_pool is the full reranked
     pool before the top-n cut, kept around cheaply for the hallucination check
@@ -64,10 +92,15 @@ def generate_and_score(
     the scores of results the gate would have removed. With the gate on, the
     top list can be shorter than `top_n`, or empty; `candidate_pool` is still
     the full reranked pool.
+
+    `exclude_ids` (tmdb_ids already shown) and the intent's `reference_films`
+    are dropped before diversification, so the top list is still filled from the
+    rest of the pool; `candidate_pool` is left untouched.
     """
     candidates = generate_candidates(query_embedding, intent, query_text=query_text)
     scored = score_candidates(candidates, query_embedding, intent, weights=weights)
     reranked = rerank_candidates(query_text, scored)
-    gated = apply_relevance_gate(reranked, settings.RERANK_MIN_SCORE) if apply_gate else reranked
+    eligible = exclude_candidates(reranked, intent.get("reference_films"), exclude_ids)
+    gated = apply_relevance_gate(eligible, settings.RERANK_MIN_SCORE) if apply_gate else eligible
     top_movies = mmr_diversify(gated, top_n=top_n if top_n is not None else settings.TOP_N)
     return top_movies, reranked
