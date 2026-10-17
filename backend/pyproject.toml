@@ -1,0 +1,46 @@
+[project]
+name = "movie-recommender"
+version = "0.1.0"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "django>=4.2,<5.0",
+    "django-cors-headers>=4.3,<5.0",
+    "djangorestframework>=3.14,<4.0",
+    "httpx>=0.27,<1.0",
+    "numpy>=1.24,<2.0",
+    "ollama>=0.4,<1.0",
+    "pgvector>=0.3,<1.0",
+    "psycopg[binary]>=3.1,<4.0",
+    "pydantic>=2.6,<3.0",
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.23,<1.0",
+    "pytest-django>=4.8,<5.0",
+    "pytz>=2023.3",
+    "pyyaml>=6.0,<7.0",
+    "sentence-transformers>=2.6,<3.0",
+    # torch comes from the CUDA 12.1 index (see [tool.uv.sources] below).
+    #
+    # PyPI's default wheel is now a CUDA 13 build whose compiled architectures
+    # start at sm_75 (Turing). The target GPU is a GTX 1080 Ti -- Pascal, sm_61 --
+    # which CUDA 13 dropped, so the default wheel sees the card but has no kernels
+    # for it and the reranker silently falls back to CPU. cu121 is the newest
+    # index still shipping sm_61. Check torch.cuda.get_arch_list() after changing
+    # this: 'sm_61' must be in the list.
+    "torch==2.5.1",
+    "tqdm>=4.66,<5.0",
+    # transformers 4.52.0 added a torch>=2.6 gate on torch.load for non-safetensors
+    # checkpoints (CVE-2025-32434). torch is pinned to 2.5.1 for GTX 1080 Ti
+    # (sm_61) support, so keep transformers below that.
+    "transformers<4.52",
+    "uvicorn>=0.29,<1.0",
+]
+
+[tool.uv.sources]
+# Linux only: the cu121 index has no macOS wheels, so host dev on a Mac falls
+# back to the same torch version from PyPI (CPU/MPS).
+torch = { index = "pytorch-cu121", marker = "sys_platform == 'linux'" }
+
+[[tool.uv.index]]
+name = "pytorch-cu121"
+url = "https://download.pytorch.org/whl/cu121"
+explicit = true

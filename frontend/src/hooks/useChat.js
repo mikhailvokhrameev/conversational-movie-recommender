@@ -8,6 +8,7 @@ export function useChat() {
   const [isStreaming, setIsStreaming] = useState(false)
   const [sessionId, setSessionId] = useState(null)
   const abortRef = useRef(null)
+  const sessionTokenRef = useRef(null)
 
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || isStreaming) return
@@ -21,6 +22,7 @@ export function useChat() {
       role: 'assistant',
       movies: [],
       explanation: '',
+      descriptions: [],
       intent: null,
       error: null,
     }
@@ -30,9 +32,12 @@ export function useChat() {
       const controller = new AbortController()
       abortRef.current = controller
 
+      const headers = { 'Content-Type': 'application/json' }
+      if (sessionTokenRef.current) headers['X-Session-Token'] = sessionTokenRef.current
+
       const response = await fetch(API_URL, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ message: text, session_id: sessionId }),
         signal: controller.signal,
       })
@@ -60,7 +65,7 @@ export function useChat() {
             eventType = line.slice(7).trim()
           } else if (line.startsWith('data: ') && eventType) {
             const data = JSON.parse(line.slice(6))
-            handleSSEEvent(eventType, data, setMessages, setSessionId)
+            handleSSEEvent(eventType, data, setMessages, setSessionId, sessionTokenRef)
             eventType = null
           }
         }
@@ -86,16 +91,18 @@ export function useChat() {
     if (abortRef.current) abortRef.current.abort()
     setMessages([])
     setSessionId(null)
+    sessionTokenRef.current = null
     setIsStreaming(false)
   }, [])
 
   return { messages, isStreaming, sendMessage, sessionId, reset }
 }
 
-function handleSSEEvent(event, data, setMessages, setSessionId) {
+function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef) {
   switch (event) {
     case 'movies':
       setSessionId(data.session_id)
+      sessionTokenRef.current = data.session_token
       setMessages(prev => {
         const updated = [...prev]
         const last = updated[updated.length - 1]
@@ -111,6 +118,7 @@ function handleSSEEvent(event, data, setMessages, setSessionId) {
       break
     case 'session':
       setSessionId(data.session_id)
+      sessionTokenRef.current = data.session_token
       break
     case 'token':
       setMessages(prev => {
@@ -120,6 +128,22 @@ function handleSSEEvent(event, data, setMessages, setSessionId) {
           updated[updated.length - 1] = {
             ...last,
             explanation: last.explanation + data.text,
+          }
+        }
+        return updated
+      })
+      break
+    case 'blurb':
+      setMessages(prev => {
+        const updated = [...prev]
+        const last = updated[updated.length - 1]
+        if (last?.role === 'assistant') {
+          const descriptions = [...(last.descriptions || [])]
+          while (descriptions.length <= data.index) descriptions.push('')
+          descriptions[data.index] = descriptions[data.index] + data.text
+          updated[updated.length - 1] = {
+            ...last,
+            descriptions,
           }
         }
         return updated

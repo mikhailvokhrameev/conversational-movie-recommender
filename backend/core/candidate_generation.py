@@ -1,68 +1,264 @@
-"""Candidate generation via pgvector approximate nearest neighbor search.
+"""Candidate generation: hard filters, two retrieval channels, RRF fusion.
 
-Retrieves the top-N most semantically similar movies from the catalog using
-HNSW cosine distance, then applies hard filters (negation, content type)
-before passing candidates to the hybrid reranker.
+Applies hard filters (genre negation, country exclusion/inclusion, rating
+floor, release year range, runtime range, original language) as SQL WHERE
+clauses, then retrieves through two independent channels and fuses their
+rankings:
+
+  semantic  exact pgvector cosine distance over the query embedding
+  lexical   Postgres full-text match over title/original_title/keywords
+
+The two exist for different failure modes. Embeddings encode meaning but not
+identity, so a query naming a specific film or actor can miss it entirely.
+Full-text matches names literally but understands nothing. Neither subsumes
+the other.
+
+Their scores are not comparable -- a cosine distance and a ts_rank live on
+unrelated scales -- so they are fused by *rank* via Reciprocal Rank Fusion
+(Cormack et al. 2009) rather than by score:
+
+    rrf(d) = sum over channels of  weight_c / (k + rank_c(d))
+
+RRF is scale-free by construction, which is exactly why it suits this step
+and why the per-signal scoring in scoring.py uses min-max normalization
+instead: there, all signals rank the same pool and magnitude is meaningful.
+
+Fusion decides pool *membership*; scoring.py then re-ranks the pool.
 
 Pipeline position:
-  query embedding ──> ANN search (pgvector HNSW) ──> hard filters ──> candidates
+  query ──> hard filters ──┬──> semantic top-N ──┐
+                           └──> lexical top-N  ──┴──> RRF ──> candidates
 """
 
 import logging
+import operator
+import re
+from functools import reduce
 
+from django.conf import settings
+from django.contrib.postgres.search import SearchQuery, SearchRank
+from django.db.models import F, Q
 from pgvector.django import CosineDistance
 
 from movies.models import Movie
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CANDIDATE_COUNT = 100
+# Every tuning value here comes from params.yaml via settings: retrieval.*
+# (candidate_count, rrf_k, rrf_weights, lexical.*). Resolved at call time
+# rather than import time so overriding settings in tests works.
+
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
 
 def generate_candidates(
     query_embedding: list[float],
     intent: dict | None = None,
-    limit: int = DEFAULT_CANDIDATE_COUNT,
+    limit: int | None = None,
+    query_text: str = "",
 ) -> list[dict]:
-    """Retrieve candidate movies via ANN search with hard filters.
+    """Retrieve candidates via hard-filtered semantic + lexical search.
 
-    1. pgvector HNSW cosine search for top candidates
-    2. Hard filter: exclude movies matching negated genres
-    3. Optional: filter by content_type if specified in intent
+    1. Hard filters: exclude movies matching negated genres, excluded/not
+       included countries, below the requested rating, outside the
+       requested release year or runtime range, or not in the requested
+       original language(s)
+    2. Rank the survivors by exact cosine distance (semantic channel)
+    3. Rank the survivors by full-text match (lexical channel), if
+       `query_text` yields any usable terms
+    4. Fuse the two rankings with RRF and take `limit`
+
+    The filters are true SQL WHERE-clause exclusions, not scoring weights --
+    a movie violating a hard constraint never reaches the candidate set,
+    regardless of how well it scores on either channel.
+
+    With no `query_text` (or no usable terms in it) this degrades to
+    semantic-only retrieval, which is the behaviour that predates the
+    lexical channel.
     """
-    queryset = Movie.objects.filter(embedding__isnull=False)
+    limit = limit if limit is not None else settings.CANDIDATE_COUNT
 
-    if intent:
-        negations = intent.get("negations", [])
-        if negations:
-            for neg_genre in negations:
-                queryset = queryset.exclude(genres__contains=[neg_genre])
-
-        content_type = intent.get("content_type")
-        if content_type:
-            queryset = queryset.filter(content_type=content_type)
-
-    candidates = (
-        queryset
-        .annotate(distance=CosineDistance("embedding", query_embedding))
-        .order_by("distance")[:limit]
+    base_queryset = _apply_hard_filters(
+        Movie.objects.filter(embedding__isnull=False), intent
     )
 
+    semantic_ids = list(
+        base_queryset.annotate(distance=CosineDistance("embedding", query_embedding))
+        .order_by("distance")
+        .values_list("id", flat=True)[:limit]
+    )
+    lexical_ids = _lexical_ranked_ids(base_queryset, query_text, limit)
+
+    if lexical_ids:
+        fused = _rrf_fuse({"semantic": semantic_ids, "lexical": lexical_ids})
+        ordered_ids = [movie_id for movie_id, _ in fused][:limit]
+    else:
+        ordered_ids = semantic_ids
+
+    if not ordered_ids:
+        return []
+
+    lexical_rank_by_id = {movie_id: rank for rank, movie_id in enumerate(lexical_ids)}
+
+    movies_by_id = {
+        movie.id: movie
+        for movie in Movie.objects.filter(id__in=ordered_ids).annotate(
+            distance=CosineDistance("embedding", query_embedding)
+        )
+    }
+
     return [
-        {
-            "id": movie.id,
-            "serial_name": movie.serial_name,
-            "genres": movie.genres,
-            "content_type": movie.content_type,
-            "country": movie.country,
-            "actors": movie.actors,
-            "director": movie.director,
-            "age_rating": movie.age_rating,
-            "release_date": str(movie.release_date) if movie.release_date else None,
-            "description": movie.description,
-            "url": movie.url,
-            "embedding": list(movie.embedding) if movie.embedding is not None else None,
-            "distance": float(movie.distance),
-        }
-        for movie in candidates
+        _as_candidate_dict(movies_by_id[movie_id], lexical_rank_by_id.get(movie_id))
+        for movie_id in ordered_ids
+        if movie_id in movies_by_id
     ]
+
+
+def _apply_hard_filters(queryset, intent: dict | None):
+    """Apply the intent's hard constraints as SQL WHERE clauses.
+
+    Movies with null metadata (rating, release_date, runtime) are kept rather
+    than excluded -- unknown metadata means "cannot judge", not "fails".
+    `original_languages` is the one exception: original_language is always
+    known for an imported row, so it's an exact `__in` match with no
+    null-passes-through branch.
+    """
+    if not intent:
+        return queryset
+
+    for negated_genre in intent.get("negations", []):
+        queryset = queryset.exclude(genres__contains=[negated_genre])
+
+    for excluded_country in intent.get("country_exclusions", []):
+        queryset = queryset.exclude(country__contains=[excluded_country])
+
+    country_inclusions = intent.get("country_inclusions", [])
+    if country_inclusions:
+        included = reduce(
+            operator.or_, (Q(country__contains=[c]) for c in country_inclusions)
+        )
+        queryset = queryset.filter(included)
+
+    min_vote_average = intent.get("min_vote_average")
+    if min_vote_average is not None:
+        queryset = queryset.filter(
+            Q(vote_average__gte=min_vote_average) | Q(vote_average__isnull=True)
+        )
+
+    min_release_year = intent.get("min_release_year")
+    if min_release_year is not None:
+        queryset = queryset.filter(
+            Q(release_date__year__gte=min_release_year) | Q(release_date__isnull=True)
+        )
+
+    max_release_year = intent.get("max_release_year")
+    if max_release_year is not None:
+        queryset = queryset.filter(
+            Q(release_date__year__lte=max_release_year) | Q(release_date__isnull=True)
+        )
+
+    min_runtime = intent.get("min_runtime")
+    if min_runtime is not None:
+        queryset = queryset.filter(
+            Q(runtime__gte=min_runtime) | Q(runtime__isnull=True)
+        )
+
+    max_runtime = intent.get("max_runtime")
+    if max_runtime is not None:
+        queryset = queryset.filter(
+            Q(runtime__lte=max_runtime) | Q(runtime__isnull=True)
+        )
+
+    original_languages = intent.get("original_languages", [])
+    if original_languages:
+        queryset = queryset.filter(original_language__in=original_languages)
+
+    return queryset
+
+
+def _lexical_terms(query_text: str) -> list[str]:
+    """Extract usable full-text terms from a raw user message."""
+    if not query_text:
+        return []
+    terms = [
+        term
+        for term in _WORD_RE.findall(query_text.lower())
+        if len(term) >= settings.LEXICAL_MIN_TERM_LENGTH
+    ]
+    return terms[: settings.LEXICAL_MAX_TERMS]
+
+
+def _lexical_ranked_ids(base_queryset, query_text: str, limit: int) -> list[int]:
+    """Movie ids matching the query's terms, best full-text rank first.
+
+    Terms are OR-ed rather than AND-ed. The input is a conversational
+    sentence, so requiring every term to match would find nothing; OR lets a
+    title or a name carry the match on its own, and ts_rank sorts by how much
+    of the query landed and in which weight class (title outranks cast).
+    """
+    terms = _lexical_terms(query_text)
+    if not terms:
+        return []
+
+    search_query = reduce(
+        operator.or_,
+        (
+            SearchQuery(term, config=settings.LEXICAL_SEARCH_CONFIG)
+            for term in terms
+        ),
+    )
+
+    return list(
+        base_queryset.filter(search_vector=search_query)
+        .annotate(lexical_rank=SearchRank(F("search_vector"), search_query))
+        .order_by("-lexical_rank")
+        .values_list("id", flat=True)[:limit]
+    )
+
+
+def _rrf_fuse(
+    channels: dict[str, list[int]],
+    k: int | None = None,
+    weights: dict[str, float] | None = None,
+) -> list[tuple[int, float]]:
+    """Fuse per-channel rankings into one ordering by Reciprocal Rank Fusion.
+
+    `channels` maps a channel name to its ranked movie ids, best first.
+    Returns (movie_id, fused_score) pairs, highest score first.
+    """
+    k = k if k is not None else settings.RRF_K
+    channel_weights = weights or settings.RRF_WEIGHTS
+    scores: dict[int, float] = {}
+
+    for channel, ranked_ids in channels.items():
+        weight = channel_weights.get(channel, 1.0)
+        for rank, movie_id in enumerate(ranked_ids):
+            scores[movie_id] = scores.get(movie_id, 0.0) + weight / (k + rank + 1)
+
+    return sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+
+
+def _as_candidate_dict(movie: Movie, lexical_rank: int | None) -> dict:
+    return {
+        "id": movie.id,
+        "tmdb_id": movie.tmdb_id,
+        "serial_name": movie.serial_name,
+        "original_title": movie.original_title,
+        "genres": movie.genres,
+        "country": movie.country,
+        "original_language": movie.original_language,
+        "keywords": movie.keywords,
+        "release_date": str(movie.release_date) if movie.release_date else None,
+        "description": movie.description,
+        "runtime": movie.runtime,
+        "popularity": movie.popularity,
+        "vote_average": movie.vote_average,
+        "vote_count": movie.vote_count,
+        "poster_path": movie.poster_path,
+        "embedding": list(movie.embedding) if movie.embedding is not None else None,
+        "distance": float(movie.distance),
+        # 0-based position in the lexical channel, or None if it was found
+        # only semantically. Kept so the reranker can tell an exact-name hit
+        # from a purely semantic one.
+        "lexical_rank": lexical_rank,
+    }

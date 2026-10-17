@@ -9,14 +9,14 @@ The system runs as 4 Docker services via `docker compose up`:
 │                     docker compose                        │
 ├────────────┬────────────┬───────────────┬────────────────┤
 │  frontend  │  backend   │    ollama     │      db        │
-│  (React)   │  (Django)  │  (qwen2.5:7b) │ (PostgreSQL 16)│
+│  (React)   │  (Django)  │ (params.yaml) │ (PostgreSQL 16)│
 │  :3000     │  :8000     │  :11434       │  :5433         │
 │            │            │               │                │
 │  Vite dev  │  uvicorn   │  auto-pulls   │  pgvector ext  │
-│  server    │  ASGI      │  model on     │  HNSW index    │
+│  server    │  ASGI      │  model on     │  exact vector  │
 │            │            │  first start  │                │
-│  NOT YET   │  sentence- │               │  catalog +     │
-│  BUILT     │  transformers│              │  sessions      │
+│  proxies   │  sentence- │               │  catalog +     │
+│  /api/*    │  transformers│              │  sessions      │
 └────────────┴─────┬──────┴───────┬───────┴────────────────┘
                    │              │
                    │  httpx calls │
@@ -32,48 +32,203 @@ The system runs as 4 Docker services via `docker compose up`:
 
 ### ollama (LLM inference)
 
-- **Image**: custom, built from `ollama/Dockerfile`
+- **Image**: custom, built from `ollama/Dockerfile` on top of `ollama/ollama:0.34.2`
+  (pinned; the server version decides which API features exist -- `think`, JSON-schema
+  `format` -- see Reproducibility)
 - **Port**: 11434 (Ollama default)
-- **Auto-pull**: custom `entrypoint.sh` starts Ollama server, waits for readiness,
-  pulls the configured model (`OLLAMA_MODEL`, default `qwen2.5:7b`) if not cached
-- **Model cache**: persisted in `ollama_data` Docker volume (~4GB for qwen2.5:7b)
-- **GPU**: uses NVIDIA GPU if available via Docker `deploy.resources.reservations`
-- **Health check**: `ollama --version`
-- **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on entrypoint for Windows compatibility
+- **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
+  readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
+  not cached (checked with `ollama show`, the same exact-name test the health check
+  uses, so a cached `qwen3:8b-q4` does not count as `qwen3:8b`)
+- **Model cache**: persisted in `ollama_data` Docker volume (~5.0GB for the
+  default qwen3:8b, Q4_K_M)
+- **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
+  Profiles for running without one
+- **Health check**: `ollama/healthcheck.sh` -- healthy only once `ollama show` finds the
+  model named by `llm.model` (read from the mounted `params.yaml` by the same
+  `llm_model.sh` helper the entrypoint uses), not merely once the server answers. The
+  backend waits for `healthy`, so it no longer starts while the first pull is still
+  running. `start_period` is 900s so a slow first download does not exhaust the retries;
+  a warm model volume turns healthy on the first passing check.
+- **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on the shell scripts for Windows compatibility
 
 ### backend (Django REST Framework)
 
 - **Image**: custom, built from `backend/Dockerfile` (Python 3.11-slim)
 - **Port**: 8000
-- **Startup sequence**: `migrate -> import_catalog -> uvicorn`
+- **Startup sequence**: `migrate -> import_catalog -> check_embedding_index -> uvicorn`; `check_embedding_index` exits non-zero when the embedding index was built with a different model or text config than `params.yaml`, so the container stops instead of serving incomparable vectors (a missing record only warns)
 - **Dependencies**: waits for `db` (healthy) and `ollama` (healthy) before starting
 - **Volumes**:
-  - `./catalog_okko.parquet:/app/catalog_okko.parquet:ro` (catalog data)
+  - `./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro` (catalog data)
   - `./data:/app/data:ro` (test queries for evaluation)
   - `model_cache:/root/.cache` (sentence-transformers model cache)
 
 ### frontend (React + Tailwind)
 
-Not yet implemented. Will serve on port 3000.
+- **Image**: custom, built from `frontend/Dockerfile`
+- **Port**: 3000 (Vite dev server)
+- **Proxies** `/api/*` to the backend service
 
-## Environment Variables
+## Security Tradeoffs
 
-All configuration via environment variables, with defaults in `docker-compose.yml`:
+`db` (`:5433`) and `ollama` (`:11434`) are published to the host with no
+authentication — anyone who can reach those ports can read/write the
+catalog and session data directly, or drive the LLM. Not a real risk for a
+local pet project on a trusted machine, but before any deployment reachable
+outside localhost: drop the host port mappings for `db`/`ollama` in
+`docker-compose.yml` (keep them on the internal Docker network only, where
+`backend` already reaches them by service name) or put them behind a
+firewall/VPN.
+Source: external audit, 2026-09-04.
+
+## Configuration
+
+### params.yaml (all model and tuning values)
+
+`params.yaml` at the repo root is the single source of truth for every model
+name and tuning parameter. It is mounted read-only into the backend
+(`/app/params.yaml`) and the ollama container (`/params.yaml`, whose entrypoint
+reads `llm.model` from it to decide what to pull). Nothing in it is
+overridable by an environment variable -- change the file and restart.
+
+| Section | Covers |
+|---------|--------|
+| `llm` | Ollama model, base URL, context window (`num_ctx`), sampling (`temperature`, `seed`), explanation description cap, per-call timeouts |
+| `embedding` | Embedding model, its Hugging Face revision, and vector dimensions |
+| `retrieval` | Candidate count, RRF constants, lexical search settings |
+| `scoring` | Signal weights (non-negative, sum to 1.0, checked at load), neutral score |
+| `diversification` | MMR top_n and lambda |
+| `reranking` | Cross-encoder model and revision, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
+| `session` | EMA alpha, session TTL, LLM history replay caps |
+| `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
+| `intent` | Genre-match threshold |
+| `catalog` | Import and embedding batch sizes, the import vote-count floor, poster URL parts |
+
+Changing `embedding.model` or `embedding.dimensions` additionally requires a
+schema migration and a full re-run of `generate_embeddings --all` -- existing vectors
+are not convertible. The same re-run is needed after changing `embedding.text.*`.
+`check_embedding_index` fails the start-up until it has been done.
+
+### Environment variables (secrets and wiring only)
+
+Configurable via `.env` (all three appear in `.env.example`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `DB_PASSWORD` | `changeme` | PostgreSQL password |
-| `SECRET_KEY` | `change-in-production` | Django secret key |
+| `SECRET_KEY` | insecure dev default | Django secret key |
 | `DEBUG` | `0` | Django debug mode |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama model for intent parsing and explanations |
-| `EMBEDDING_MODEL` | `sentence-transformers/paraphrase-multilingual-mpnet-base-v2` | Embedding model name |
-| `SCORE_WEIGHT_SEMANTIC` | `0.4` | Semantic similarity weight in hybrid scoring |
-| `SCORE_WEIGHT_METADATA` | `0.3` | Metadata match weight |
-| `SCORE_WEIGHT_SESSION` | `0.3` | Session preference weight |
-| `SESSION_ALPHA` | `0.7` | EMA decay factor for session preference vector |
-| `GENRE_MATCH_THRESHOLD` | `0.5` | Cosine similarity threshold for genre normalization |
 
-Copy `.env.example` to `.env` and customize before first run.
+Not settable via `.env` (listed for reference only -- neither appears in `.env.example`):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | compose-provided | Postgres connection string, built by `docker-compose.yml` from `DB_PASSWORD`; not read from `.env` |
+| `PARAMS_PATH` | auto-discovered | Override the params.yaml location; read directly by Django's `settings.py` when present in the container's environment, but not wired up in `docker-compose.yml` |
+
+`ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are **not** environment variables at
+all, despite looking like ones -- `docker-compose.yml` hardcodes them as
+literal values on the `backend` service (`localhost,127.0.0.1,backend` and
+`http://localhost:3000,http://127.0.0.1:3000` respectively), with no `${VAR}`
+substitution like `DB_PASSWORD`/`SECRET_KEY`/`DEBUG` use. Setting either in
+`.env` currently has no effect; changing them requires editing
+`docker-compose.yml` directly.
+
+Copy `.env.example` to `.env` and set a real `SECRET_KEY` before first run.
+
+### Reproducibility
+
+What is pinned, and what is not:
+
+| Piece | Pinned how |
+|-------|-----------|
+| Ollama server | Exact image tag in `ollama/Dockerfile` (`ollama/ollama:0.34.2`, the newest stable release more than four weeks old on 2026-10-15). Bump deliberately and re-run the eval |
+| Embedder weights | `embedding.revision` -- a Hugging Face commit SHA passed as `revision=` on every load. Recorded in the `EmbeddingIndex` row (see ML.md, Index provenance) |
+| Reranker weights | `reranking.revision`, same mechanism; nothing is stored in the DB for it |
+| LLM weights | **Not pinnable.** The `qwen3:8b` tag is mutable and `ollama pull` cannot take a digest. The digest actually served is logged once per backend process (`Ollama model qwen3:8b digest sha256:..`), so a run can be traced afterwards |
+| Python packages | `backend/uv.lock`, installed with `uv sync --frozen` in the backend `Dockerfile`, so a rebuild gets the locked versions. `pyproject.toml` holds the ranges. `torch` is exact (2.5.1) and comes from the PyTorch cu121 index on Linux, because newer CUDA builds dropped Pascal (sm_61); on macOS the lock falls back to PyPI. Change dependencies with `uv lock`, never by editing the lock |
+| Sampling | `llm.temperature.*` and `llm.seed` in `params.yaml`; reproducible on the same Ollama build and hardware |
+
+A `revision` of `null` means unpinned (the model's default branch at download time). To
+move a pin, look up the new commit SHA at
+`https://huggingface.co/api/models/<model>` (`sha`), put it in `params.yaml`, and for the
+embedder re-run `generate_embeddings --all`.
+
+## Hardware Requirements and Manual Configuration
+
+There is no pre-built alternate deployment mode here -- no
+`docker-compose.cpu.yml`, no Compose `profiles:` key, just the one
+`docker-compose.yml`. Running on hardware other than what's committed means
+hand-editing `docker-compose.yml` and `params.yaml` yourself, as described in
+this section.
+
+The committed `params.yaml` targets a discrete NVIDIA GPU with ~11GB of VRAM,
+and `docker-compose.yml` reserves the card for both the `ollama` and the
+`backend` service, so the normal command is all you need:
+
+```bash
+docker compose up --build
+```
+
+If the NVIDIA driver is missing, Compose fails at startup with a device-driver
+error. That is intentional: this profile on CPU is not interactively usable, so
+failing loudly beats silently degrading.
+
+VRAM with everything resident:
+
+```
+qwen3:8b, Q4_K_M                 ~5.0 GB
+LLM KV cache (llm.num_ctx 6144)  ~0.9 GB
+bge-reranker-v2-m3, fp32         ~2.2 GB
+bge-m3 embedder, fp32            ~2.2 GB
+CUDA context + activations       ~1.0-1.5 GB
+                                 --------
+                                 ~11.3-11.8 GB of 11 GB
+```
+
+On this estimate the budget is **exceeded**. The figure was already at the
+limit (~10.4-10.9 GB) before `llm.num_ctx` was set explicitly; the 6144-token
+KV cache (~0.147 MB/token for qwen3:8b) adds ~0.9 GB. These are estimates, not
+measurements -- check `nvidia-smi` with all three models loaded. The reranker
+also loads fp32, not fp16 (sentence-transformers does not downcast it
+automatically). If it doesn't fit, in order of preference: a smaller
+`llm.num_ctx` (lower `session.history_max_turns` with it so the prompt still
+fits), or a smaller `llm.model`. `reranking.device: cpu` is not an acceptable
+mitigation -- the reranker on CPU takes seconds per request, which misses the
+latency goals.
+
+### Running without a GPU (manual hand-edit)
+
+The committed profile does **not** fit an 8GB Apple Silicon Mac, and Docker
+Desktop on macOS cannot reach the Apple GPU at all (there is no Metal
+passthrough into its Linux VM). Requesting the `nvidia` driver also fails
+there, so **both** GPU `deploy:` blocks in `docker-compose.yml` have to go:
+the one under the `ollama` service and the one under the `backend` service.
+Removing only one still leaves the other service requesting a GPU, and Compose
+will fail to start on a machine without one.
+
+Alongside that, change `params.yaml`:
+
+| Key | Value | Why |
+|-----|-------|-----|
+| `llm.model` | `qwen2.5:3b` | ~1.9GB; an 8B model does not fit beside Docker |
+| `reranking.enabled` | `false` | bge-v2-m3 on CPU costs ~15s per request |
+
+and run Ollama natively on the host for Metal acceleration, which also keeps
+the model out of the Docker VM's memory budget:
+
+```bash
+brew install ollama
+ollama serve             # in its own terminal
+ollama pull qwen2.5:3b
+```
+
+Then set `llm.base_url` to `http://host.docker.internal:11434` and start only
+the remaining services:
+
+```bash
+docker compose up db backend frontend
+```
 
 ## Management Commands
 
@@ -81,12 +236,17 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 
 | Command | Purpose |
 |---------|---------|
-| `import_catalog --skip-existing` | Load catalog_okko.parquet into PostgreSQL (idempotent) |
-| `generate_embeddings --batch-size 64` | Embed all movie descriptions via sentence-transformers |
-| `evaluate_scoring` | Run offline evaluation with genre-based metrics |
-| `evaluate_scoring --llm-judge` | Run evaluation with LLM graded relevance (slow) |
-| `evaluate_scoring --sweep` | Grid search over scoring weight space |
-| `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge (6 configs) |
+| `import_catalog --skip-existing` | Load the TMDB CSV into PostgreSQL (idempotent), then rebuild search vectors |
+| `generate_embeddings` | Embed movies that have no embedding (batch size from params.yaml) and record the index provenance; refuses under a config mismatch |
+| `generate_embeddings --all` | Re-embed every movie and refresh the provenance record (required after changing the embedding model or `embedding.text.*`) |
+| `generate_embeddings --adopt` | Record the current config for an index built before provenance tracking, without re-embedding |
+| `check_embedding_index` | Compare the recorded provenance with `params.yaml`; exit non-zero on a mismatch (runs at backend start-up) |
+| `evaluate_scoring` | Golden-set evaluation on the test split, intent parsed by the production LLM call; writes a run record to `eval_runs/` |
+| `evaluate_scoring --intent oracle` | Same, with each entry's labelled intent instead of the LLM parse |
+| `evaluate_scoring --llm-judge` | Also score results with the LLM judge (slow, secondary signal) |
+| `evaluate_scoring --sweep` | Grid search over scoring weight space, dev split only |
+| `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge columns (6 configs) |
+| `evaluate_scoring --intent oracle --gate-report` | Calibration report for `reranking.min_score` (gate off; dev split only) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
 
 ## First Run
@@ -97,12 +257,13 @@ docker compose up backend
 
 # This automatically:
 # 1. Starts PostgreSQL, waits for health check
-# 2. Starts Ollama, pulls qwen2.5:7b model (~4GB, first time only)
-# 3. Starts backend: runs migrations, imports 18K movies from parquet
+# 2. Starts Ollama, pulls the model named in params.yaml (first time only)
+# 3. Starts backend: runs migrations, imports ~50K movies from the TMDB CSV,
+#    checks the embedding index (none yet on a first run is fine)
 # 4. Starts uvicorn on port 8000
 
 # Generate embeddings (separate step, ~5 min on GPU)
-docker compose exec backend python manage.py generate_embeddings --batch-size 64
+docker compose exec backend python manage.py generate_embeddings
 
 # Verify everything works
 docker compose exec backend python manage.py shell -c "
@@ -123,9 +284,16 @@ rebuild: `docker compose build ollama --no-cache`
 **"No migrations to apply" but tables don't exist**: Migration files
 weren't in the Docker image. Rebuild: `docker compose build backend --no-cache`
 
-**Embedding generation slow**: On CPU, 18K descriptions take ~30-60 minutes.
-On GPU, ~5 minutes. Check GPU availability:
+**Embedding generation slow**: At the old 18K-item catalog this took ~5 minutes
+on GPU / ~30-60 minutes on CPU with the mpnet embedder. The current ~50K-item
+TMDB catalog with BGE-M3 (a larger model) will take proportionally longer on
+both -- re-measure and update this line after running it. Check GPU
+availability:
 `docker compose exec backend python -c "import torch; print(torch.cuda.is_available())"`
 
 **Ollama model not pulling**: Check logs: `docker compose logs ollama`.
-The entrypoint waits for the server to be ready before pulling.
+The entrypoint waits for the server to be ready before pulling. The container stays
+`starting` (and the backend waits) until the model is present; if the pull takes
+longer than the health check's 900s `start_period` plus its ten 10s retries, the
+service is marked unhealthy -- re-run `docker compose up` (Ollama resumes an
+interrupted pull).

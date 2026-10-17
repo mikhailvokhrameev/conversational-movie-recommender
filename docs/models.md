@@ -2,43 +2,72 @@
 
 ## Movie
 
-Represents a movie, series, or multi-episode film from the Okko catalog.
+Represents a movie from the TMDB catalog.
 
 **Table**: `movies_movie`
 
 | Field | Type | Constraints | Description |
 |-------|------|-------------|-------------|
 | `id` | BigAutoField | PK | Auto-generated primary key |
-| `serial_name` | CharField(500) | indexed | Title in Russian |
-| `genres` | JSONField | default=[] | List of genre strings, e.g. `["Комедии", "Драмы"]` |
-| `content_type` | CharField(50) | | One of: `Фильм`, `Сериал`, `Многосерийный фильм` |
-| `country` | JSONField | default=[] | List of countries, e.g. `["Россия", "США"]` |
-| `actors` | JSONField | default=[] | List of actor names (max 4 per movie in catalog) |
-| `director` | CharField(255) | blank | Director name |
-| `age_rating` | FloatField | nullable | Age restriction (6, 12, 16, 18, or null) |
-| `studio_name` | CharField(500) | blank | Production studio |
+| `tmdb_id` | IntegerField | unique | TMDB's own movie id |
+| `serial_name` | CharField(500) | indexed | Display title (TMDB's `title`) |
+| `original_title` | CharField(500) | blank | Title in the movie's original language |
+| `genres` | JSONField | default=[] | List of genre strings, e.g. `["Comedy", "Drama"]` (see Genre Taxonomy) |
+| `country` | JSONField | default=[] | List of production countries |
+| `original_language` | CharField(10) | blank | ISO 639-1 code, e.g. `en`, `ko` |
+| `keywords` | JSONField | default=[] | Curated theme/franchise/character tags from TMDB |
 | `release_date` | DateField | nullable | Original release date |
-| `description` | TextField | blank | Russian-language synopsis (avg 590 chars) |
-| `url` | URLField(500) | unique | Okko catalog URL |
-| `embedding` | VectorField(768) | nullable | Pre-computed description embedding |
+| `description` | TextField | blank | English-language synopsis (TMDB `overview`) |
+| `runtime` | IntegerField | nullable | Runtime in minutes |
+| `popularity` | FloatField | default=0.0 | TMDB's popularity metric (unbounded, non-linear) |
+| `vote_average` | FloatField | default=0.0 | TMDB user rating, 0-10 |
+| `vote_count` | IntegerField | default=0 | Number of TMDB votes (import floor: see Catalog Import below) |
+| `poster_path` | CharField(500) | nullable | TMDB poster path; combine with `catalog.poster_base_url`/`poster_size` from `params.yaml` for a full image URL |
+| `embedding` | VectorField(1024) | nullable | Pre-computed description embedding (BGE-M3) |
+| `search_vector` | SearchVectorField | nullable, GIN | Full-text vector over title/original_title (A), keywords (B) |
 
 **Indexes**:
 - B-tree on `serial_name` (Django `db_index=True`)
-- HNSW on `embedding` with cosine distance (`m=16, ef_construction=64`)
-- Unique constraint on `url`
+- No ANN index on `embedding` -- exact cosine search (see ML.md for why)
+- GIN on `search_vector` (`movie_search_vector_gin`) for full-text matching
+- Unique constraint on `tmdb_id`
 
-**Data source**: `catalog_okko.parquet` (18,130 items). Loaded via
-`manage.py import_catalog`. Embeddings generated via `manage.py generate_embeddings`.
+`search_vector` is not maintained on save. The catalog is bulk-imported, so
+`movies.search_index.refresh_search_vectors()` rebuilds it in a single UPDATE
+after import; `import_catalog` calls it automatically.
+
+**Data source**: `TMDB Movie Dataset v11.csv`, filtered at import time to
+`status=Released`, non-adult, has overview, has poster, `vote_count >= 20`
+(~50K rows imported from ~1.49M raw). Loaded via `manage.py import_catalog`.
+Embeddings generated via `manage.py generate_embeddings`, which also records
+their provenance (see EmbeddingIndex).
+
+### EmbeddingIndex
+
+Single-row provenance record for `Movie.embedding`: what built the stored vectors.
+The row's pk is always 1 (`save()` forces it and a check constraint enforces it).
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `model_name` | CharField(255) | `embedding.model` at embed time |
+| `dimensions` | PositiveIntegerField | `embedding.dimensions` at embed time |
+| `revision` | CharField(64) | nullable; `embedding.revision` (Hugging Face commit) at embed time. Null = built unpinned or before this was recorded; a null on either side of the comparison is a warning, not a mismatch |
+| `text_version` | PositiveIntegerField | `EMBEDDING_TEXT_VERSION` of the text template |
+| `text_config` | JSONField | `embedding.text` values (`description_chars`, `max_keywords`) |
+| `updated_at` | DateTimeField | Auto-updated |
+
+Written by `generate_embeddings`, compared with `params.yaml` by
+`check_embedding_index` (see ML.md, Index provenance). Absent until the first
+embedding run, or until `generate_embeddings --adopt` on an index built before it existed.
 
 ### Genre Taxonomy
 
-32 genres in Russian, matching the Okko catalog exactly:
+TMDB's standard 19-genre list (used both for the catalog's `genres` field and
+as the LLM's `ALLOWED GENRES` list in intent parsing):
 
-Аниме, Артхаус, Биографии, Блоги, Боевики, Вестерны, Военное,
-Детективы, Документальное, Драмы, Интервью, Историческое, Комедии,
-Концерты, Короткий метр, Криминальное, Курсы, Мелодрамы, Музыкальное,
-Мультфильмы, Презентации, Приключения, Природа, Путешествия, Семейное,
-Советское, Триллеры, Ужасы, Фантастика, Фильмы для детей, Фитнес, Фэнтези
+Action, Adventure, Animation, Comedy, Crime, Documentary, Drama, Family,
+Fantasy, History, Horror, Music, Mystery, Romance, Science Fiction, TV Movie,
+Thriller, War, Western
 
 ## ChatSession
 
@@ -51,7 +80,8 @@ preference profile for session-based recommendation learning.
 |-------|------|-------------|-------------|
 | `id` | BigAutoField | PK | Auto-generated primary key |
 | `session_id` | UUIDField | unique, indexed | Frontend-generated session identifier |
-| `preference_vector` | VectorField(768) | nullable | EMA-updated preference embedding |
+| `session_token` | CharField(64) | indexed | Cryptographic token for session auth (`secrets.token_urlsafe(32)`) |
+| `preference_vector` | VectorField(1024) | nullable | EMA-updated preference embedding |
 | `preferences` | JSONField | default={} | Explicit preferences (liked/disliked genres, themes) |
 | `history` | JSONField | default=[] | Conversation message history |
 | `turn_count` | IntegerField | default=0 | Number of conversation turns |
@@ -76,10 +106,10 @@ The `preferences` JSONField stores:
 
 ```json
 {
-  "liked_genres": ["Комедии", "Приключения"],
-  "disliked_genres": ["Ужасы"],
-  "themes": ["космос", "путешествия"],
-  "reference_films": ["Интерстеллар"]
+  "liked_genres": ["Comedy", "Adventure"],
+  "disliked_genres": ["Horror"],
+  "themes": ["space", "travel"],
+  "reference_films": ["Interstellar"]
 }
 ```
 

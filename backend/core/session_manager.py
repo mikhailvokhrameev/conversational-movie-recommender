@@ -1,27 +1,27 @@
 """Session-based preference learning via exponential moving average (EMA).
 
-Maintains a 768-dim preference vector per conversation session.
-Each query embedding is blended into the running vector with a configurable
-alpha (default 0.7). The vector is L2-normalized after each update to keep
-cosine similarity scores consistent regardless of turn count.
+Maintains one preference vector per conversation session, sized to
+embedding.dimensions. Each query embedding is blended into the running vector
+with alpha, then L2-normalized so cosine similarity stays comparable
+regardless of turn count.
 
-Alpha is configurable via SESSION_ALPHA env var. Tune it with:
+Alpha lives in params.yaml under session.alpha. Tune it with:
   manage.py evaluate_scoring --sweep
 """
 
-import os
-
 import numpy as np
+from django.conf import settings
 
-
-DEFAULT_ALPHA = float(os.environ.get("SESSION_ALPHA", "0.7"))
 
 
 def update_preference_vector(
     current_vector: list[float] | None,
     query_embedding: list[float],
-    alpha: float = DEFAULT_ALPHA,
+    alpha: float | None = None,
 ) -> list[float]:
+    if alpha is None:
+        alpha = settings.SESSION_ALPHA
+
     query_vec = np.array(query_embedding)
 
     if current_vector is None:
@@ -36,6 +36,30 @@ def update_preference_vector(
         updated = updated / norm
 
     return updated.tolist()
+
+
+def vector_for_scoring(
+    current_vector: list[float] | None,
+    query_embedding: list[float],
+    category: str,
+) -> list[float] | None:
+    """Preference vector the `session` scoring signal should use on this turn.
+
+    A refinement ("no horror", "something funnier") must steer the very turn it
+    is issued on, so the high-alpha EMA update is applied *before* scoring
+    rather than only afterwards. A new_search keeps the pre-turn vector: the
+    current query is already in the semantic signal, so folding it into the
+    session signal too would count it twice. With no vector yet (first turn)
+    there is nothing stale to correct, so None stays None.
+
+    Scoring-only: the stored vector is recomputed from the locked row in
+    `_save_session`, which matches this one outside a concurrent-turn race.
+    """
+    if category != "refinement" or current_vector is None:
+        return current_vector
+    return update_preference_vector(
+        current_vector, query_embedding, alpha=settings.SESSION_ALPHA_REFINEMENT,
+    )
 
 
 def track_explicit_preferences(
@@ -57,3 +81,26 @@ def track_explicit_preferences(
                 prefs[pref_key].append(item)
 
     return prefs
+
+
+def build_movie_facts(movies: list[dict], description_chars: int) -> list[dict]:
+    """Per-movie facts stored with an assistant recommendation turn, in display order.
+
+    This is what later follow-ups ("which one is shorter?") are answered from:
+    the catalog holds no director/cast, so without these the model falls back
+    to parametric memory. The description is cut here, at storage time, so the
+    stored history -- not just the replay -- stays bounded by the same budget.
+    `year` comes from `release_date` (ISO string or date), None if missing.
+    """
+    facts = []
+    for movie in movies:
+        release_date = movie.get("release_date")
+        year = int(str(release_date)[:4]) if release_date else None
+        facts.append({
+            "title": movie["serial_name"],
+            "year": year,
+            "genres": list(movie.get("genres") or []),
+            "runtime": movie.get("runtime"),
+            "description": (movie.get("description") or "")[:description_chars],
+        })
+    return facts

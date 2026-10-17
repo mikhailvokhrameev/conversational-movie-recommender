@@ -2,8 +2,8 @@ import { useState, useEffect, useCallback } from 'react'
 
 export function useTheme() {
   const [theme, setTheme] = useState(() => {
-    if (typeof window === 'undefined') return 'dark'
-    return localStorage.getItem('theme') || 'dark'
+    if (typeof window === 'undefined') return 'light'
+    return localStorage.getItem('theme') || 'light'
   })
 
   useEffect(() => {

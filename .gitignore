@@ -33,6 +33,7 @@ Thumbs.db
 *.md
 !README.md
 !docs/*.md
+!docs/adr/*.md
 
 # Node
 node_modules/
@@ -59,8 +60,17 @@ coverage.xml
 # pytest
 .pytest_cache/
 
+# evaluate_scoring run records (written under the working directory)
+eval_runs/
+backend/eval_runs/
+
 # Vite
 frontend/dist/
 
 # Data files
 catalog_okko.parquet
+TMDB Movie Dataset v11.csv
+.gstack/
+
+# Frontend
+.impeccable/

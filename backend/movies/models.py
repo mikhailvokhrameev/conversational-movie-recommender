@@ -1,42 +1,125 @@
+import secrets
 import uuid
 
+from django.conf import settings
+from django.contrib.postgres.indexes import GinIndex
+from django.contrib.postgres.search import SearchVectorField
 from django.db import models
 from django.utils import timezone
-from pgvector.django import VectorField, HnswIndex
+from pgvector.django import VectorField
+
+
+def generate_token():
+    return secrets.token_urlsafe(32)
 
 
 class Movie(models.Model):
+    tmdb_id = models.IntegerField(unique=True)
     serial_name = models.CharField(max_length=500, db_index=True)
+    original_title = models.CharField(max_length=500, blank=True, default="")
     genres = models.JSONField(default=list)
-    content_type = models.CharField(max_length=50)
     country = models.JSONField(default=list)
-    actors = models.JSONField(default=list)
-    director = models.CharField(max_length=255, blank=True, default="")
-    age_rating = models.FloatField(null=True, blank=True)
-    studio_name = models.CharField(max_length=500, blank=True, default="")
+    original_language = models.CharField(max_length=10, blank=True, default="")
+    keywords = models.JSONField(default=list)
     release_date = models.DateField(null=True, blank=True)
     description = models.TextField(blank=True, default="")
-    url = models.URLField(max_length=500, unique=True)
-    embedding = VectorField(dimensions=768, null=True, blank=True)
+    runtime = models.IntegerField(null=True, blank=True)
+    popularity = models.FloatField(default=0.0)
+    vote_average = models.FloatField(default=0.0)
+    vote_count = models.IntegerField(default=0)
+    poster_path = models.CharField(max_length=500, null=True, blank=True)
+    embedding = VectorField(
+        dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
+    )
 
+    # Lexical retrieval channel: title/original_title/keywords as a weighted
+    # tsvector. Populated by movies.search_index.refresh_search_vectors(), not
+    # on save -- the catalog is bulk-imported, so it is rebuilt in one UPDATE
+    # afterwards.
+    search_vector = SearchVectorField(null=True, blank=True)
+
+    # No ANN index on `embedding` by design. At ~50K rows an exact cosine scan
+    # still costs on the order of tens of milliseconds, against an ~2s Ollama
+    # intent call in the same request -- so HNSW buys under 2% of request
+    # latency while giving up exact recall. It also degrades under the hard
+    # filters in candidate_generation: a filtered HNSW scan post-filters its
+    # candidate list and can return far fewer rows than the requested limit.
+    # Revisit if the catalog grows by another order of magnitude.
+    #
+    # The GIN index below is a different case: full-text matching without an
+    # index means computing tsvectors for every row on every query, which is
+    # real text processing rather than a cheap dot product.
     class Meta:
         indexes = [
-            HnswIndex(
-                name="movie_embedding_hnsw",
-                fields=["embedding"],
-                m=16,
-                ef_construction=64,
-                opclasses=["vector_cosine_ops"],
-            ),
+            GinIndex(fields=["search_vector"], name="movie_search_vector_gin"),
         ]
 
     def __str__(self):
         return self.serial_name
 
 
+class EmbeddingIndex(models.Model):
+    """What built the vectors in Movie.embedding: a single row, pk always 1.
+
+    Same-width vectors from another model or another movie text are not
+    comparable with query vectors and nothing in the data shows it, so
+    generate_embeddings writes this row and check_embedding_index compares it
+    with params.yaml (see core.embedding_provenance). The columns mirror
+    current_provenance(); a new recorded field is a column here plus a key there.
+    """
+
+    SINGLETON_PK = 1
+
+    model_name = models.CharField(max_length=255)
+    dimensions = models.PositiveIntegerField()
+    # Hugging Face commit of the embedder; null = built unpinned (or before this
+    # was recorded). A null on either side is a note, not a mismatch -- see
+    # core.embedding_provenance.
+    revision = models.CharField(max_length=64, null=True, blank=True)
+    text_version = models.PositiveIntegerField()
+    text_config = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(pk=1), name="embedding_index_single_row"
+            ),
+        ]
+
+    def save(self, *args, **kwargs):
+        self.pk = self.SINGLETON_PK
+        super().save(*args, **kwargs)
+
+    @classmethod
+    def stored(cls) -> dict | None:
+        """The recorded provenance in current_provenance()'s shape, or None."""
+        row = cls.objects.filter(pk=cls.SINGLETON_PK).first()
+        if row is None:
+            return None
+        return {
+            "model_name": row.model_name,
+            "dimensions": row.dimensions,
+            "revision": row.revision,
+            "text_version": row.text_version,
+            "text_config": row.text_config,
+        }
+
+    @classmethod
+    def record(cls, provenance: dict) -> None:
+        """Create or overwrite the single row with `provenance`."""
+        cls.objects.update_or_create(pk=cls.SINGLETON_PK, defaults=provenance)
+
+    def __str__(self):
+        return f"{self.model_name} ({self.dimensions}d, text v{self.text_version})"
+
+
 class ChatSession(models.Model):
     session_id = models.UUIDField(default=uuid.uuid4, unique=True, db_index=True)
-    preference_vector = VectorField(dimensions=768, null=True, blank=True)
+    session_token = models.CharField(max_length=64, default=generate_token, db_index=True)
+    preference_vector = VectorField(
+        dimensions=settings.EMBEDDING_DIMENSIONS, null=True, blank=True
+    )
     preferences = models.JSONField(default=dict)
     history = models.JSONField(default=list)
     turn_count = models.IntegerField(default=0)
@@ -49,7 +132,9 @@ class ChatSession(models.Model):
         ]
 
     def is_expired(self):
-        return timezone.now() - self.created_at > timezone.timedelta(hours=24)
+        return timezone.now() - self.created_at > timezone.timedelta(
+            hours=settings.SESSION_TTL_HOURS
+        )
 
     def __str__(self):
         return f"Session {self.session_id} (turn {self.turn_count})"
