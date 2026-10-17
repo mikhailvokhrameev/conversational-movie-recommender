@@ -318,10 +318,19 @@ RRF rank) is relative to the rest of the pool; only the cross-encoder's raw
 run it, because it lives in the shared `generate_and_score`). Candidates with
 no `rerank_score` ranked below the reranked head and are dropped too, so a
 gated reply can have fewer than `top_n` movies or none; an empty one makes the
-chat answer with a fixed "nothing matched, rephrase or loosen constraints"
-message, skip the explanation LLM call, and report `no_match: true` in the
-`movies` event (see `api.md`). The same reply is sent whenever the turn ends with
-no movies, so also when hard SQL filters leave no candidates with the gate off.
+chat answer with a fixed reply that names the active hard filters ("Nothing in
+the catalog matches all of: released 1950–1959, under 20 min. Which one should
+I loosen?", or a generic "rephrase or loosen" when no hard filter was set),
+skip the explanation LLM call, and report `no_match: true` in the `movies` event
+(see `api.md`). The same reply is sent whenever the turn ends with no movies, so
+also when hard SQL filters leave no candidates with the gate off.
+
+**Constraints the catalog cannot check** (ADR 0011): actors, director, silent or
+black-and-white, awards and studio are not in the catalog. Classify+parse puts
+such conditions in `unsupported_constraints` (not a filter, kept out of the
+intent dict and of `standalone_query`). A turn with any of them is not searched:
+the chat asks, with a fixed reply, whether to search without them, and the next
+turn's "yes" searches even if the classifier lists them again.
 
 - *Range.* `rerank_score` is the sigmoid of the model's logit: in the pinned
   sentence-transformers line (`<3`, checked in 2.7.0) `CrossEncoder` defaults
@@ -364,7 +373,9 @@ actually prove it. Treat
 ## Exclusion
 
 Before the relevance gate and MMR, `core.pipeline.exclude_candidates` drops the
-movies already shown (`exclude_ids`, a set of `tmdb_id`) and the reference films
+movies already shown (`exclude_ids`, a set of `tmdb_id`; `ChatView` passes every
+`movie_id` shown within the `session.history_max_turns` window on a `refinement` turn, nothing on a `new_search`)
+and the reference films
 themselves: a candidate whose `serial_name` or `original_title` equals an
 `intent["reference_films"]` entry after `normalize_title` (lowercase, no
 punctuation, no leading the/a/an) is never recommended. Matching is exact, so
@@ -476,7 +487,11 @@ refuses to start when Ollama is unreachable (`ais_available()`), and any
 parsed intent with exactly that fallback shape is flagged
 `possible_parse_fallback` and counted in `possible_parse_fallbacks` -- a
 vague query can genuinely parse that way, but a run where many do is a run
-where parsing failed. Comparing `e2e`
+where parsing failed. A parsed intent with `unsupported_constraints` (ADR
+0011) is still searched, but its row is flagged `UNSUPPORTED(...)` and it
+counts in `unsupported_constraints`: in production that turn asks a question
+and shows no movies. The golden set holds user turns only, so the exclusion
+of already-shown movies on refinements is not reproduced. Comparing `e2e`
 against `oracle` on the same split separates parsing errors from retrieval
 errors (oracle intents are labels too, so they are only as good as the
 draft).
@@ -544,7 +559,8 @@ and of the golden set, the CLI options, intent mode, split, k, weights, a
 timestamp, per-query results (recommended ids/titles, hits, resolved and
 unresolved references, predicted category in `e2e`, judge scores), aggregate
 metrics, and counters (`unresolved_refs`, `unscorable_queries`,
-`judge_failures`, `misclassified`, `possible_parse_fallbacks`, `empty_results`). A sweep records every configuration this
+`judge_failures`, `misclassified`, `possible_parse_fallbacks`, `unsupported_constraints`,
+`empty_results`). A sweep records every configuration this
 way, sorted best first. Stdout stays a human-readable summary.
 
 ### Running Evaluation

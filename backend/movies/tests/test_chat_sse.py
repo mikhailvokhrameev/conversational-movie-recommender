@@ -5,8 +5,10 @@ from unittest.mock import patch, AsyncMock, MagicMock
 import pytest
 from django.test import AsyncRequestFactory
 
-from core.ollama_client import CLARIFY_SYSTEM_PROMPT, MessageIntent, aclassify_and_parse, astream_explanation_parts
-from movies.views import ChatView, _assistant_turn_text, _first_line, _generate_and_score
+from core.ollama_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
+from movies.views import (
+    NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _first_line, _generate_and_score, _no_match_message,
+)
 
 
 def _mock_classify_and_parse(category, semantic_query="", standalone_query="", **filters):
@@ -25,7 +27,7 @@ def _mock_encode(embedding=None):
 
 
 def _mock_generate_and_score(movies=None):
-    async def _gen(query_embedding, intent, query_text=""):
+    async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
         result = movies or [
             {
                 "id": 1, "tmdb_id": 1, "serial_name": "Test Film", "original_title": "Test Film",
@@ -197,7 +199,7 @@ class TestChatSSENewSearch:
         seen = {}
         inner = _mock_generate_and_score()
 
-        async def _gen(query_embedding, intent, query_text=""):
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
             seen["query_text"] = query_text
             return await inner(query_embedding, intent, query_text)
 
@@ -629,7 +631,7 @@ class TestChatSSENoMatch:
         )
 
     @staticmethod
-    async def _no_results(query_embedding, intent, query_text=""):
+    async def _no_results(query_embedding, intent, query_text="", exclude_ids=None):
         return [], []
 
     @pytest.mark.asyncio
@@ -728,3 +730,184 @@ def test_chat_session_has_no_preference_vector():
     from movies.models import ChatSession
 
     assert "preference_vector" not in {f.name for f in ChatSession._meta.get_fields()}
+
+
+class TestUnsupportedConstraintsAndRelaxation:
+    """No DB: the session and both history writers are patched, so these run on
+    a host without Postgres. `history` is what the session held before the turn."""
+
+    @staticmethod
+    def _session(history=()):
+        session = MagicMock()
+        session.session_id = "00000000-0000-0000-0000-000000000001"
+        session.session_token = "token"
+        session.history = list(history)
+        return session
+
+    async def _run(self, intent, history=(), generate=None, explain=None):
+        append_history = AsyncMock()
+        generate = generate or _mock_generate_and_score()
+        explain = explain or _mock_explanation_parts((None, "Here you go."))
+        request = AsyncRequestFactory().post(
+            "/api/chat/", data=json.dumps({"message": "msg"}), content_type="application/json",
+        )
+
+        async def _classify(message, history=None):
+            return intent
+
+        with patch("movies.views._get_or_create_session", AsyncMock(return_value=self._session(history))), \
+             patch("movies.views.aclassify_and_parse", _classify), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", generate), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history), \
+             patch("movies.views.astream_explanation_parts", explain):
+            response = await ChatView.as_view()(request)
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+        return _parse_sse(body.decode()), append_history
+
+    @staticmethod
+    def _recording_generate(calls, movies=None):
+        inner = _mock_generate_and_score(movies)
+
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+            calls.append(exclude_ids)
+            return await inner(query_embedding, intent, query_text)
+        return _gen
+
+    @pytest.mark.asyncio
+    async def test_unsupported_constraint_asks_instead_of_searching(self):
+        calls = []
+        explain = MagicMock(side_effect=AssertionError("no LLM for this reply"))
+        intent = MessageIntent(
+            category="new_search", semantic_query="1950s movies", min_release_year=1950,
+            max_release_year=1959, unsupported_constraints=["with Keanu Reeves"],
+        )
+        events, append_history = await self._run(
+            intent, generate=self._recording_generate(calls), explain=explain,
+        )
+
+        assert calls == []
+        explain.assert_not_called()
+        assert [name for name, _ in events] == ["movies", "token", "done"]
+        assert dict(events)["movies"]["movies"] == []
+        text = dict(events)["token"]["text"]
+        assert "with Keanu Reeves" in text
+        assert "search without" in text
+        call = append_history.await_args
+        assert call.args[1:3] == ("assistant", text)
+        assert call.kwargs["pending_relaxation"] == {"dropped": ["with Keanu Reeves"]}
+
+    @pytest.mark.asyncio
+    async def test_after_the_offer_the_dropped_constraint_no_longer_blocks_the_search(self):
+        calls = []
+        history = [
+            {"role": "user", "content": "1950s movies with Keanu Reeves"},
+            {"role": "assistant", "content": "I can't check...",
+             "pending_relaxation": {"dropped": ["with Keanu Reeves"]}},
+        ]
+        intent = MessageIntent(
+            category="new_search", semantic_query="1950s movies",
+            unsupported_constraints=["With Keanu Reeves "],
+        )
+        events, _ = await self._run(intent, history=history, generate=self._recording_generate(calls))
+
+        assert len(calls) == 1
+        assert [m["serial_name"] for m in dict(events)["movies"]["movies"]] == ["Test Film"]
+
+    @pytest.mark.asyncio
+    async def test_a_new_unsupported_constraint_still_asks_after_an_offer(self):
+        calls = []
+        history = [{"role": "assistant", "content": "...", "pending_relaxation": {"dropped": ["silent"]}}]
+        intent = MessageIntent(category="refinement", unsupported_constraints=["directed by Kubrick"])
+        events, _ = await self._run(intent, history=history, generate=self._recording_generate(calls))
+
+        assert calls == []
+        assert "directed by Kubrick" in dict(events)["token"]["text"]
+
+    @pytest.mark.asyncio
+    async def test_shown_movies_are_stored_as_tmdb_ids(self):
+        events, append_history = await self._run(
+            MessageIntent(category="new_search", semantic_query="x"),
+            generate=_mock_generate_and_score(_two_movies()),
+        )
+        assert append_history.await_args.kwargs["movie_ids"] == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_refinement_excludes_every_movie_already_shown(self):
+        calls = []
+        history = [
+            {"role": "assistant", "content": "a", "movies": ["A", "B"], "movie_ids": [10, 11]},
+            {"role": "user", "content": "funnier"},
+            {"role": "assistant", "content": "b", "movies": ["C"], "movie_ids": [12]},
+        ]
+        await self._run(
+            MessageIntent(category="refinement", semantic_query="x"),
+            history=history, generate=self._recording_generate(calls),
+        )
+        assert calls == [{10, 11, 12}]
+
+    @pytest.mark.asyncio
+    async def test_refinement_exclusion_stays_inside_the_history_window(self, settings):
+        settings.SESSION_HISTORY_MAX_TURNS = 1
+        calls = []
+        history = [
+            {"role": "assistant", "content": "a", "movies": ["A"], "movie_ids": [10]},
+            {"role": "user", "content": "funnier"},
+            {"role": "assistant", "content": "b", "movies": ["C"], "movie_ids": [12]},
+        ]
+        await self._run(
+            MessageIntent(category="refinement", semantic_query="x"),
+            history=history, generate=self._recording_generate(calls),
+        )
+        assert calls == [{12}]
+
+    @pytest.mark.asyncio
+    async def test_new_search_does_not_exclude_shown_movies(self):
+        calls = []
+        history = [{"role": "assistant", "content": "a", "movies": ["A"], "movie_ids": [10]}]
+        await self._run(
+            MessageIntent(category="new_search", semantic_query="x"),
+            history=history, generate=self._recording_generate(calls),
+        )
+        assert calls == [None]
+
+    @pytest.mark.asyncio
+    async def test_empty_result_lists_the_active_filters(self):
+        async def _no_results(query_embedding, intent, query_text="", exclude_ids=None):
+            return [], []
+
+        intent = MessageIntent(
+            category="new_search", semantic_query="x", min_release_year=1950, max_release_year=1959,
+            max_runtime=20, min_vote_average=9.0,
+        )
+        events, _ = await self._run(intent, generate=_no_results)
+        assert dict(events)["token"]["text"] == _no_match_message(
+            intent.model_dump(exclude=set(NON_FILTER_FIELDS)),
+        )
+        assert dict(events)["movies"]["no_match"] is True
+
+
+class TestNoMatchMessage:
+    def test_lists_each_active_filter(self):
+        text = _no_match_message({
+            "genres": ["Documentary"], "negations": ["Horror"], "country_inclusions": ["France"],
+            "country_exclusions": ["USA"], "min_vote_average": 9.0, "min_release_year": 1950,
+            "max_release_year": 1959, "min_runtime": None, "max_runtime": 20,
+            "original_languages": ["fr"], "mood": "happy", "themes": ["war"], "reference_films": [],
+        })
+        assert text == (
+            "Nothing in the catalog matches all of: no Horror, from France, not from USA, "
+            "rating ≥ 9.0, released 1950–1959, under 20 min, language: fr. "
+            "Which one should I loosen?"
+        )
+
+    def test_one_sided_year_and_runtime_bounds(self):
+        text = _no_match_message({"min_release_year": 2015, "min_runtime": 150})
+        assert "released 2015 or later" in text
+        assert "at least 150 min" in text
+
+    def test_no_hard_filters_falls_back_to_the_generic_message(self):
+        assert _no_match_message({"genres": ["Drama"], "mood": "sad"}) == NO_MATCH_MESSAGE

@@ -311,7 +311,7 @@ reference films extracted from parsed intent.
 ### `pipeline.py` -- Shared Retrieval Pipeline
 
 `generate_and_score(query_embedding, intent, query_text, weights=None,
-top_n=None, apply_gate=True)` runs `generate_candidates` -> `score_candidates` ->
+top_n=None, apply_gate=True, exclude_ids=None)` runs `generate_candidates` -> `score_candidates` ->
 `rerank_candidates` -> `apply_relevance_gate` -> `mmr_diversify` and returns
 `(top_movies, reranked_pool)`; the pool is the full reranked pool, not the gated one.
 With `reranking.min_score` set, `top_movies` can be shorter than `top_n` or empty (see
@@ -376,6 +376,14 @@ The Godfather" the raw message has no content, so the reranker preferred "Someth
 Happiness" (0.17) over The Godfather (0.0004). The rewritten "crime dramas similar to The
 Godfather" gives lexical search and the cross-encoder something to match. Stopwords in
 `retrieval.lexical.stopwords` are dropped from the lexical terms for the same reason.
+
+**Why `unsupported_constraints` is not a filter** (ADR 0011): the catalog has no cast,
+director, silent/black-and-white, awards or studio data, so there is nothing to filter
+on. Classify+parse lists such conditions in `unsupported_constraints`; `ChatView` asks
+whether to search without them instead of silently ignoring them. The field is in
+`ollama_client.NON_FILTER_FIELDS` with `category`, `semantic_query` and
+`standalone_query`: every caller drops those before the intent reaches the pipeline,
+and `INTENT_SCHEMA` leaves them out.
 
 **Why the fallback returns empty intent instead of keyword parsing**: An earlier
 version used Russian keyword stem matching as a fallback. It had two bugs:

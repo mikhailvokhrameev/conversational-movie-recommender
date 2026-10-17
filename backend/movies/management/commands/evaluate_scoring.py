@@ -57,7 +57,7 @@ from core.golden_set import (
     resolve_references,
     select_split,
 )
-from core.ollama_client import MessageIntent, aclassify_and_parse, ais_available
+from core.ollama_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available
 from core.pipeline import generate_and_score
 from movies.models import Movie
 
@@ -146,6 +146,9 @@ class PreparedQuery:
     # e2e only (None in oracle): the parsed intent has exactly the shape
     # aclassify_and_parse returns when it gives up -- see _is_fallback_shape.
     possible_parse_fallback: bool | None
+    # e2e only (None in oracle): conditions the catalog cannot check. Production
+    # would ask about them and show nothing; here the query is still searched.
+    unsupported_constraints: list[str] | None
     grades: dict[int, int]
     unresolved: list[dict]
 
@@ -330,9 +333,8 @@ class Command(BaseCommand):
             query_embedding = encode_query(message_intent.semantic_query)
             query_text = message_intent.standalone_query
             semantic_query = message_intent.semantic_query
-            intent = message_intent.model_dump(
-                exclude={"category", "semantic_query", "standalone_query"},
-            )
+            unsupported = message_intent.unsupported_constraints
+            intent = message_intent.model_dump(exclude=set(NON_FILTER_FIELDS))
         else:
             predicted = None
             possible_fallback = None
@@ -340,6 +342,7 @@ class Command(BaseCommand):
             query_embedding = encode_query(query)
             query_text = query
             semantic_query = None
+            unsupported = None
             intent = dict(entry.get("oracle_intent", {}))
 
         grades, unresolved = resolve_references(entry["relevant"])
@@ -352,6 +355,7 @@ class Command(BaseCommand):
             category=category,
             predicted_category=predicted,
             possible_parse_fallback=possible_fallback,
+            unsupported_constraints=unsupported,
             grades=grades,
             unresolved=unresolved,
         )
@@ -459,6 +463,7 @@ class Command(BaseCommand):
             result["predicted_category"] = p.predicted_category
             result["misclassified"] = p.misclassified
             result["possible_parse_fallback"] = p.possible_parse_fallback
+            result["unsupported_constraints"] = p.unsupported_constraints
         if judge_scores is not None:
             result["judge_scores"] = judge_scores
             result["judge_failures"] = sum(1 for s in judge_scores if s is None)
@@ -482,6 +487,8 @@ class Command(BaseCommand):
             "empty_results": sum(1 for q in queries if not q["recommended"]),
             "misclassified": sum(1 for p in prepared if p.misclassified),
             "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
+            # Queries production would answer with a question and no movies.
+            "unsupported_constraints": sum(1 for p in prepared if p.unsupported_constraints),
         }
         return {"queries": queries, "aggregate": aggregate, "counters": counters}
 
@@ -523,6 +530,8 @@ class Command(BaseCommand):
                 extras += f" MISCLASSIFIED({q['predicted_category']})"
             if q.get("possible_parse_fallback"):
                 extras += " POSSIBLE_PARSE_FALLBACK"
+            if q.get("unsupported_constraints"):
+                extras += f" UNSUPPORTED({', '.join(q['unsupported_constraints'])})"
             if q["unresolved_refs"]:
                 extras += f" unresolved={len(q['unresolved_refs'])}"
             self.stdout.write(f"  {q['id'][:32]:32s} {accuracy} Div={m.get('diversity', 0):.2f}{extras}")

@@ -14,7 +14,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from core.ollama_client import MessageIntent
+from core.ollama_client import NON_FILTER_FIELDS, MessageIntent
 from movies.management.commands import evaluate_scoring as cmd
 
 MODULE = "movies.management.commands.evaluate_scoring"
@@ -99,7 +99,7 @@ class TestE2eIntent:
         assert args[0] == _vec("rewritten query")
         assert args[1] == MessageIntent(
             category="new_search", genres=["Drama"],
-        ).model_dump(exclude={"category", "semantic_query", "standalone_query"})
+        ).model_dump(exclude=set(NON_FILTER_FIELDS))
         assert record["intent_mode"] == "e2e"
         assert record["queries"][0]["predicted_category"] == "new_search"
 
@@ -135,6 +135,30 @@ class TestE2eIntent:
         run.pipeline.assert_called_once()
         assert record["counters"]["misclassified"] == 1
         assert record["queries"][0]["misclassified"] is True
+
+
+class TestUnsupportedConstraints:
+    def test_still_searched_but_counted_and_flagged(self, tmp_path):
+        intent = MessageIntent(
+            category="new_search", semantic_query="x", unsupported_constraints=["with Keanu Reeves"],
+        )
+        run = _Run(tmp_path, [_entry(), _entry(id_="q2")], intent=intent)
+        record = run()
+        assert run.pipeline.call_count == 2
+        assert "unsupported_constraints" not in run.pipeline.call_args.args[1]
+        assert record["counters"]["unsupported_constraints"] == 2
+        assert record["queries"][0]["unsupported_constraints"] == ["with Keanu Reeves"]
+        assert "UNSUPPORTED(with Keanu Reeves)" in run.stdout
+
+    def test_plain_parse_counts_nothing(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])()
+        assert record["counters"]["unsupported_constraints"] == 0
+        assert record["queries"][0]["unsupported_constraints"] == []
+
+    def test_oracle_records_no_unsupported_constraints(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])("--intent", "oracle")
+        assert record["counters"]["unsupported_constraints"] == 0
+        assert "unsupported_constraints" not in record["queries"][0]
 
 
 class TestParseFallbackDetection:

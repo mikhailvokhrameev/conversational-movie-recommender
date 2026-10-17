@@ -14,7 +14,7 @@ from rest_framework.views import APIView
 
 from core.embedding_service import encode_query
 from core.ollama_client import (
-    CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT,
+    CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS,
     aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation_parts,
 )
@@ -26,13 +26,66 @@ from .models import ChatSession, Movie
 
 logger = logging.getLogger(__name__)
 
-# Reply when the relevance gate (reranking.min_score) leaves no results. A
-# fixed user-facing string, not a tunable: no LLM call, so a "nothing found"
-# answer cannot be dressed up by the model into recommendations from thin air.
+# Fixed user-facing replies, not tunables: no LLM call, so a "nothing found"
+# or "can't check that" answer cannot be dressed up by the model into
+# recommendations from thin air.
 NO_MATCH_MESSAGE = (
     "Nothing in the catalog matched that well. "
     "Try rephrasing your request or loosening some of the constraints."
 )
+UNSUPPORTED_MESSAGE = (
+    "I can't check {constraints} -- the catalog has no cast, director, awards, studio "
+    "or silent/black-and-white data. Want me to search without that?"
+)
+
+
+def _no_match_message(intent_dict: dict) -> str:
+    """Name the hard filters that were active, so the user knows what to
+    loosen. Genres, mood and themes only rank, they never empty the result, so
+    they are not listed; with no hard filter the cause was the relevance gate."""
+    parts = [f"no {g}" for g in intent_dict.get("negations") or []]
+    parts += [f"from {c}" for c in intent_dict.get("country_inclusions") or []]
+    parts += [f"not from {c}" for c in intent_dict.get("country_exclusions") or []]
+    if intent_dict.get("min_vote_average") is not None:
+        parts.append(f"rating ≥ {intent_dict['min_vote_average']}")
+    min_year, max_year = intent_dict.get("min_release_year"), intent_dict.get("max_release_year")
+    if min_year is not None and max_year is not None:
+        parts.append(f"released {min_year}–{max_year}")
+    elif min_year is not None:
+        parts.append(f"released {min_year} or later")
+    elif max_year is not None:
+        parts.append(f"released {max_year} or earlier")
+    if intent_dict.get("min_runtime") is not None:
+        parts.append(f"at least {intent_dict['min_runtime']} min")
+    if intent_dict.get("max_runtime") is not None:
+        parts.append(f"under {intent_dict['max_runtime']} min")
+    if intent_dict.get("original_languages"):
+        parts.append(f"language: {', '.join(intent_dict['original_languages'])}")
+    if not parts:
+        return NO_MATCH_MESSAGE
+    return f"Nothing in the catalog matches all of: {', '.join(parts)}. Which one should I loosen?"
+
+
+def _unchecked_constraints(constraints: list[str], history: list[dict]) -> list[str]:
+    """The intent's unsupported constraints minus those the assistant's last
+    turn already offered to drop: a "yes" to that offer searches even if the
+    classifier lists the constraint again."""
+    last_assistant = next((e for e in reversed(history) if e.get("role") == "assistant"), {})
+    offered = (last_assistant.get("pending_relaxation") or {}).get("dropped") or []
+    dropped = {c.strip().casefold() for c in offered}
+    return [c for c in constraints if c.strip().casefold() not in dropped]
+
+
+def _shown_movie_ids(history: list[dict]) -> set[int]:
+    """tmdb_ids of the movies shown within the replayed history window, for a
+    refinement to skip. Stored history is not capped, so the window
+    (session.history_max_turns pairs) keeps the excluded set bounded and in
+    step with what the model still sees of the conversation."""
+    windowed = history[-(settings.SESSION_HISTORY_MAX_TURNS * 2):]
+    return {
+        movie_id for entry in windowed if entry.get("role") == "assistant"
+        for movie_id in entry.get("movie_ids") or []
+    }
 
 
 class HealthView(APIView):
@@ -109,7 +162,8 @@ def _first_line(text: str) -> str:
 @sync_to_async(thread_sensitive=False)
 def _append_history(session: ChatSession, role: str, content: str,
                     movies: list[str] | None = None, count_turn: bool = True,
-                    movie_facts: list[dict] | None = None):
+                    movie_facts: list[dict] | None = None, movie_ids: list[int] | None = None,
+                    pending_relaxation: dict | None = None):
     with transaction.atomic():
         fresh = ChatSession.objects.select_for_update().get(pk=session.pk)
         entry = {"role": role, "content": content}
@@ -117,6 +171,10 @@ def _append_history(session: ChatSession, role: str, content: str,
             entry["movies"] = movies
         if movie_facts:
             entry["movie_facts"] = movie_facts
+        if movie_ids:
+            entry["movie_ids"] = movie_ids
+        if pending_relaxation:
+            entry["pending_relaxation"] = pending_relaxation
         fresh.history = list(fresh.history) + [entry]
         if count_turn:
             fresh.turn_count += 1
@@ -124,10 +182,10 @@ def _append_history(session: ChatSession, role: str, content: str,
 
 
 @sync_to_async(thread_sensitive=False)
-def _generate_and_score(query_embedding, intent, query_text=""):
+def _generate_and_score(query_embedding, intent, query_text="", exclude_ids=None):
     """Async wrapper over `core.pipeline.generate_and_score` -- the same function
     `evaluate_scoring` runs, so what is evaluated is what ships."""
-    return generate_and_score(query_embedding, intent, query_text=query_text)
+    return generate_and_score(query_embedding, intent, query_text=query_text, exclude_ids=exclude_ids)
 
 
 def _log_turn_latency(category, **stage_ms):
@@ -175,15 +233,24 @@ class ChatView(View):
         # message/movies are added as the final turn by astream_explanation_parts
         # itself, and including them here too would duplicate them.
         history = session.history
+        intent_dict = intent.model_dump(exclude=set(NON_FILTER_FIELDS))
+        unchecked = _unchecked_constraints(intent.unsupported_constraints, history)
+        if unchecked:
+            return await self._unsupported_response(
+                session, message, intent, intent_dict, unchecked, classify_parse_ms,
+            )
+        # A refinement must not hand back what the user has already seen; a new
+        # search may legitimately land on an earlier movie again.
+        exclude_ids = _shown_movie_ids(history) if intent.category == "refinement" else None
         try:
             t_embed = time.perf_counter()
             query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
             embed_ms = (time.perf_counter() - t_embed) * 1000
 
-            intent_dict = intent.model_dump(exclude={"category", "semantic_query", "standalone_query"})
-
             t_score = time.perf_counter()
-            top_movies, candidate_pool = await _generate_and_score(query_embedding, intent_dict, query_text=intent.standalone_query)
+            top_movies, candidate_pool = await _generate_and_score(
+                query_embedding, intent_dict, query_text=intent.standalone_query, exclude_ids=exclude_ids,
+            )
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]
@@ -202,6 +269,7 @@ class ChatView(View):
             for m in top_movies
         ]
         top_titles = [m["serial_name"] for m in top_movies]
+        top_ids = [m["tmdb_id"] for m in top_movies]
         movie_facts = build_movie_facts(top_movies, settings.SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS)
         candidate_titles = [m["serial_name"] for m in candidate_pool]
 
@@ -254,6 +322,7 @@ class ChatView(View):
                     await _append_history(
                         session, "assistant", assistant_text,
                         movies=top_titles, count_turn=False, movie_facts=movie_facts,
+                        movie_ids=top_ids,
                     )
                 except Exception:
                     logger.exception("failed to store assistant turn")
@@ -273,14 +342,58 @@ class ChatView(View):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
+    async def _unsupported_response(self, session, message, intent, intent_dict, unchecked, classify_parse_ms):
+        """The request names something the catalog cannot check: ask whether to
+        search without it instead of showing movies that ignore it.
+
+        No retrieval, no LLM. The stored assistant turn carries
+        `pending_relaxation`, so the user's "yes" next turn searches even if
+        the classifier lists the same constraint again.
+        """
+        try:
+            await _save_session(session, message, intent_dict, [])
+        except Exception:
+            logger.exception(f"ChatView {intent.category} error")
+            return JsonResponse({"error": "internal error"}, status=500)
+        text = UNSUPPORTED_MESSAGE.format(constraints=", ".join(f'"{c}"' for c in unchecked))
+
+        async def event_stream():
+            yield _sse_event("movies", {
+                "session_id": str(session.session_id),
+                "session_token": session.session_token,
+                "movies": [],
+                "no_match": False,
+                "intent": intent_dict,
+            })
+            yield _sse_event("token", {"text": text})
+            try:
+                await _append_history(
+                    session, "assistant", text, count_turn=False,
+                    pending_relaxation={"dropped": unchecked},
+                )
+            except Exception:
+                logger.exception("failed to store assistant turn")
+            _log_turn_latency(intent.category, classify_parse_ms=classify_parse_ms)
+            yield _sse_event("done", {})
+
+        return StreamingHttpResponse(
+            event_stream(),
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     def _no_match_response(self, session, intent, intent_dict, classify_parse_ms, embed_ms, score_ms):
-        """The relevance gate left nothing: say so instead of explaining top-5.
+        """The hard filters or the relevance gate left nothing: say so instead
+        of explaining top-5.
 
         The movies event carries `no_match: true` and an empty list, the fixed
-        message goes out as a normal token reply, and the stored assistant turn
-        has no `movies`/`movie_facts` -- nothing was shown, so a later follow-up
-        must not be grounded in movies the user never saw.
+        message (naming the active filters) goes out as a normal token reply,
+        and the stored assistant turn has no `movies`/`movie_facts` -- nothing
+        was shown, so a later follow-up must not be grounded in movies the user
+        never saw.
         """
+        text = _no_match_message(intent_dict)
+
         async def event_stream():
             yield _sse_event("movies", {
                 "session_id": str(session.session_id),
@@ -289,9 +402,9 @@ class ChatView(View):
                 "no_match": True,
                 "intent": intent_dict,
             })
-            yield _sse_event("token", {"text": NO_MATCH_MESSAGE})
+            yield _sse_event("token", {"text": text})
             try:
-                await _append_history(session, "assistant", NO_MATCH_MESSAGE, count_turn=False)
+                await _append_history(session, "assistant", text, count_turn=False)
             except Exception:
                 logger.exception("failed to store assistant turn")
             _log_turn_latency(

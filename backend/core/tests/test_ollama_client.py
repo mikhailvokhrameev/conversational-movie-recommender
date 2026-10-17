@@ -38,6 +38,7 @@ from core.ollama_client import (
     CONVERSATIONAL_SYSTEM_PROMPT,
     CLASSIFY_PARSE_SCHEMA,
     INTENT_SCHEMA,
+    NON_FILTER_FIELDS,
     MessageIntent,
     _extract_intent,
     _fallback_intent,
@@ -352,6 +353,48 @@ class TestConversationalSystemPrompt:
     async def test_uses_given_system_prompt(self):
         prompt = await self._system_prompt_sent(system_prompt=CLARIFY_SYSTEM_PROMPT)
         assert prompt == CLARIFY_SYSTEM_PROMPT
+
+
+def _prompt_examples():
+    prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.replace("{{", "{").replace("}}", "}")
+    return [json.loads(line) for line in prompt.splitlines() if line.startswith('{"category"')]
+
+
+class TestUnsupportedConstraints:
+    def test_is_in_the_classify_schema_not_the_intent_schema(self):
+        assert "unsupported_constraints" in CLASSIFY_PARSE_SCHEMA["required"]
+        assert "unsupported_constraints" not in INTENT_SCHEMA["properties"]
+
+    def test_non_filter_fields_cover_every_field_outside_the_intent_schema(self):
+        assert set(NON_FILTER_FIELDS) == set(CLASSIFY_PARSE_SCHEMA["properties"]) - set(INTENT_SCHEMA["properties"])
+
+    def test_drops_blank_and_non_string_entries(self):
+        intent = MessageIntent.model_validate({
+            "category": "new_search", "unsupported_constraints": ["silent", "", 3, None],
+        })
+        assert intent.unsupported_constraints == ["silent"]
+
+    def test_every_prompt_example_has_the_field(self):
+        assert all("unsupported_constraints" in ex for ex in _prompt_examples())
+
+    def test_actor_example_keeps_the_era_and_leaves_the_actor_out_of_standalone_query(self):
+        example = next(
+            ex for ex in _prompt_examples() if ex["unsupported_constraints"] == ["with Keanu Reeves"]
+        )
+        assert (example["min_release_year"], example["max_release_year"]) == (1950, 1959)
+        assert "Keanu" not in example["standalone_query"]
+        assert "Keanu" not in example["semantic_query"]
+
+    def test_silent_example_flags_silent(self):
+        example = next(ex for ex in _prompt_examples() if ex["unsupported_constraints"] == ["silent"])
+        assert "silent" not in example["standalone_query"]
+
+    def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
+            if line.startswith('- "standalone_query"')
+        )
+        assert "unsupported_constraints" in line
 
 
 class TestClassifyPromptClarify:
@@ -1144,7 +1187,7 @@ class TestStructuredOutputSchema:
             "themes": [], "negations": [], "reference_films": [], "country_exclusions": [],
             "country_inclusions": [], "min_vote_average": None, "min_release_year": None,
             "max_release_year": None, "min_runtime": None, "max_runtime": 90,
-            "original_languages": [],
+            "original_languages": [], "unsupported_constraints": [],
         }
         assert set(reply) == set(CLASSIFY_PARSE_SCHEMA["properties"])
         assert MessageIntent.model_validate(reply).max_runtime == 90

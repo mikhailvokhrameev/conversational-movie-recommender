@@ -67,7 +67,7 @@ ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 JSON fields:
 - "category": one of the five categories above
 - "semantic_query": the core of what the user is looking for, with filler words and pure filter phrases (genre/country/rating/year/runtime/language constraints, already captured below) stripped out -- this gets embedded for semantic search, so keep it focused on mood/theme/subject. If the message continues earlier turns, carry over the subject from them too (e.g. the theme of a reference film), still without filter phrases. If category is not new_search/refinement, just repeat the message.
-- "standalone_query": the user's latest request rewritten as one self-contained English request that someone who never saw this conversation would understand -- carry over the subject, genres, reference films and constraints from earlier messages that still apply, drop filler ("something", "please", "show me"). If the latest message already stands on its own, copy it minus filler. If category is not new_search/refinement, just repeat the message.
+- "standalone_query": the user's latest request rewritten as one self-contained English request that someone who never saw this conversation would understand -- carry over the subject, genres, reference films and constraints from earlier messages that still apply, drop filler ("something", "please", "show me"). If the latest message already stands on its own, copy it minus filler. Leave out anything you put in unsupported_constraints. If category is not new_search/refinement, just repeat the message.
 - "genres": list of matching genres from the ALLOWED list above
 - "mood": one of: happy, sad, excited, relaxed, romantic, thoughtful, scared, energetic, or ""
 - "themes": list of themes mentioned
@@ -81,30 +81,39 @@ JSON fields:
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
+- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know actors, director, silent or black-and-white, awards or studio (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
 
 Example:
 User: "I want something funny, but not horror"
-{{"category": "new_search", "semantic_query": "a fun film", "standalone_query": "a funny film without horror", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "new_search", "semantic_query": "a fun film", "standalone_query": "a funny film without horror", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
 
 Example:
 Earlier: the user said "I liked The Godfather". Latest message: "suggest something similar"
-{{"category": "refinement", "semantic_query": "mafia family crime saga like The Godfather", "standalone_query": "crime dramas similar to The Godfather", "genres": ["Crime", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": ["The Godfather"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "refinement", "semantic_query": "mafia family crime saga like The Godfather", "standalone_query": "crime dramas similar to The Godfather", "genres": ["Crime", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": ["The Godfather"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
 
 Example:
 User: "tell me about the first movie"
-{{"category": "follow_up", "semantic_query": "tell me about the first movie", "standalone_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "follow_up", "semantic_query": "tell me about the first movie", "standalone_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
 
 Example:
 User: "hi"
-{{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
 
 Example:
 User: "recommend something"
-{{"category": "clarify", "semantic_query": "recommend something", "standalone_query": "recommend something", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": []}}
+{{"category": "clarify", "semantic_query": "recommend something", "standalone_query": "recommend something", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
 
 Example:
 User: "a highly rated 90s Korean thriller"
-{{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"]}}
+{{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"], "unsupported_constraints": []}}
+
+Example:
+User: "1950s movies with Keanu Reeves"
+{{"category": "new_search", "semantic_query": "a 1950s film", "standalone_query": "movies from the 1950s", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": 1950, "max_release_year": 1959, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["with Keanu Reeves"]}}
+
+Example:
+Earlier: the user asked for short animated documentaries and was shown some. Latest message: "They are not silent"
+{{"category": "refinement", "semantic_query": "a short animated documentary", "standalone_query": "short animated documentaries", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"]}}
 """
 
 CONVERSATIONAL_SYSTEM_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
@@ -564,6 +573,10 @@ class MessageIntent(BaseModel):
     min_runtime: Optional[int] = None
     max_runtime: Optional[int] = None
     original_languages: list[str] = Field(default_factory=list)
+    # Not a filter: conditions the catalog has no data for (cast, director,
+    # silent/black-and-white, awards, studio). ChatView asks before searching
+    # without them instead of passing them to the pipeline.
+    unsupported_constraints: list[str] = Field(default_factory=list)
 
     @field_validator("genres", "themes", "negations", "reference_films", mode="before")
     @classmethod
@@ -573,7 +586,8 @@ class MessageIntent(BaseModel):
         return [v for v in value if isinstance(v, str)]
 
     @field_validator(
-        "country_exclusions", "country_inclusions", "original_languages", mode="before"
+        "country_exclusions", "country_inclusions", "original_languages", "unsupported_constraints",
+        mode="before",
     )
     @classmethod
     def _clean_string_list(cls, value):
@@ -657,9 +671,11 @@ def _ollama_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dic
 
 # Built once: both are constant for the process.
 CLASSIFY_PARSE_SCHEMA = _ollama_schema(MessageIntent)
-# What `_extract_intent` reads: the classify+parse shape minus the two fields
-# only the combined call produces.
-INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=("category", "semantic_query", "standalone_query"))
+# The MessageIntent fields that are not search filters: only the combined call
+# produces them, and every caller drops them before handing the intent to the
+# pipeline. What is left is what `_extract_intent` reads.
+NON_FILTER_FIELDS = ("category", "semantic_query", "standalone_query", "unsupported_constraints")
+INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=NON_FILTER_FIELDS)
 
 
 def _intent_payload(query: str) -> dict:

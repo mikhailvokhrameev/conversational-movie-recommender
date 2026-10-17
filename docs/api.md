@@ -71,12 +71,24 @@ the turn ends with no movies to show: either the relevance gate
 the hard SQL filters left nothing to rank, which
 can happen with the gate off. Then `movies` is `[]`, the LLM explanation call is skipped, and
 the stream is just `movies`, one `token` event carrying a fixed short message
-("Nothing in the catalog matched that well. Try rephrasing your request or
-loosening some of the constraints."), and `done` -- no `blurb`, no `error`. The
+naming the active hard filters ("Nothing in the catalog matches all of: released
+1950–1959, under 20 min, rating ≥ 9.0. Which one should I loosen?"; with no hard
+filter set, "Nothing in the catalog matched that well. Try rephrasing your request
+or loosening some of the constraints."), and `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
 non-empty `movies` array can also hold fewer than 5 items; those take the
 normal explanation path.
+
+A search turn whose request names something the catalog cannot check (actors,
+director, silent or black-and-white, awards, studio -- the classifier's
+`unsupported_constraints`) is not searched. The stream is `movies` with
+`movies: []` and `no_match: false`, one `token` event with a fixed question
+("I can't check "with Keanu Reeves" -- the catalog has no cast, director, awards,
+studio or silent/black-and-white data. Want me to search without that?"), and
+`done`. The stored assistant turn carries `pending_relaxation: {"dropped": [...]}`;
+on the next turn those constraints no longer block the search, so a "yes"
+returns movies. See ADR 0011.
 
 **Phase 2 (streaming)**: One LLM call produces the whole explanation, but it is no
 longer one blob. `EXPLANATION_PROMPT` asks for an opening line that names no titles,
@@ -315,7 +327,8 @@ Sessions auto-expire after `session.ttl_hours` (default 24) via
 2. The conversation history gets a `user` entry for the query, and once the
    reply has finished streaming, an `assistant` entry with the reply text.
    For search and refinement turns the assistant entry also carries the
-   recommended movie titles (`movies`) and `movie_facts` -- per shown movie,
+   recommended movie titles (`movies`), their `tmdb_id`s (`movie_ids`; a
+   `refinement` excludes every id in the `history_max_turns` window) and `movie_facts` -- per shown movie,
    in display order, `title`, `year` (`null` if the release date is unknown),
    `genres`, `runtime` (minutes, may be `null`) and `description` truncated to
    `session.history_movie_description_chars` at storage time. Its text keeps the
