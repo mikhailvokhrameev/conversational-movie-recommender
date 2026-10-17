@@ -374,7 +374,64 @@ SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
 SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS = _session["history_movie_description_chars"]
 
-GENRE_MATCH_THRESHOLD = PARAMS["intent"]["genre_match_threshold"]
+
+# Which resolution fields get the embedding fallback (core/entity_resolution.py).
+# languages does not: ISO codes mean nothing to an embedder, so it takes
+# synonyms only.
+_RESOLUTION_EMBEDDED = {"genres": True, "countries": True, "languages": False}
+
+
+def _is_number(value) -> bool:
+    return not isinstance(value, bool) and isinstance(value, (int, float))
+
+
+def _validate_intent(intent) -> None:
+    """Fail at load if intent.resolution is malformed or the removed
+    intent.genre_match_threshold is still set.
+
+    Each field maps short synonyms (name -> catalog value) and, where the
+    embedding fallback applies, match_threshold in (0, 1] and match_margin in
+    [0, 1): a top-1 cosine below the threshold, or within the margin of the
+    runner-up, drops the value instead of guessing.
+    """
+    if isinstance(intent, dict) and "genre_match_threshold" in intent:
+        raise ValueError(
+            "params.yaml: intent.genre_match_threshold was removed; genre matching is "
+            "configured under intent.resolution.genres (match_threshold, match_margin, synonyms)."
+        )
+    resolution = intent.get("resolution") if isinstance(intent, dict) else None
+    if not isinstance(resolution, dict) or set(resolution) != set(_RESOLUTION_EMBEDDED):
+        raise ValueError(
+            "params.yaml: intent.resolution must have exactly the fields "
+            f"{', '.join(_RESOLUTION_EMBEDDED)} (got {intent!r})."
+        )
+    for field, embedded in _RESOLUTION_EMBEDDED.items():
+        prefix = f"params.yaml: intent.resolution.{field}"
+        config = resolution[field]
+        expected = {"synonyms", "match_threshold", "match_margin"} if embedded else {"synonyms"}
+        if not isinstance(config, dict) or set(config) != expected:
+            raise ValueError(f"{prefix} must have exactly the keys {', '.join(sorted(expected))} (got {config!r}).")
+        synonyms = config["synonyms"]
+        if not isinstance(synonyms, dict) or not all(
+            isinstance(k, str) and k.strip() and isinstance(v, str) and v.strip()
+            for k, v in synonyms.items()
+        ):
+            raise ValueError(
+                f"{prefix}.synonyms must map non-blank names to non-blank catalog values; quote "
+                f"YAML words like no/yes/on/off (got {synonyms!r})."
+            )
+        if not embedded:
+            continue
+        threshold = config["match_threshold"]
+        if not _is_number(threshold) or not 0 < threshold <= 1:
+            raise ValueError(f"{prefix}.match_threshold must be a number in (0, 1] (got {threshold!r}).")
+        margin = config["match_margin"]
+        if not _is_number(margin) or not 0 <= margin < 1:
+            raise ValueError(f"{prefix}.match_margin must be a number in [0, 1) (got {margin!r}).")
+
+
+_validate_intent(PARAMS["intent"])
+INTENT_RESOLUTION = PARAMS["intent"]["resolution"]
 
 
 def _validate_evaluation(evaluation: dict) -> None:

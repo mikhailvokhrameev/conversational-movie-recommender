@@ -377,9 +377,49 @@ evaluation:
   judge_timeout_seconds: 30
 
 intent:
-  # Minimum cosine similarity for mapping an LLM-produced genre name onto a
-  # catalog genre.
-  genre_match_threshold: 0.5
+  # Entity resolution (core/entity_resolution.py): maps the parsed genres and
+  # negations, country inclusions/exclusions and original languages onto exact
+  # catalog values, because the filters compare them as exact strings ("USA"
+  # matches nothing; the catalog says "United States of America"). Layers:
+  # exact (casefold, collapsed whitespace) -> synonyms -> embedding nearest
+  # catalog value -> drop with an INFO log. A dropped value widens the answer;
+  # a guessed one silently swaps one filter for another.
+  #
+  # synonyms: only names the catalog does not spell that way. Each target must
+  # be a catalog value; a missing one logs a WARNING on first use and is
+  # ignored. Quote YAML words like no/yes/on/off (they load as booleans).
+  #
+  # match_threshold / match_margin: an embedding match is accepted only if
+  # top-1 cosine >= match_threshold AND top1 - top2 >= match_margin (the margin
+  # catches near-ties like South Korea vs North Korea, Thriller vs Crime).
+  # UNCALIBRATED: 0.5 is the old intent.genre_match_threshold (eyeballed) and
+  # 0.05 a starting guess. Calibrate on the GPU machine (the scores come from
+  # the real embedder) with the probes in data/entity_probes.json:
+  #   python manage.py entity_resolution_report
+  # then set the values here and record the date and the numbers.
+  resolution:
+    genres:  # used for genres and negations; catalog: CATALOG_GENRES
+      match_threshold: 0.5
+      match_margin: 0.05
+      synonyms:
+        sci-fi: Science Fiction
+    countries:  # country_inclusions / country_exclusions; catalog: distinct Movie.country
+      match_threshold: 0.5
+      match_margin: 0.05
+      synonyms:
+        USA: United States of America
+        US: United States of America
+        America: United States of America
+        UK: United Kingdom
+        Britain: United Kingdom
+        England: United Kingdom
+        Korea: South Korea
+    languages:  # original_languages; catalog: distinct Movie.original_language
+      # No embedding fallback: ISO 639-1 codes mean nothing to an embedder, so
+      # this field takes exact codes and synonyms only.
+      synonyms:
+        korean: ko
+        japanese: ja
 
 catalog:
   # What the catalog has no data for. Rendered into the classify prompt (the

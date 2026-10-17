@@ -33,22 +33,36 @@ import time
 from typing import Generator, Literal, Optional
 
 import httpx
-import numpy as np
 from asgiref.sync import sync_to_async
 from django.conf import settings
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
-from core.embedding_service import cosine_similarity, encode_texts
+from core.entity_resolution import EntityResolver, catalog_countries, catalog_languages
 
 logger = logging.getLogger(__name__)
-
-_genre_embeddings = None
 
 CATALOG_GENRES = [
     "Action", "Adventure", "Animation", "Comedy", "Crime", "Documentary",
     "Drama", "Family", "Fantasy", "History", "Horror", "Music", "Mystery",
     "Romance", "Science Fiction", "TV Movie", "Thriller", "War", "Western",
 ]
+
+# One resolver per catalog (params.yaml: intent.resolution.<name>); see
+# core/entity_resolution.py. Countries and languages are read from the DB on
+# first use, so the async path resolves inside sync_to_async.
+RESOLVERS = {
+    "genres": EntityResolver("genres", lambda: CATALOG_GENRES, settings.INTENT_RESOLUTION["genres"]),
+    "countries": EntityResolver("countries", catalog_countries, settings.INTENT_RESOLUTION["countries"]),
+    "languages": EntityResolver("languages", catalog_languages, settings.INTENT_RESOLUTION["languages"]),
+}
+# Intent field -> the resolver that maps it onto catalog values.
+RESOLVED_FIELDS = {
+    "genres": "genres",
+    "negations": "genres",
+    "country_inclusions": "countries",
+    "country_exclusions": "countries",
+    "original_languages": "languages",
+}
 
 CLASSIFY_AND_PARSE_SYSTEM_PROMPT = """You are a message classifier and intent parser for a movie recommendation chatbot. Given the conversation so far and the user's latest message, return ONE JSON object with all of the fields below.
 
@@ -73,7 +87,7 @@ JSON fields:
 - "themes": list of themes mentioned
 - "negations": list of genres the user does NOT want (from ALLOWED list)
 - "reference_films": list of film titles mentioned
-- "country_exclusions": list of production countries the user does NOT want (e.g. "USA", "France" -- common English country name, not a genre)
+- "country_exclusions": list of production countries the user does NOT want (e.g. "United States of America", "France" -- common English country name, not a genre)
 - "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
 - "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10 (e.g. "highly rated" -> 7.0, "critically acclaimed" -> 7.5), else null
 - "min_release_year": if the user wants recent/newer films (e.g. "something newer", "after 2015", "modern") a minimum release year, else null
@@ -146,7 +160,7 @@ JSON fields:
 - "themes": list of themes mentioned
 - "negations": list of genres the user does NOT want (from ALLOWED list)
 - "reference_films": list of film titles mentioned
-- "country_exclusions": list of production countries the user does NOT want (e.g. "USA", "France")
+- "country_exclusions": list of production countries the user does NOT want (e.g. "United States of America", "France")
 - "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
 - "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10, else null
 - "min_release_year": if the user wants recent/newer films a minimum release year, else null
@@ -608,25 +622,26 @@ class MessageIntent(BaseModel):
         return _coerce_int(value)
 
 
-def _clean_strs(values) -> list[str]:
-    return [v for v in values if isinstance(v, str) and v.strip()] if values else []
+def _resolve_fields(values: dict) -> dict:
+    """Map each RESOLVED_FIELDS value list onto exact catalog values. Sync: the
+    country and language catalogs come from the DB on first use."""
+    return {
+        field: RESOLVERS[name].resolve(values.get(field) or [])
+        for field, name in RESOLVED_FIELDS.items()
+    }
 
 
 def _extract_intent(parsed: dict) -> dict:
     return {
-        "genres": _normalize_genres(parsed.get("genres", [])),
         "mood": parsed.get("mood", ""),
         "themes": parsed.get("themes", []),
-        "negations": _normalize_genres(parsed.get("negations", [])),
         "reference_films": parsed.get("reference_films", []),
-        "country_exclusions": _clean_strs(parsed.get("country_exclusions", [])),
-        "country_inclusions": _clean_strs(parsed.get("country_inclusions", [])),
         "min_vote_average": _coerce_float(parsed.get("min_vote_average")),
         "min_release_year": _coerce_int(parsed.get("min_release_year")),
         "max_release_year": _coerce_int(parsed.get("max_release_year")),
         "min_runtime": _coerce_int(parsed.get("min_runtime")),
         "max_runtime": _coerce_int(parsed.get("max_runtime")),
-        "original_languages": _clean_strs(parsed.get("original_languages", [])),
+        **_resolve_fields(parsed),
     }
 
 
@@ -1057,10 +1072,12 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
             logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
             return _fallback_message_intent(message)
 
-    intent.genres, intent.negations = await sync_to_async(
-        lambda: (_normalize_genres(intent.genres), _normalize_genres(intent.negations)),
+    resolved = await sync_to_async(
+        lambda: _resolve_fields(intent.model_dump(include=set(RESOLVED_FIELDS))),
         thread_sensitive=False,
     )()
+    for field, values in resolved.items():
+        setattr(intent, field, values)
     if not intent.semantic_query.strip():
         intent.semantic_query = message
     if not intent.standalone_query.strip():
@@ -1173,53 +1190,6 @@ async def ais_available() -> bool:
             return response.status_code == 200
     except httpx.HTTPError:
         return False
-
-
-def _get_genre_embeddings() -> np.ndarray:
-    """Encode all catalog genres once, cache for the process lifetime."""
-    global _genre_embeddings
-    if _genre_embeddings is None:
-        _genre_embeddings = encode_texts(CATALOG_GENRES)
-        logger.info(f"Cached embeddings for {len(CATALOG_GENRES)} catalog genres")
-    return _genre_embeddings
-
-
-def _normalize_genres(raw_genres: list) -> list[str]:
-    """Map LLM genre output to exact catalog genre names via embedding similarity.
-
-    'sci-fi' -> 'Science Fiction', 'rom-com' -> 'Romance', 'scary movie' -> 'Horror'
-    """
-    if not raw_genres:
-        return []
-
-    genre_embs = _get_genre_embeddings()
-    normalized = []
-
-    for raw in raw_genres:
-        if not isinstance(raw, str) or not raw.strip():
-            continue
-
-        if raw in CATALOG_GENRES:
-            normalized.append(raw)
-            continue
-
-        raw_emb = encode_texts([raw])[0]
-        best_score = -1.0
-        best_genre = None
-        for i, catalog_emb in enumerate(genre_embs):
-            sim = cosine_similarity(raw_emb.tolist(), catalog_emb.tolist())
-            if sim > best_score:
-                best_score = sim
-                best_genre = CATALOG_GENRES[i]
-
-        if best_genre and best_score >= settings.GENRE_MATCH_THRESHOLD:
-            if best_genre not in normalized:
-                normalized.append(best_genre)
-            logger.debug(f"Genre normalized: '{raw}' -> '{best_genre}' (sim={best_score:.3f})")
-        else:
-            logger.debug(f"Genre dropped: '{raw}' (best='{best_genre}' sim={best_score:.3f})")
-
-    return normalized
 
 
 def _fallback_intent(_query: str) -> dict:

@@ -14,7 +14,6 @@ from core.ollama_client import (
     _ThinkStreamFilter,
     _parse_json_response,
     _strip_think,
-    _normalize_genres,
     _build_chat_messages,
     _chat_sync,
     _classify_and_parse_payload,
@@ -39,11 +38,20 @@ from core.ollama_client import (
     CLASSIFY_PARSE_SCHEMA,
     INTENT_SCHEMA,
     NON_FILTER_FIELDS,
+    RESOLVED_FIELDS,
+    RESOLVERS,
     MessageIntent,
     _extract_intent,
     _fallback_intent,
+    _resolve_fields,
     parse_intent,
 )
+from core.entity_resolution import catalog_countries, catalog_languages
+
+
+def _unresolved(values):
+    """_resolve_fields stand-in: every resolved field passes through as is."""
+    return {field: list(values.get(field) or []) for field in RESOLVED_FIELDS}
 
 
 def _mock_ollama_responses(*contents):
@@ -111,7 +119,7 @@ class TestStandaloneQuery:
         mock_client = _mock_ollama_responses(content)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("something funny")
 
         assert result.standalone_query == "something funny"
@@ -155,7 +163,7 @@ class TestClassifyAndParse:
         mock_client = _mock_ollama_responses(content)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("хочу весёлую комедию")
 
         assert isinstance(result, MessageIntent)
@@ -171,7 +179,7 @@ class TestClassifyAndParse:
         mock_client = _mock_ollama_responses(bad, good)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("расскажи про первый фильм")
 
         assert result.category == "follow_up"
@@ -183,7 +191,7 @@ class TestClassifyAndParse:
         mock_client = _mock_ollama_responses(bad, bad)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("test message")
 
         assert result.category == "new_search"
@@ -211,7 +219,7 @@ class TestClassifyAndParse:
         mock_client = _mock_ollama_responses(content)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("хочу комедию")
 
         assert result.semantic_query == "хочу комедию"
@@ -228,21 +236,33 @@ class TestClassifyAndParse:
         assert mock_client.post.call_count == 1
 
     @pytest.mark.asyncio
-    async def test_genres_and_negations_are_normalized(self):
+    async def test_every_resolved_field_goes_through_resolution(self):
         content = json.dumps({
             "category": "new_search",
             "semantic_query": "q",
-            "genres": ["комедия"],
-            "negations": ["хоррор"],
+            "genres": ["sci-fi"],
+            "negations": ["scary"],
+            "country_inclusions": ["Korea"],
+            "country_exclusions": ["USA"],
+            "original_languages": ["korean"],
+            "reference_films": ["Oldboy"],
         })
         mock_client = _mock_ollama_responses(content)
+        resolve = MagicMock(side_effect=lambda values: {
+            field: [v.upper() for v in values[field]] for field in RESOLVED_FIELDS
+        })
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: [x.upper() for x in g]):
+             patch("core.ollama_client._resolve_fields", resolve):
             result = await aclassify_and_parse("q")
 
-        assert result.genres == ["КОМЕДИЯ"]
-        assert result.negations == ["ХОРРОР"]
+        resolve.assert_called_once()
+        assert result.genres == ["SCI-FI"]
+        assert result.negations == ["SCARY"]
+        assert result.country_inclusions == ["KOREA"]
+        assert result.country_exclusions == ["USA"]
+        assert result.original_languages == ["KOREAN"]
+        assert result.reference_films == ["Oldboy"]
 
 
     @pytest.mark.asyncio
@@ -255,7 +275,7 @@ class TestClassifyAndParse:
         ]
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             await aclassify_and_parse("давай", history)
 
         sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
@@ -270,7 +290,7 @@ class TestClassifyAndParse:
         mock_client = _mock_ollama_responses(content)
 
         with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("q")
 
         sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
@@ -407,45 +427,79 @@ class TestClassifyPromptClarify:
         assert '"category": "clarify"' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
 
 
-class TestNormalizeGenres:
-    def test_exact_match_passthrough(self):
-        with patch(
-            "core.ollama_client._get_genre_embeddings",
-            return_value=[np.zeros(4)] * len(CATALOG_GENRES),
-        ):
-            assert _normalize_genres(["Комедии"]) == ["Комедии"]
+class TestResolveFields:
+    def test_each_field_uses_the_resolver_for_its_catalog(self):
+        assert RESOLVED_FIELDS == {
+            "genres": "genres", "negations": "genres",
+            "country_inclusions": "countries", "country_exclusions": "countries",
+            "original_languages": "languages",
+        }
+        assert RESOLVERS["genres"]._catalog_values() == CATALOG_GENRES
+        assert RESOLVERS["countries"]._catalog_values is catalog_countries
+        assert RESOLVERS["languages"]._catalog_values is catalog_languages
+        assert not RESOLVERS["languages"].uses_embeddings
+        assert RESOLVERS["genres"].uses_embeddings and RESOLVERS["countries"].uses_embeddings
 
-    def test_drops_below_threshold(self, settings):
-        settings.GENRE_MATCH_THRESHOLD = 0.99
-        with patch(
-            "core.ollama_client._get_genre_embeddings",
-            return_value=[np.array([0.0, 1.0])] * len(CATALOG_GENRES),
-        ), patch(
-            "core.ollama_client.encode_texts",
-            return_value=[np.array([1.0, 0.0])],
-        ):
-            assert _normalize_genres(["totally unrelated term"]) == []
+    def test_resolvers_read_their_params(self, settings):
+        config = settings.INTENT_RESOLUTION["countries"]
+        resolver = RESOLVERS["countries"]
+        assert (resolver.match_threshold, resolver.match_margin) == (
+            config["match_threshold"], config["match_margin"]
+        )
+
+    def test_resolves_each_field_through_its_resolver(self):
+        fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
+        for name, fake in fakes.items():
+            fake.resolve.side_effect = lambda raw, name=name: [f"{name}:{v}" for v in raw]
+        with patch.dict("core.ollama_client.RESOLVERS", fakes):
+            result = _resolve_fields({
+                "genres": ["a"], "negations": ["b"], "country_inclusions": ["c"],
+                "country_exclusions": ["d"], "original_languages": ["e"], "mood": "x",
+            })
+        assert result == {
+            "genres": ["genres:a"], "negations": ["genres:b"],
+            "country_inclusions": ["countries:c"], "country_exclusions": ["countries:d"],
+            "original_languages": ["languages:e"],
+        }
+
+    def test_missing_or_null_fields_resolve_to_empty(self):
+        fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
+        for fake in fakes.values():
+            fake.resolve.side_effect = lambda raw: list(raw)
+        with patch.dict("core.ollama_client.RESOLVERS", fakes):
+            assert _resolve_fields({"genres": None}) == {field: [] for field in RESOLVED_FIELDS}
 
 
 class TestExtractIntent:
     def test_extracts_all_fields(self):
         parsed = {
-            "genres": ["Комедии"],
+            "genres": ["Comedy"],
             "mood": "happy",
-            "themes": ["семья"],
-            "negations": ["Ужасы"],
-            "reference_films": ["Один дома"],
-            "country_exclusions": ["США"],
+            "themes": ["family"],
+            "negations": ["Horror"],
+            "reference_films": ["Home Alone"],
+            "country_exclusions": ["United States of America"],
             "min_vote_average": 7.0,
             "min_release_year": 2015,
         }
-        result = _extract_intent(parsed)
+        with patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+            result = _extract_intent(parsed)
+        assert result["genres"] == ["Comedy"]
+        assert result["negations"] == ["Horror"]
         assert result["mood"] == "happy"
-        assert result["themes"] == ["семья"]
-        assert result["reference_films"] == ["Один дома"]
-        assert result["country_exclusions"] == ["США"]
+        assert result["themes"] == ["family"]
+        assert result["reference_films"] == ["Home Alone"]
+        assert result["country_exclusions"] == ["United States of America"]
         assert result["min_vote_average"] == 7.0
         assert result["min_release_year"] == 2015
+
+    def test_resolved_fields_come_from_resolution(self):
+        resolved = {field: [f"resolved {field}"] for field in RESOLVED_FIELDS}
+        with patch("core.ollama_client._resolve_fields", return_value=resolved) as resolve:
+            result = _extract_intent({"genres": ["sci-fi"], "country_inclusions": ["Korea"]})
+        resolve.assert_called_once_with({"genres": ["sci-fi"], "country_inclusions": ["Korea"]})
+        for field in RESOLVED_FIELDS:
+            assert result[field] == [f"resolved {field}"]
 
     def test_missing_fields_default_to_empty(self):
         result = _extract_intent({})
@@ -460,12 +514,10 @@ class TestExtractIntent:
 
     def test_invalid_hard_constraint_types_are_dropped(self):
         parsed = {
-            "country_exclusions": ["США", 42, None, ""],
             "min_vote_average": "not-a-number",
             "min_release_year": "also-not-a-number",
         }
         result = _extract_intent(parsed)
-        assert result["country_exclusions"] == ["США"]
         assert result["min_vote_average"] is None
         assert result["min_release_year"] is None
 
@@ -1238,7 +1290,7 @@ class TestStructuredOutputSchema:
             "message": {"content": '<think>hmm</think>{"genres": ["Comedy"]}'}
         }
         with patch("core.ollama_client.httpx.post", return_value=response), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g):
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
             assert parse_intent("a comedy")["genres"] == ["Comedy"]
 
 
@@ -1323,7 +1375,7 @@ class TestCallLogging:
         response = MagicMock()
         response.json.return_value = {"message": {"content": "{}"}, **FINAL_CHUNK}
         with patch("core.ollama_client.httpx.post", return_value=response), \
-             patch("core.ollama_client._normalize_genres", side_effect=lambda g: g), \
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved), \
              caplog.at_level(logging.INFO, logger="core.ollama_client"):
             call()
         assert f"call={call_type} " in _call_records(caplog)[0].getMessage()

@@ -4,6 +4,7 @@ import pytest
 
 from recommender.settings import (
     _unchecked_text,
+    _validate_intent,
     _validate_logging_level,
     _validate_placeholder_max_chars,
     _validate_unchecked_attributes,
@@ -184,3 +185,77 @@ class TestUncheckedAttributes:
     def test_rejects_a_missing_key(self):
         with pytest.raises(ValueError, match=r"catalog\.unchecked_attributes"):
             _validate_unchecked_attributes({})
+
+
+GOOD_RESOLUTION = {
+    "genres": {"match_threshold": 0.5, "match_margin": 0.05, "synonyms": {"sci-fi": "Science Fiction"}},
+    "countries": {"match_threshold": 0.5, "match_margin": 0.05, "synonyms": {}},
+    "languages": {"synonyms": {"korean": "ko"}},
+}
+
+
+def _intent(**fields):
+    resolution = {name: {**GOOD_RESOLUTION[name], **fields.get(name, {})} for name in GOOD_RESOLUTION}
+    return {"resolution": resolution}
+
+
+class TestIntentResolution:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        _validate_intent(settings.PARAMS["intent"])
+        assert settings.INTENT_RESOLUTION["countries"]["synonyms"]["USA"] == "United States of America"
+        assert "match_threshold" not in settings.INTENT_RESOLUTION["languages"]
+
+    def test_accepts_a_good_config(self):
+        _validate_intent(_intent())
+        _validate_intent(_intent(genres={"match_margin": 0, "match_threshold": 1}))
+
+    def test_removed_genre_match_threshold_points_to_resolution(self):
+        with pytest.raises(ValueError, match=r"intent\.genre_match_threshold.*intent\.resolution\.genres"):
+            _validate_intent({**_intent(), "genre_match_threshold": 0.5})
+
+    @pytest.mark.parametrize("bad", [None, {}, {"resolution": None}, {"resolution": {}}])
+    def test_rejects_a_missing_or_malformed_section(self, bad):
+        with pytest.raises(ValueError, match=r"intent"):
+            _validate_intent(bad)
+
+    def test_rejects_unknown_or_missing_fields(self):
+        intent = _intent()
+        intent["resolution"]["moods"] = {"synonyms": {}}
+        with pytest.raises(ValueError, match=r"intent\.resolution.*genres, countries, languages"):
+            _validate_intent(intent)
+        intent = _intent()
+        del intent["resolution"]["countries"]
+        with pytest.raises(ValueError, match=r"intent\.resolution.*genres, countries, languages"):
+            _validate_intent(intent)
+
+    @pytest.mark.parametrize("bad", [0, -0.1, 1.5, "0.5", None, True])
+    def test_rejects_a_threshold_outside_zero_one(self, bad):
+        with pytest.raises(ValueError, match=r"intent\.resolution\.countries\.match_threshold"):
+            _validate_intent(_intent(countries={"match_threshold": bad}))
+
+    @pytest.mark.parametrize("bad", [-0.01, 1, 2, "0.05", None, False])
+    def test_rejects_a_margin_outside_zero_one(self, bad):
+        with pytest.raises(ValueError, match=r"intent\.resolution\.genres\.match_margin"):
+            _validate_intent(_intent(genres={"match_margin": bad}))
+
+    def test_embedding_fields_need_both_threshold_and_margin(self):
+        intent = _intent()
+        del intent["resolution"]["genres"]["match_margin"]
+        with pytest.raises(ValueError, match=r"intent\.resolution\.genres"):
+            _validate_intent(intent)
+
+    def test_languages_take_no_embedding_threshold(self):
+        with pytest.raises(ValueError, match=r"intent\.resolution\.languages.*synonyms"):
+            _validate_intent(_intent(languages={"match_threshold": 0.5}))
+
+    @pytest.mark.parametrize(
+        "bad", [None, ["USA"], {"USA": ""}, {"": "France"}, {"no": False}, {"USA": 1}, {1: "France"}]
+    )
+    def test_rejects_malformed_synonyms(self, bad):
+        with pytest.raises(ValueError, match=r"intent\.resolution\.countries\.synonyms"):
+            _validate_intent(_intent(countries={"synonyms": bad}))
+
+    def test_accepts_empty_synonyms(self):
+        _validate_intent(_intent(languages={"synonyms": {}}))
