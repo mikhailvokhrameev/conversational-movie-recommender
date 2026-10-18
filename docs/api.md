@@ -84,8 +84,9 @@ A search turn whose request names something the catalog cannot check (actors,
 director, silent or black-and-white, awards, studio -- the classifier's
 `unsupported_constraints`) is not searched. The stream is `movies` with
 `movies: []` and `no_match: false`, one `token` event with a fixed question
-("I can't check "with Keanu Reeves" -- the catalog has no cast, director, awards,
-studio or silent/black-and-white data. Want me to search without that?"), and
+("I can't check "with Keanu Reeves" -- the catalog has no data on cast, director,
+silent, black-and-white, awards and studio. Want me to search without that?"; the
+attribute list is `catalog.unchecked_attributes` in `params.yaml`), and
 `done`. The stored assistant turn carries `pending_relaxation: {"dropped": [...]}`;
 on the next turn those constraints no longer block the search, so a "yes"
 returns movies. See ADR 0011.
@@ -112,6 +113,14 @@ Prompt-shape placeholders the model may echo back (short single-line text in ang
 brackets, such as `<opening line>`) are dropped from the intro and every description,
 with the same hold-back for one split across chunks; the prompts themselves describe
 the format in words and show an example without angle brackets.
+
+**Short result under hard filters**: when fewer than `diversification.top_n` movies come
+back and at least one hard filter is active (the same list `_no_match_message` names),
+the server first emits one fixed `token` line, "Only N movie(s) in the catalog match:
+<filters>." (e.g. "Only 1 movie in the catalog match: released 1959 or earlier."),
+then the model's intro streams after it. The line is part of the `token` text, of
+`intro_final` (which keeps it ahead of the first line of the model's reply) and of the
+stored assistant turn. With `top_n` results, or no hard filter, there is no line.
 
 **Degradation**: if the model emits no markers at all, every token lands in the intro
 slot -- `token` events only, zero `blurb` events. After the stream the server then

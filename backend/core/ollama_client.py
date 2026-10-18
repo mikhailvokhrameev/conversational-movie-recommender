@@ -229,6 +229,8 @@ Answer in English, in two parts.
 
 PART 1 -- an opening line of one or two short sentences confirming the request and
 saying what this set has in common. Do NOT name any film title in the opening line.
+Describe the movies from the listed facts only: never state that the movies meet a
+condition (silent, a rating, a year, a country) the listed facts do not show.
 
 PART 2 -- for EACH movie listed in the user's latest message, in the same order, write its marker ([[1]], [[2]], ...)
 alone on a line, then two or three sentences about that one film: what it is about,

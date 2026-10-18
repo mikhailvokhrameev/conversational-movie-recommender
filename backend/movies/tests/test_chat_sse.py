@@ -8,8 +8,8 @@ from django.test import AsyncRequestFactory
 
 from core.ollama_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import (
-    NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _first_line, _generate_and_score, _no_match_message,
-    _unchecked_constraints,
+    NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _describe_filters, _first_line, _generate_and_score,
+    _no_match_message, _unchecked_constraints,
 )
 
 
@@ -924,6 +924,74 @@ class TestUnsupportedConstraintsAndRelaxation:
             intent.model_dump(exclude=set(NON_FILTER_FIELDS)),
         )
         assert dict(events)["movies"]["no_match"] is True
+
+
+    # Fixed "Only N movie(s)" line: fewer than top_n results under hard filters.
+    FILTERED = dict(category="new_search", semantic_query="thrillers", max_release_year=1959)
+
+    @pytest.mark.asyncio
+    async def test_line_precedes_the_llm_intro_and_is_stored(self):
+        intent = MessageIntent(**self.FILTERED)
+        events, append_history = await self._run(
+            intent, explain=_mock_explanation_parts((None, "Here you go.\n"), (0, "Desc.")),
+        )
+
+        line = "Only 1 movie in the catalog match: released 1959 or earlier."
+        tokens = [d["text"] for name, d in events if name == "token"]
+        assert tokens[0].strip() == line
+        assert "".join(tokens).endswith("Here you go.\n")
+        stored = append_history.call_args.args[2]
+        assert stored.startswith(line + "\n")
+        assert stored.count(line) == 1
+        assert "Here you go." in stored and "[[1]]\nDesc." in stored
+
+    @pytest.mark.asyncio
+    async def test_plural_count(self):
+        intent = MessageIntent(**self.FILTERED)
+        with patch.object(settings, "TOP_N", 3):
+            events, _ = await self._run(
+                intent, generate=_mock_generate_and_score(_two_movies()),
+                explain=_mock_explanation_parts((None, "Hi.")),
+            )
+        assert [d["text"] for name, d in events if name == "token"][0].strip() == (
+            "Only 2 movies in the catalog match: released 1959 or earlier."
+        )
+
+    @pytest.mark.asyncio
+    async def test_intro_final_keeps_the_line(self):
+        intent = MessageIntent(**self.FILTERED)
+        events, append_history = await self._run(
+            intent, explain=_mock_explanation_parts((None, "Opening.\nstray second line")),
+        )
+        final = dict(events)["intro_final"]["text"]
+        assert final.startswith("Only 1 movie in the catalog match:")
+        assert final.endswith("Opening.")
+        assert append_history.call_args.args[2] == final
+
+    @pytest.mark.asyncio
+    async def test_no_line_when_top_n_movies_come_back(self):
+        intent = MessageIntent(**self.FILTERED)
+        with patch.object(settings, "TOP_N", 2):
+            events, append_history = await self._run(
+                intent, generate=_mock_generate_and_score(_two_movies()),
+            )
+        assert "Only" not in "".join(d["text"] for name, d in events if name == "token")
+        assert "Only" not in append_history.call_args.args[2]
+
+    @pytest.mark.asyncio
+    async def test_no_line_without_hard_filters(self):
+        intent = MessageIntent(category="new_search", semantic_query="thrillers", genres=["Thriller"])
+        events, append_history = await self._run(intent)
+        assert "Only" not in "".join(d["text"] for name, d in events if name == "token")
+        assert "Only" not in append_history.call_args.args[2]
+
+
+class TestDescribeFilters:
+    def test_empty_when_only_ranking_fields_are_set(self):
+        assert _describe_filters({"genres": ["Drama"], "mood": "sad"}) == ""
+
+    def test_joins_active_filters(self):
+        assert _describe_filters({"negations": ["Horror"], "max_runtime": 20}) == "no Horror, under 20 min"
 
 
 class TestNoMatchMessage:

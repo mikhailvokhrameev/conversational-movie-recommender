@@ -39,10 +39,10 @@ UNSUPPORTED_MESSAGE = (
 )
 
 
-def _no_match_message(intent_dict: dict) -> str:
-    """Name the hard filters that were active, so the user knows what to
-    loosen. Genres, mood and themes only rank, they never empty the result, so
-    they are not listed; with no hard filter the cause was the relevance gate."""
+def _describe_filters(intent_dict: dict) -> str:
+    """The hard filters that were active, comma-separated; empty with none.
+    Genres, mood and themes only rank, they never empty the result, so they
+    are not listed."""
     parts = [f"no {g}" for g in intent_dict.get("negations") or []]
     parts += [f"from {c}" for c in intent_dict.get("country_inclusions") or []]
     parts += [f"not from {c}" for c in intent_dict.get("country_exclusions") or []]
@@ -61,9 +61,16 @@ def _no_match_message(intent_dict: dict) -> str:
         parts.append(f"under {intent_dict['max_runtime']} min")
     if intent_dict.get("original_languages"):
         parts.append(f"language: {', '.join(intent_dict['original_languages'])}")
-    if not parts:
+    return ", ".join(parts)
+
+
+def _no_match_message(intent_dict: dict) -> str:
+    """Name the hard filters that were active, so the user knows what to
+    loosen; with no hard filter the cause was the relevance gate."""
+    filters = _describe_filters(intent_dict)
+    if not filters:
         return NO_MATCH_MESSAGE
-    return f"Nothing in the catalog matches all of: {', '.join(parts)}. Which one should I loosen?"
+    return f"Nothing in the catalog matches all of: {filters}. Which one should I loosen?"
 
 
 def _history_window(history: list[dict]) -> list[dict]:
@@ -284,6 +291,13 @@ class ChatView(View):
         top_ids = [m["tmdb_id"] for m in top_movies]
         movie_facts = build_movie_facts(top_movies, settings.SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS)
         candidate_titles = [m["serial_name"] for m in candidate_pool]
+        # Fewer than top_n under hard filters: say so before the model's intro,
+        # in fixed words, so the intro cannot pass the short list off as a full one.
+        short_filters = _describe_filters(intent_dict) if len(top_movies) < settings.TOP_N else ""
+        short_line = (
+            f"Only {len(top_movies)} movie{'' if len(top_movies) == 1 else 's'} "
+            f"in the catalog match: {short_filters}.\n"
+        ) if short_filters else ""
 
         async def event_stream():
             yield _sse_event("movies", {
@@ -297,6 +311,8 @@ class ChatView(View):
             explanation_parts = []
             intro_parts = []
             slot_parts = {}
+            if short_line:
+                yield _sse_event("token", {"text": short_line})
             t_explain = time.perf_counter()
             # The opening line keeps the plain "token" wire format so it streams
             # live under the existing caret; each per-movie description goes out
@@ -314,12 +330,12 @@ class ChatView(View):
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
 
-            intro = "".join(intro_parts)
+            intro = short_line + "".join(intro_parts)
             if not slot_parts and intro.strip():
                 # No markers at all: every description landed in the intro. The
                 # client replaces the streamed text with the opening line and the
                 # cards fall back to catalog copy; history gets the same line.
-                intro = _first_line(intro)
+                intro = short_line + _first_line(intro[len(short_line):])
                 yield _sse_event("intro_final", {"text": intro})
             assistant_text = _assistant_turn_text(intro, slot_parts)
             # Skip storing only when there is nothing to keep: with an empty

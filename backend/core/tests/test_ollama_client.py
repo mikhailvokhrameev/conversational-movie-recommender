@@ -736,6 +736,12 @@ class TestExplanationSplitter:
             assert "[[1]]" in prompt and "[[2]]" in prompt
 
 
+    def test_system_prompt_forbids_claiming_unshown_conditions(self):
+        """The opening line may only restate what the listed facts show."""
+        assert "never state that the movies meet a condition" in " ".join(EXPLANATION_SYSTEM_PROMPT.split())
+        assert "listed facts" in EXPLANATION_SYSTEM_PROMPT
+
+
 class TestBuildChatMessages:
     def test_no_history_returns_system_and_current_only(self):
         messages = _build_chat_messages(
