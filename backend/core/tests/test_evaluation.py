@@ -10,6 +10,7 @@ from core.evaluation import (
     aggregate_metrics,
     evaluate_query,
     gate_report,
+    label_export_rows,
     judge_ndcg,
     llm_relevance_score,
     ndcg_at_k,
@@ -262,3 +263,62 @@ class TestGateReport:
         grid = [row["min_score"] for row in gate_report([])["thresholds"]]
         assert grid == sorted(grid)
         assert all(0 < t < 1 for t in grid)
+
+
+def _rec(tmdb_id, score, hit=False, title=None, release_date="1999-03-31", overview="An overview."):
+    return {
+        "tmdb_id": tmdb_id, "title": title or f"Film {tmdb_id}", "release_date": release_date,
+        "rerank_score": score, "hit": hit, "overview": overview,
+    }
+
+
+class TestLabelExportRows:
+    def _queries(self):
+        return [
+            {
+                "id": "d1", "query": "something funnier", "context": ["a heist film", "ok"],
+                "query_text": "a funnier heist film",
+                "recommended": [_rec(5, 0.91234567891234, hit=True), _rec(7, None, release_date=None)],
+            },
+            {
+                "id": "d2", "query": "q2", "context": [], "query_text": "q2",
+                "recommended": [_rec(9, 0.1, release_date="2001-01-01", overview="Multi\nline, \"quoted\"")],
+            },
+        ]
+
+    def test_columns_and_order(self):
+        rows = label_export_rows(self._queries())
+        assert list(rows[0]) == [
+            "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+            "year", "overview", "rerank_score", "golden_hit", "label",
+        ]
+        assert [(r["query_id"], r["rank"], r["tmdb_id"]) for r in rows] == [("d1", 1, 5), ("d1", 2, 7), ("d2", 1, 9)]
+
+    def test_query_fields_and_context_join(self):
+        row = label_export_rows(self._queries())[0]
+        assert row["query"] == "something funnier"
+        assert row["ranked_query"] == "a funnier heist film"
+        assert row["context"] == "a heist film | ok"
+        assert label_export_rows(self._queries())[2]["context"] == ""
+
+    def test_score_is_full_precision_or_blank(self):
+        rows = label_export_rows(self._queries())
+        assert rows[0]["rerank_score"] == repr(0.91234567891234)
+        assert rows[1]["rerank_score"] == ""
+
+    def test_golden_hit_and_empty_label(self):
+        rows = label_export_rows(self._queries())
+        assert [r["golden_hit"] for r in rows] == [1, 0, 0]
+        assert all(r["label"] == "" for r in rows)
+
+    def test_year_from_release_date_blank_when_missing(self):
+        rows = label_export_rows(self._queries())
+        assert [r["year"] for r in rows] == ["1999", "", "2001"]
+
+    def test_overview_kept_verbatim(self):
+        assert label_export_rows(self._queries())[2]["overview"] == 'Multi\nline, "quoted"'
+
+    def test_missing_overview_is_blank(self):
+        q = self._queries()
+        del q[0]["recommended"][0]["overview"]
+        assert label_export_rows(q)[0]["overview"] == ""

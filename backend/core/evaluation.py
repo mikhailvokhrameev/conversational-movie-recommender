@@ -263,6 +263,43 @@ def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
     }
 
 
+LABEL_EXPORT_COLUMNS = (
+    "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+    "year", "overview", "rerank_score", "golden_hit", "label",
+)
+
+
+def label_export_rows(queries: list[dict]) -> list[dict]:
+    """One row per (query, recommended movie), in rank order, for hand-labelling.
+
+    `queries` are per-query results of a dev run with the gate off. `query` is
+    what the user typed and `ranked_query` the text the reranker actually saw
+    (the standalone rewrite for a follow-up in oracle mode): the labeller
+    judges relevance against `ranked_query`, with `context` for orientation.
+    `golden_hit` is informative only -- the golden lists are incomplete, which
+    is why a human label column exists. `label` is left empty.
+    """
+    rows = []
+    for q in queries:
+        for rank, movie in enumerate(q["recommended"], start=1):
+            score = movie.get("rerank_score")
+            rows.append({
+                "query_id": q["id"],
+                "query": q["query"],
+                "context": " | ".join(q.get("context", [])),
+                "ranked_query": q["query_text"],
+                "rank": rank,
+                "tmdb_id": movie["tmdb_id"],
+                "title": movie["title"],
+                "year": (movie.get("release_date") or "")[:4],
+                "overview": movie.get("overview") or "",
+                "rerank_score": "" if score is None else repr(float(score)),
+                "golden_hit": int(bool(movie["hit"])),
+                "label": "",
+            })
+    return rows
+
+
 def evaluate_query(
     recommended_ids: list[Hashable],
     grades: dict[Hashable, float],

@@ -404,6 +404,60 @@ class TestGateReport:
 
 
 
+class TestLabelExport:
+    """--label-export: dev-split CSV of reranked results for human labelling."""
+
+    HEADER = [
+        "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+        "year", "overview", "rerank_score", "golden_hit", "label",
+    ]
+
+    def _entries(self):
+        return [_entry("d1", "dev", context=["earlier"], oracle_standalone_query="standalone d1"), _entry("t1", "test")]
+
+    @staticmethod
+    def _scored_movies():
+        movies = [_movie(1), _movie(2)]
+        for movie, score in zip(movies, (0.9, 0.2)):
+            movie["rerank_score"] = score
+        return movies
+
+    def test_writes_csv_and_record(self, tmp_path):
+        import csv
+
+        csv_path = tmp_path / "out" / "label.csv"
+        run = _Run(tmp_path, self._entries(), movies=self._scored_movies(), grades={1: 2})
+        record = run("--label-export", str(csv_path), "--intent", "oracle", "--k", "2")
+
+        assert record["mode"] == "label_export"
+        assert record["split"] == "dev"
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert list(rows[0]) == self.HEADER
+        assert [(r["query_id"], r["rank"], r["tmdb_id"], r["golden_hit"]) for r in rows] == [
+            ("d1", "1", "1", "1"), ("d1", "2", "2", "0"),
+        ]
+        assert rows[0]["context"] == "earlier" and rows[0]["ranked_query"] == "standalone d1"
+        assert rows[0]["query"] == "query d1" and rows[0]["overview"] == "d"
+        assert rows[0]["year"] == "2000" and rows[0]["label"] == ""
+        assert str(csv_path) in run.stdout
+
+    def test_runs_the_pipeline_with_the_gate_disabled(self, tmp_path):
+        run = _Run(tmp_path, self._entries(), movies=self._scored_movies())
+        run("--label-export", str(tmp_path / "l.csv"), "--intent", "oracle")
+        assert all(call.kwargs["apply_gate"] is False for call in run.pipeline.call_args_list)
+
+    @pytest.mark.parametrize("split", ["test", "all"])
+    def test_refuses_anything_but_dev(self, tmp_path, split):
+        with pytest.raises(CommandError, match="dev"):
+            _Run(tmp_path, self._entries())("--label-export", str(tmp_path / "l.csv"), "--split", split)
+
+    @pytest.mark.parametrize("other", [["--sweep"], ["--gate-report"]])
+    def test_mutually_exclusive(self, tmp_path, other):
+        with pytest.raises(CommandError, match="separate"):
+            _Run(tmp_path, self._entries())("--label-export", str(tmp_path / "l.csv"), *other)
+
+
 class TestEmptyResults:
     def test_counts_queries_the_gate_left_empty(self, tmp_path):
         run = _Run(tmp_path, [_entry()], movies=[])
@@ -456,7 +510,7 @@ class TestRunRecord:
         query = record["queries"][0]
         assert query["recommended"][0] == {
             "tmdb_id": 1, "title": "Film 1", "release_date": "2000-01-01",
-            "rerank_score": None, "hit": True,
+            "rerank_score": None, "hit": True, "overview": "d",
         }
         assert "ndcg_at_k" in record["aggregate"]
         assert record["aggregate"]["coverage"] == 2 / 100

@@ -8,6 +8,8 @@ Usage:
   python manage.py evaluate_scoring --sweep                # weight grid search, dev split only
   python manage.py evaluate_scoring --weights 0.6,0.4      # custom semantic,metadata weights
   python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
+  python manage.py evaluate_scoring --intent oracle --k 10 --label-export labels.csv
+                                                           # CSV of reranked dev results to hand-label
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -25,11 +27,16 @@ What makes this an honest measurement:
     separates labelled hits from the rest, plus what each candidate threshold
     would drop. It informs a human choice of reranking.min_score and never
     writes params.yaml.
+  - `--label-export` writes the same ungated dev run as a CSV (query, the text
+    the reranker saw, movie, rerank_score) for a human to mark relevant 1/0,
+    because the golden lists are incomplete: an unlabelled movie that is in
+    fact relevant would otherwise count against a threshold. Dev only.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
 
 import asyncio
+import csv
 import hashlib
 import json
 import logging
@@ -47,7 +54,9 @@ from core.evaluation import (
     compute_genre_frequency,
     coverage,
     evaluate_query,
+    LABEL_EXPORT_COLUMNS,
     gate_report,
+    label_export_rows,
     llm_relevance_score,
 )
 from core.golden_set import (
@@ -70,7 +79,7 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat", "clarify")
 OWN_OPTIONS = (
-    "golden_set", "split", "intent", "k", "sweep", "gate_report", "weights",
+    "golden_set", "split", "intent", "k", "sweep", "gate_report", "label_export", "weights",
     "llm_judge", "output",
 )
 
@@ -199,6 +208,14 @@ class Command(BaseCommand):
                  "(dev split only)",
         )
         parser.add_argument(
+            "--label-export",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="Write the gate-off dev results (--k rows per query, with rerank_score) to a "
+                 "CSV for hand-labelling relevant 1/0 (dev split only; use --k 10)",
+        )
+        parser.add_argument(
             "--weights",
             type=str,
             default=None,
@@ -228,9 +245,13 @@ class Command(BaseCommand):
             raise CommandError("--k must be at least 1")
         sweep = options["sweep"]
         report_gate = options["gate_report"]
-        if sweep and report_gate:
-            raise CommandError("--sweep and --gate-report are separate runs; pick one.")
-        split = options["split"] or ("dev" if sweep or report_gate else "test")
+        label_export = options["label_export"]
+        if sum([sweep, report_gate, label_export is not None]) > 1:
+            raise CommandError(
+                "--sweep, --gate-report and --label-export are separate runs; pick one."
+            )
+        dev_only = sweep or report_gate or label_export is not None
+        split = options["split"] or ("dev" if dev_only else "test")
         if sweep and split != "dev":
             raise CommandError(
                 f"--sweep selects weights, so it only runs on the dev split (got --split {split}); "
@@ -239,6 +260,11 @@ class Command(BaseCommand):
         if report_gate and split != "dev":
             raise CommandError(
                 f"--gate-report picks a threshold, so it only runs on the dev split (got --split {split}); "
+                "the test split is held out for the final report."
+            )
+        if label_export is not None and split != "dev":
+            raise CommandError(
+                f"--label-export feeds a threshold choice, so it only runs on the dev split (got --split {split}); "
                 "the test split is held out for the final report."
             )
         intent_mode = options["intent"]
@@ -270,7 +296,10 @@ class Command(BaseCommand):
 
         record = {
             "timestamp": started.isoformat(),
-            "mode": "sweep" if sweep else "gate_report" if report_gate else "eval",
+            "mode": (
+                "sweep" if sweep else "gate_report" if report_gate
+                else "label_export" if label_export is not None else "eval"
+            ),
             "git": _git_state(),
             "params_file": str(settings.PARAMS_FILE),
             "params_sha256": _sha256(settings.PARAMS_FILE),
@@ -290,10 +319,14 @@ class Command(BaseCommand):
             record["weights"] = weights
             # The report needs every returned movie's score, including the ones
             # the gate would drop, so its run is ungated.
-            record.update(self._run_eval(prepared, k, weights, use_llm, apply_gate=not report_gate))
+            record.update(self._run_eval(
+                prepared, k, weights, use_llm, apply_gate=not (report_gate or label_export is not None),
+            ))
             if report_gate:
                 record["gate_report"] = gate_report(record["queries"])
                 self._write_gate_report(record["gate_report"])
+            if label_export is not None:
+                self._write_label_export(Path(label_export), record["queries"])
 
         output = Path(options["output"]) if options["output"] else (
             Path("eval_runs") / f"{record['mode']}-{started.strftime('%Y%m%dT%H%M%SZ')}.json"
@@ -446,6 +479,7 @@ class Command(BaseCommand):
                 {
                     "tmdb_id": m["tmdb_id"], "title": m["serial_name"],
                     "release_date": m.get("release_date"),
+                    "overview": m.get("description"),
                     # None when the reranker did not score this request.
                     "rerank_score": m.get("rerank_score"),
                     "hit": m["tmdb_id"] in p.grades,
@@ -546,6 +580,18 @@ class Command(BaseCommand):
             self.stdout.write(f"  {key}: {value:.4f}")
         self._write_counters(result["counters"])
         return result
+
+    def _write_label_export(self, path: Path, queries: list[dict]) -> None:
+        rows = label_export_rows(queries)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=LABEL_EXPORT_COLUMNS)
+            writer.writeheader()
+            writer.writerows(rows)
+        self.stdout.write(
+            f"\nWrote {len(rows)} rows for {len(queries)} queries to {path}; mark each row's "
+            "label 1 (relevant to ranked_query) or 0, then run --label-report on the file."
+        )
 
     def _write_gate_report(self, report: dict) -> None:
         self.stdout.write("\n" + "=" * 70)
