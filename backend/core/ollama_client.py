@@ -70,7 +70,7 @@ CLASSIFY_AND_PARSE_SYSTEM_PROMPT = """You are a message classifier and intent pa
 Categories (put the best match in "category"):
 - "new_search": user wants movie recommendations and gives at least one thing to search on -- a genre, mood, theme, era, country, language, rating, runtime or a film they liked (e.g. "I want a comedy", "show me thrillers", "funny movies", "movies from the 90s")
 - "follow_up": user asks about previously recommended movies (e.g. "tell me about the first one", "who directed that?", "what's it about?")
-- "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
+- "refinement": user asks for different movies or gives a new condition to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer"). Not when the user only reports that the previous ones did not fit -- that is general_chat
 - "general_chat": greetings, thanks, questions about the bot, or complaints about its previous answer (e.g. "hi", "thanks", "how do you work?", "why only one movie?", "I asked for X, why...")
 - "clarify": user wants a recommendation but neither the message nor the earlier conversation gives a single thing to search on (e.g. "movies", "recommend something", "what should I watch"). If earlier messages already name a genre, mood or film, it is new_search or refinement instead
 
@@ -137,7 +137,11 @@ Earlier: the user asked for a good comedy and was shown some. Latest message: "o
 
 Example:
 Earlier: the user asked for short animated documentaries and was shown some. Latest message: "They are not silent"
-{{"category": "refinement", "semantic_query": "a short animated documentary", "standalone_query": "short animated documentaries", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"], "result_count": null}}
+{{"category": "general_chat", "semantic_query": "They are not silent", "standalone_query": "They are not silent", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
+
+Example:
+Earlier: the user asked for a slow western and was shown some. Latest message: "bro I told you I wanted old ones"
+{{"category": "general_chat", "semantic_query": "bro I told you I wanted old ones", "standalone_query": "bro I told you I wanted old ones", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 """
 
 CONVERSATIONAL_SYSTEM_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
@@ -149,7 +153,8 @@ Rules:
 - Use the earlier messages in this conversation to understand what the user is referring to, especially short replies like agreements or follow-up questions
 - The most recent "(Recommended movies: ...)" block in the conversation lists the movies shown to the user, with year, genres, runtime and description from our catalog. Treat those facts as the source of truth when the user asks about those movies (which is shorter, what year, what it is about)
 - Our catalog has no director, cast, awards or box-office data. If asked for a detail that is not in the listed facts, say that detail is not in your catalog data; do not state it as fact. You may add general knowledge only if you clearly mark it as such (for example "from general knowledge, not our catalog: ...")
-"""
+- If the user complains about the movies just shown (for example "they are not silent", "I told you I wanted old ones"), acknowledge the complaint. If it is about something our catalog cannot check ({unchecked}), say honestly that the catalog cannot verify it and the shown movies were not checked against it. Offer one concrete next step (for example a new search on the parts the catalog can check). Do not give a new list of movies and do not name any film that is not in the listed facts
+""".format(unchecked=settings.CATALOG_UNCHECKED_TEXT)
 
 CLARIFY_SYSTEM_PROMPT = """You are a movie recommendation assistant. The user wants a movie but has not said anything to search on yet.
 
@@ -257,9 +262,14 @@ unhurried story.
 Do not add headings, bullet points, numbering, or a closing remark."""
 
 EXPLANATION_TURN_TEMPLATE = """The user asked: "{query}"
-
+{unverified_line}
 Movies:
 {movies_context}"""
+
+EXPLANATION_UNVERIFIED_LINE = (
+    "The catalog cannot check: {conditions}. "
+    "Do not claim the movies meet it; say it was not checked.\n"
+)
 
 
 _THINK_OPEN = "<think>"
@@ -1163,14 +1173,23 @@ async def astream_conversational(
         logger.warning(f"Conversational streaming failed: {e}")
 
 
-async def astream_explanation(query: str, movies: list[dict], history: list[dict] | None = None):
-    """Async streaming variant of generate_explanation. Yields tokens as they arrive."""
+async def astream_explanation(
+    query: str, movies: list[dict], history: list[dict] | None = None, unverified: list[str] | None = None,
+):
+    """Async streaming variant of generate_explanation. Yields tokens as they arrive.
+
+    `unverified` lists conditions the user asked for that the catalog cannot
+    check (dropped with their agreement); the turn tells the model not to claim
+    the movies meet them."""
     history = history or []
+    unverified_line = EXPLANATION_UNVERIFIED_LINE.format(
+        conditions=", ".join(f'"{c}"' for c in unverified)
+    ) if unverified else ""
     messages = _build_chat_messages(
         history=history,
         system_prompt=EXPLANATION_SYSTEM_PROMPT,
         current_content=EXPLANATION_TURN_TEMPLATE.format(
-            query=query, movies_context=_build_movies_context(movies)
+            query=query, movies_context=_build_movies_context(movies), unverified_line=unverified_line,
         ),
         max_turns=settings.SESSION_HISTORY_MAX_TURNS,
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
@@ -1203,9 +1222,11 @@ async def astream_explanation(query: str, movies: list[dict], history: list[dict
         logger.warning(f"Async explanation streaming failed: {e}")
 
 
-async def astream_explanation_parts(query: str, movies: list[dict], history: list[dict] | None = None):
+async def astream_explanation_parts(
+    query: str, movies: list[dict], history: list[dict] | None = None, unverified: list[str] | None = None,
+):
     """Stream the explanation already routed into slots. Yields `(slot, text)`.
-    `history` is forwarded to `astream_explanation` for conversation context.
+    `history` and `unverified` are forwarded to `astream_explanation`.
 
     `slot` is None for the opening line and a 0-based index into `movies` for
     each per-movie description -- see `ExplanationSplitter`. `astream_explanation`
@@ -1213,7 +1234,7 @@ async def astream_explanation_parts(query: str, movies: list[dict], history: lis
     testable on its own, without an HTTP stream in the way.
     """
     splitter = ExplanationSplitter(len(movies))
-    async for token in astream_explanation(query, movies, history):
+    async for token in astream_explanation(query, movies, history, unverified):
         for part in splitter.feed(token):
             yield part
     for part in splitter.flush():

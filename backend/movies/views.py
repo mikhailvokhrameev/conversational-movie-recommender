@@ -91,6 +91,17 @@ def _history_window(history: list[dict]) -> list[dict]:
     return history[-(settings.SESSION_HISTORY_MAX_TURNS * 2):]
 
 
+def _agreed_drops(constraints: list[str], unchecked: list[str], history: list[dict]) -> list[str]:
+    """Conditions this search runs without because the user agreed to drop them:
+    the intent's constraints that are no longer `unchecked`, plus what the
+    assistant's directly preceding turn offered to drop (a bare "yes" leaves the
+    intent without them). The explanation must say these were not checked."""
+    dropped = [c for c in constraints if c not in unchecked]
+    if history and history[-1].get("role") == "assistant":
+        dropped += (history[-1].get("pending_relaxation") or {}).get("dropped") or []
+    return list(dict.fromkeys(c for c in dropped if c.strip()))
+
+
 def _unchecked_constraints(constraints: list[str], history: list[dict]) -> list[str]:
     """The intent's unsupported constraints minus those an assistant turn in the
     history window already offered to drop: a "yes" or "okay" to that offer
@@ -283,6 +294,7 @@ class ChatView(View):
         history = session.history
         intent_dict = intent.model_dump(exclude=set(NON_FILTER_FIELDS))
         unchecked = _unchecked_constraints(intent.unsupported_constraints, history)
+        unverified = _agreed_drops(intent.unsupported_constraints, unchecked, history)
         if unchecked:
             _log_search_turn(intent, 0)
             return await self._unsupported_response(
@@ -356,7 +368,9 @@ class ChatView(View):
             # The opening line keeps the plain "token" wire format so it streams
             # live under the existing caret; each per-movie description goes out
             # as a "blurb" addressed to the card it belongs to.
-            async for slot, text in astream_explanation_parts(message, movies_for_llm, history):
+            async for slot, text in astream_explanation_parts(
+                message, movies_for_llm, history, unverified=unverified or None,
+            ):
                 has_tokens = True
                 explanation_parts.append(text)
                 if slot is None:

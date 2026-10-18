@@ -460,6 +460,28 @@ class TestUnsupportedConstraints:
 
 
 class TestClassifyPromptRules:
+    def test_a_complaint_about_shown_movies_is_not_taught_as_a_refinement(self):
+        assert not any(
+            ex["category"] == "refinement" and ex["unsupported_constraints"] == ["silent"]
+            for ex in _prompt_examples()
+        )
+
+    def test_complaint_examples_classify_as_general_chat(self):
+        prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        assert 'Latest message: "They are not silent"' in prompt
+        assert "bro I told you" in prompt
+        chat = [ex for ex in _prompt_examples() if ex["category"] == "general_chat"]
+        assert len(chat) >= 2
+        assert all(ex["result_count"] is None for ex in chat)
+
+    def test_refinement_means_different_movies_not_a_report_that_the_last_ones_did_not_fit(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "refinement"')
+        )
+        assert "different movies" in line
+        assert "a new condition" in line
+        assert "did not fit" in line
+
     def test_general_chat_covers_complaints_about_the_previous_answer(self):
         line = next(
             line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "general_chat"')
@@ -1009,6 +1031,47 @@ class TestStreamConversationalHistory:
             {"role": "system", "content": sent_messages[0]["content"]},
             {"role": "user", "content": "hi"},
         ]
+
+
+class TestStreamExplanationUnverified:
+    @staticmethod
+    async def _last_turn(**kwargs):
+        mock_client = _mock_streaming_client([json.dumps({"message": {"content": "x"}})])
+        movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+            _ = [t async for t in astream_explanation("q", movies, **kwargs)]
+        return mock_client.stream.call_args.kwargs["json"]["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_turn_names_the_conditions_the_catalog_could_not_check(self):
+        turn = await self._last_turn(unverified=["silent", "with Keanu Reeves"])
+        assert 'The catalog cannot check: "silent", "with Keanu Reeves".' in turn
+        assert "Do not claim the movies meet it; say it was not checked." in turn
+
+    @pytest.mark.asyncio
+    async def test_turn_has_no_such_line_by_default(self):
+        assert "cannot check" not in await self._last_turn()
+        assert "cannot check" not in await self._last_turn(unverified=[])
+
+    @pytest.mark.asyncio
+    async def test_parts_stream_forwards_unverified(self):
+        seen = {}
+
+        async def fake(query, movies, history=None, unverified=None):
+            seen["unverified"] = unverified
+            yield "x"
+
+        with patch("core.ollama_client.astream_explanation", fake):
+            _ = [p async for p in astream_explanation_parts("q", [{"serial_name": "A"}], unverified=["silent"])]
+        assert seen["unverified"] == ["silent"]
+
+
+class TestConversationalComplaintRule:
+    def test_rule_acknowledges_complaints_and_fills_the_unchecked_list(self):
+        assert "{unchecked}" not in CONVERSATIONAL_SYSTEM_PROMPT
+        assert settings.CATALOG_UNCHECKED_TEXT in CONVERSATIONAL_SYSTEM_PROMPT
+        assert "complain" in CONVERSATIONAL_SYSTEM_PROMPT
+        assert "one concrete next step" in CONVERSATIONAL_SYSTEM_PROMPT
 
 
 class TestStreamExplanationHistory:

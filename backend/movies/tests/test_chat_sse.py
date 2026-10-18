@@ -75,7 +75,7 @@ async def _empty_stream(*args, **kwargs):
     yield
 
 
-async def _empty_parts_stream(query, movies, history=None):
+async def _empty_parts_stream(query, movies, history=None, unverified=None):
     """Stand-in for astream_explanation_parts: same (slot, text) contract, no output."""
     return
     yield
@@ -87,7 +87,7 @@ async def _one_token_stream(*args, **kwargs):
 
 def _mock_explanation_parts(*parts):
     """Stand-in for astream_explanation_parts yielding the given (slot, text) pairs."""
-    async def _stream(query, movies, history=None):
+    async def _stream(query, movies, history=None, unverified=None):
         for part in parts:
             yield part
     return _stream
@@ -891,6 +891,36 @@ class TestUnsupportedConstraintsAndRelaxation:
             "search_turn category=new_search unsupported_constraints=['silent'] "
             "standalone_query='silent documentaries' results=0"
         ]
+
+    @staticmethod
+    def _recording_explain(seen):
+        async def _explain(query, movies, history=None, unverified=None):
+            seen.append(unverified)
+            yield None, "Here you go."
+        return _explain
+
+    @pytest.mark.asyncio
+    async def test_agreed_drop_is_passed_to_the_explanation_as_unverified(self):
+        seen = []
+        history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
+        intent = MessageIntent(category="new_search", semantic_query="documentaries", unsupported_constraints=["silent"])
+        await self._run(intent, history=history, explain=self._recording_explain(seen))
+        assert seen == [["silent"]]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_agreement_still_names_the_dropped_condition(self):
+        seen = []
+        history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
+        intent = MessageIntent(category="new_search", semantic_query="documentaries")
+        await self._run(intent, history=history, explain=self._recording_explain(seen))
+        assert seen == [["silent"]]
+
+    @pytest.mark.asyncio
+    async def test_a_plain_search_passes_no_unverified_conditions(self):
+        seen = []
+        intent = MessageIntent(category="new_search", semantic_query="documentaries")
+        await self._run(intent, explain=self._recording_explain(seen))
+        assert seen == [None]
 
     @staticmethod
     def _empty_generate():
