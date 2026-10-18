@@ -358,7 +358,21 @@ turn's "yes" searches even if the classifier lists them again.
   (an eyeballed `0.5`): too high silently empties answerable queries, too low
   gates nothing. The value depends on this reranker and this catalog, so it is
   calibrated, not guessed.
-- *Calibrating.* On the GPU machine, with the catalog imported and golden labels
+- *Calibrating from hand labels (preferred).* Golden lists are incomplete, so
+  "hit" undercounts relevance. Export the ungated dev results, label them, and
+  read the curves back: `evaluate_scoring --intent oracle --k 10 --label-export
+  labels.csv` (dev only; one row per query and returned movie with `query`,
+  `context`, `ranked_query` -- the text the reranker saw, the standalone rewrite
+  for oracle follow-ups --, `overview`, `rerank_score`, `golden_hit`, and an empty
+  `label`). Mark `label` 1 (relevant to `ranked_query`) or 0; blank rows are
+  skipped. `evaluate_scoring --label-report labels.csv` needs no database or
+  model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
+  relative margins below each query's best score (`GATE_REPORT_MARGINS`), the kept
+  precision, the share of relevant movies dropped and the share of queries
+  emptied (a margin never empties a query). The relative variant would need a new
+  parameter in `core.pipeline.apply_relevance_gate`; neither report writes
+  `params.yaml`.
+- *Calibrating from golden hits.* On the GPU machine, with the catalog imported and golden labels
   reviewed: `python manage.py evaluate_scoring --intent oracle --gate-report`
   (dev split only; it refuses `test`, as `--sweep` does). The run is ungated and
   prints, for hits vs non-hits (golden-set membership), the `rerank_score`
@@ -567,7 +581,7 @@ same code and params are comparable.
 ### Run Records
 
 Every run writes a JSON record to `--output`, default
-`eval_runs/<eval|sweep|gate_report>-<UTC timestamp>.json` under the working directory
+`eval_runs/<eval|sweep|gate_report|label_export>-<UTC timestamp>.json` under the working directory
 (`eval_runs/` is git-ignored; it is not under `data/`, which is mounted
 read-only in Docker). In the Docker setup the backend container's `/app/eval_runs`
 is bind-mounted to `./eval_runs/` at the repo root, so records land there on the
@@ -605,6 +619,10 @@ docker compose exec backend python manage.py evaluate_scoring --sweep --llm-judg
 
 # Calibrate reranking.min_score (dev split only; gate off for the run; prints the report)
 docker compose exec backend python manage.py evaluate_scoring --intent oracle --gate-report
+
+# Export dev results for hand-labelling, then report thresholds from the labelled CSV
+docker compose exec backend python manage.py evaluate_scoring --intent oracle --k 10 --label-export labels.csv
+python manage.py evaluate_scoring --label-report labels.csv   # no DB/Ollama needed
 
 # Custom weights, explicit run-record path
 docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2 --output eval_runs/custom.json

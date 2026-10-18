@@ -247,6 +247,8 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | `evaluate_scoring --sweep` | Grid search over scoring weight space, dev split only |
 | `evaluate_scoring --sweep --llm-judge` | Grid search with LLM judge columns (6 configs) |
 | `evaluate_scoring --intent oracle --gate-report` | Calibration report for `reranking.min_score` (gate off; dev split only) |
+| `evaluate_scoring --intent oracle --k 10 --label-export labels.csv` | CSV of ungated dev results for hand-labelling relevance (dev split only) |
+| `evaluate_scoring --label-report labels.csv` | Threshold/margin curves from the labelled CSV (no DB, Ollama or models) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
 
 ## First Run
