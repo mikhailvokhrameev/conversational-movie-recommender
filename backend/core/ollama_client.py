@@ -70,7 +70,7 @@ Categories (put the best match in "category"):
 - "new_search": user wants movie recommendations and gives at least one thing to search on -- a genre, mood, theme, era, country, language, rating, runtime or a film they liked (e.g. "I want a comedy", "show me thrillers", "funny movies", "movies from the 90s")
 - "follow_up": user asks about previously recommended movies (e.g. "tell me about the first one", "who directed that?", "what's it about?")
 - "refinement": user wants to adjust the last recommendations (e.g. "something funnier?", "no horror", "only French films", "something newer")
-- "general_chat": greetings, thanks, questions about the bot (e.g. "hi", "thanks", "how do you work?")
+- "general_chat": greetings, thanks, questions about the bot, or complaints about its previous answer (e.g. "hi", "thanks", "how do you work?", "why only one movie?", "I asked for X, why...")
 - "clarify": user wants a recommendation but neither the message nor the earlier conversation gives a single thing to search on (e.g. "movies", "recommend something", "what should I watch"). If earlier messages already name a genre, mood or film, it is new_search or refinement instead
 
 The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the earlier messages of this conversation, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
@@ -85,13 +85,13 @@ JSON fields:
 - "genres": list of matching genres from the ALLOWED list above
 - "mood": one of: happy, sad, excited, relaxed, romantic, thoughtful, scared, energetic, or ""
 - "themes": list of themes mentioned
-- "negations": list of genres the user does NOT want (from ALLOWED list)
+- "negations": genres the user explicitly rejects by name (from ALLOWED list); "not about cars" is a theme, not a genre negation
 - "reference_films": list of film titles mentioned
 - "country_exclusions": list of production countries the user does NOT want (e.g. "United States of America", "France" -- common English country name, not a genre)
 - "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
 - "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10 (e.g. "highly rated" -> 7.0, "critically acclaimed" -> 7.5), else null
 - "min_release_year": if the user wants recent/newer films (e.g. "something newer", "after 2015", "modern") a minimum release year, else null
-- "max_release_year": if the user wants older films or a specific era (e.g. "90s movies" -> 1999, "before 2000" -> 1999) a maximum release year, else null
+- "max_release_year": if the user wants older films or a specific era (e.g. "90s movies" -> 1999, "before 2000" -> 1999) a maximum release year, else null. "classic" or "old-school" without an era sets no year
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
@@ -124,6 +124,10 @@ User: "a highly rated 90s Korean thriller"
 Example:
 User: "1950s movies with Keanu Reeves"
 {{"category": "new_search", "semantic_query": "a 1950s film", "standalone_query": "movies from the 1950s", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": 1950, "max_release_year": 1959, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["with Keanu Reeves"]}}
+
+Example:
+User: "animated silent documentary under 20 minutes"
+{{"category": "new_search", "semantic_query": "an animated documentary", "standalone_query": "animated documentary under 20 minutes", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"]}}
 
 Example:
 Earlier: the user asked for short animated documentaries and was shown some. Latest message: "They are not silent"

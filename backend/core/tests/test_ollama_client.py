@@ -409,6 +409,48 @@ class TestUnsupportedConstraints:
         example = next(ex for ex in _prompt_examples() if ex["unsupported_constraints"] == ["silent"])
         assert "silent" not in example["standalone_query"]
 
+    def test_single_turn_silent_example_flags_silent_and_keeps_the_rest(self):
+        example = next(
+            ex for ex in _prompt_examples()
+            if ex["unsupported_constraints"] == ["silent"] and "documentar" in ex["standalone_query"]
+            and ex["category"] == "new_search"
+        )
+        assert "silent" not in example["standalone_query"]
+        assert "silent" not in example["semantic_query"]
+        assert example["max_runtime"] == 20
+        assert example["genres"] == ["Animation", "Documentary"]
+
+
+class TestClassifyPromptRules:
+    def _rendered(self):
+        return CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(genres="Action, Drama", unchecked="cast")
+
+    def test_general_chat_covers_complaints_about_the_previous_answer(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "general_chat"')
+        )
+        assert "why only one movie" in line
+        assert "I asked for" in line
+
+    def test_negations_hold_only_genres_rejected_by_name(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "negations"')
+        )
+        assert "by name" in line
+        assert "not about cars" in line
+
+    def test_classic_without_an_era_sets_no_year(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
+            if line.startswith('- "max_release_year"')
+        )
+        assert '"classic"' in line and '"old-school"' in line
+        assert "no year" in line
+
+    def test_prompt_still_renders(self):
+        assert "Action, Drama" in self._rendered()
+
+
     def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
         line = next(
             line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
