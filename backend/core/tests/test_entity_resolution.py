@@ -115,6 +115,12 @@ class TestEmbeddingLayer:
         assert caplog.records[-1].levelno == logging.INFO
         assert "countries" in message and "atlantis" in message
 
+    def test_drop_log_names_the_intent_field_and_the_catalog(self, caplog):
+        with patch(ENCODE, _encoder(self.TABLE)), caplog.at_level(logging.INFO, logger="core.entity_resolution"):
+            _resolver(COUNTRIES).resolve(["atlantis"], "country_exclusions")
+        message = caplog.records[-1].getMessage()
+        assert "country_exclusions" in message and "countries" in message
+
     def test_near_tie_is_dropped_by_the_margin(self, caplog):
         with patch(ENCODE, _encoder(self.TABLE)), caplog.at_level(logging.INFO, logger="core.entity_resolution"):
             assert _resolver(COUNTRIES).resolve(["korean peninsula"]) == []

@@ -632,7 +632,7 @@ def _resolve_fields(values: dict) -> dict:
     """Map each RESOLVED_FIELDS value list onto exact catalog values. Sync: the
     country and language catalogs come from the DB on first use."""
     return {
-        field: RESOLVERS[name].resolve(values.get(field) or [])
+        field: RESOLVERS[name].resolve(values.get(field) or [], field)
         for field, name in RESOLVED_FIELDS.items()
     }
 

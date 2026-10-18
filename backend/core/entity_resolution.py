@@ -63,18 +63,20 @@ class EntityResolver:
     def uses_embeddings(self) -> bool:
         return self.match_threshold is not None
 
-    def resolve(self, raw: list) -> list[str]:
+    def resolve(self, raw: list, field: str | None = None) -> list[str]:
         """Catalog values for `raw`, deduplicated, in input order; unresolved
-        values are left out."""
+        values are left out. `field` is the intent field the values came from,
+        named in the drop log next to the catalog."""
         resolved = []
-        for result in self.resolve_each(raw):
+        for result in self.resolve_each(raw, field):
             if result.value is not None and result.value not in resolved:
                 resolved.append(result.value)
         return resolved
 
-    def resolve_each(self, raw: list) -> list[Resolution]:
+    def resolve_each(self, raw: list, field: str | None = None) -> list[Resolution]:
         """One Resolution per non-blank string in `raw`, saying which layer
-        matched (and, for the embedding layer, the top-2 scores)."""
+        matched (and, for the embedding layer, the top-2 scores). `field` is
+        the intent field, for the drop log."""
         texts = [r for r in raw or [] if isinstance(r, str) and r.strip()]
         if not texts:
             return []
@@ -95,10 +97,10 @@ class EntityResolver:
         if pending and self.uses_embeddings and self._values:
             tops = self.nearest([texts[i] for i in pending])
             for i, top in zip(pending, tops):
-                results[i] = self._accept(texts[i], top)
+                results[i] = self._accept(texts[i], top, field)
         for i in pending:
             if results[i] is None:
-                logger.info(f"Entity dropped: {self.field} '{texts[i]}' (no exact or synonym match)")
+                logger.info(f"Entity dropped: {self._label(field)} '{texts[i]}' (no exact or synonym match)")
                 results[i] = Resolution(texts[i], None, "dropped")
         return results
 
@@ -118,14 +120,19 @@ class EntityResolver:
             tops.append(tuple((self._values[j], float(row[j])) for j in order))
         return tops
 
-    def _accept(self, text: str, top: tuple[tuple[str, float], ...]) -> Resolution:
+    def _label(self, field: str | None) -> str:
+        """Intent field and catalog, e.g. "negations (genres)"; the catalog alone
+        when the caller gave no field."""
+        return f"{field} ({self.field})" if field and field != self.field else self.field
+
+    def _accept(self, text: str, top: tuple[tuple[str, float], ...], field: str | None = None) -> Resolution:
         best, best_score = top[0]
         margin = best_score - top[1][1] if len(top) > 1 else None
         if best_score >= self.match_threshold and (margin is None or margin >= self.match_margin):
             logger.debug(f"Entity resolved: {self.field} '{text}' -> '{best}' ({_fmt_top(top)})")
             return Resolution(text, best, "embedding", top)
         logger.info(
-            f"Entity dropped: {self.field} '{text}' (low confidence: {_fmt_top(top)}; "
+            f"Entity dropped: {self._label(field)} '{text}' (low confidence: {_fmt_top(top)}; "
             f"needs >= {self.match_threshold} and margin >= {self.match_margin})"
         )
         return Resolution(text, None, "dropped", top)
