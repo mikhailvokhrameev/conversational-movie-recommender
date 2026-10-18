@@ -10,7 +10,7 @@ from django.test import AsyncRequestFactory
 from core.ollama_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import (
     NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _describe_filters, _first_line, _generate_and_score,
-    _no_match_message, _unchecked_constraints,
+    _no_match_message, _result_top_n, _unchecked_constraints,
 )
 
 
@@ -30,7 +30,7 @@ def _mock_encode(embedding=None):
 
 
 def _mock_generate_and_score(movies=None):
-    async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+    async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
         result = movies or [
             {
                 "id": 1, "tmdb_id": 1, "serial_name": "Test Film", "original_title": "Test Film",
@@ -90,6 +90,23 @@ def _mock_explanation_parts(*parts):
         for part in parts:
             yield part
     return _stream
+
+
+class TestResultTopN:
+    """`result_count` from the intent, clamped to [1, MAX_N]; only None means absent."""
+
+    def test_absent_uses_the_default(self):
+        assert _result_top_n(None) == settings.TOP_N
+
+    def test_requested_count_is_used(self):
+        assert _result_top_n(1) == 1
+
+    def test_zero_and_negative_clamp_up_to_one(self):
+        assert _result_top_n(0) == 1
+        assert _result_top_n(-3) == 1
+
+    def test_large_count_clamps_to_max_n(self):
+        assert _result_top_n(25) == settings.MAX_N
 
 
 class TestMockContracts:
@@ -202,7 +219,7 @@ class TestChatSSENewSearch:
         seen = {}
         inner = _mock_generate_and_score()
 
-        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
             seen["query_text"] = query_text
             return await inner(query_embedding, intent, query_text)
 
@@ -639,7 +656,7 @@ class TestChatSSENoMatch:
         )
 
     @staticmethod
-    async def _no_results(query_embedding, intent, query_text="", exclude_ids=None):
+    async def _no_results(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
         return [], []
 
     @pytest.mark.asyncio
@@ -780,7 +797,7 @@ class TestUnsupportedConstraintsAndRelaxation:
     def _recording_generate(calls, movies=None):
         inner = _mock_generate_and_score(movies)
 
-        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
             calls.append(exclude_ids)
             return await inner(query_embedding, intent, query_text)
         return _gen
@@ -876,7 +893,7 @@ class TestUnsupportedConstraintsAndRelaxation:
 
     @staticmethod
     def _empty_generate():
-        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
             return [], []
         return _gen
 
@@ -958,7 +975,7 @@ class TestUnsupportedConstraintsAndRelaxation:
 
     @pytest.mark.asyncio
     async def test_empty_result_lists_the_active_filters(self):
-        async def _no_results(query_embedding, intent, query_text="", exclude_ids=None):
+        async def _no_results(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
             return [], []
 
         intent = MessageIntent(
@@ -990,6 +1007,39 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert stored.startswith(line + "\n")
         assert stored.count(line) == 1
         assert "Here you go." in stored and "[[1]]\nDesc." in stored
+
+    @pytest.mark.asyncio
+    async def test_result_count_is_passed_to_the_pipeline_as_top_n(self):
+        seen = []
+        inner = _mock_generate_and_score()
+
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
+            seen.append(top_n)
+            return await inner(query_embedding, intent, query_text)
+
+        for count in (1, 0, 25, None):
+            await self._run(
+                MessageIntent(category="new_search", semantic_query="comedy", result_count=count),
+                generate=_gen,
+            )
+        assert seen == [1, 1, settings.MAX_N, settings.TOP_N]
+
+    @pytest.mark.asyncio
+    async def test_short_line_compares_against_the_requested_count(self):
+        # Two movies back when three were asked for: short. Two asked for: not.
+        movies = _two_movies()
+        with patch.object(settings, "TOP_N", 2):
+            events, _ = await self._run(
+                MessageIntent(**self.FILTERED, result_count=3),
+                generate=_mock_generate_and_score(movies),
+            )
+            assert "Only 2 movies" in "".join(d["text"] for name, d in events if name == "token")
+        with patch.object(settings, "TOP_N", 5):
+            events, _ = await self._run(
+                MessageIntent(**self.FILTERED, result_count=2),
+                generate=_mock_generate_and_score(movies),
+            )
+            assert "Only" not in "".join(d["text"] for name, d in events if name == "token")
 
     @pytest.mark.asyncio
     async def test_singular_and_plural_agree_with_the_count(self):

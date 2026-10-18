@@ -380,6 +380,26 @@ def _prompt_examples():
     return [json.loads(line) for line in prompt.splitlines() if line.startswith('{"category"')]
 
 
+class TestResultCount:
+    def test_is_in_the_classify_schema_not_the_intent_schema(self):
+        assert "result_count" in CLASSIFY_PARSE_SCHEMA["required"]
+        assert "result_count" in NON_FILTER_FIELDS
+        assert "result_count" not in INTENT_SCHEMA["properties"]
+
+    def test_defaults_to_none_and_coerces_junk(self):
+        assert MessageIntent.model_validate({"category": "new_search"}).result_count is None
+        assert MessageIntent.model_validate({"category": "new_search", "result_count": "3"}).result_count == 3
+        assert MessageIntent.model_validate({"category": "new_search", "result_count": "many"}).result_count is None
+
+    def test_every_prompt_example_has_the_field(self):
+        assert all("result_count" in ex for ex in _prompt_examples())
+
+    def test_prompt_documents_it_with_the_one_more_movie_example(self):
+        assert '"result_count"' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        example = next(ex for ex in _prompt_examples() if ex["result_count"] == 1)
+        assert example["category"] == "refinement"
+
+
 class TestUnsupportedConstraints:
     def test_is_in_the_classify_schema_not_the_intent_schema(self):
         assert "unsupported_constraints" in CLASSIFY_PARSE_SCHEMA["required"]
@@ -1281,7 +1301,7 @@ class TestStructuredOutputSchema:
             "themes": [], "negations": [], "reference_films": [], "country_exclusions": [],
             "country_inclusions": [], "min_vote_average": None, "min_release_year": None,
             "max_release_year": None, "min_runtime": None, "max_runtime": 90,
-            "original_languages": [], "unsupported_constraints": [],
+            "original_languages": [], "unsupported_constraints": [], "result_count": None,
         }
         assert set(reply) == set(CLASSIFY_PARSE_SCHEMA["properties"])
         assert MessageIntent.model_validate(reply).max_runtime == 90

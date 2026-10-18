@@ -201,10 +201,20 @@ def _append_history(session: ChatSession, role: str, content: str,
 
 
 @sync_to_async(thread_sensitive=False)
-def _generate_and_score(query_embedding, intent, query_text="", exclude_ids=None):
+def _generate_and_score(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
     """Async wrapper over `core.pipeline.generate_and_score` -- the same function
     `evaluate_scoring` runs, so what is evaluated is what ships."""
-    return generate_and_score(query_embedding, intent, query_text=query_text, exclude_ids=exclude_ids)
+    return generate_and_score(
+        query_embedding, intent, query_text=query_text, exclude_ids=exclude_ids, top_n=top_n,
+    )
+
+
+def _result_top_n(result_count):
+    """How many movies to return: the user's requested count clamped to
+    [1, diversification.max_n]; only None (no request) falls back to top_n."""
+    if result_count is None:
+        return settings.TOP_N
+    return max(1, min(result_count, settings.MAX_N))
 
 
 def _log_turn_latency(category, **stage_ms):
@@ -270,6 +280,7 @@ class ChatView(View):
         # A refinement must not hand back what the user has already seen; a new
         # search may legitimately land on an earlier movie again.
         exclude_ids = _shown_movie_ids(history) if intent.category == "refinement" else None
+        top_n = _result_top_n(intent.result_count)
         try:
             t_embed = time.perf_counter()
             query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
@@ -278,6 +289,7 @@ class ChatView(View):
             t_score = time.perf_counter()
             top_movies, candidate_pool = await _generate_and_score(
                 query_embedding, intent_dict, query_text=intent.standalone_query, exclude_ids=exclude_ids,
+                top_n=top_n,
             )
             score_ms = (time.perf_counter() - t_score) * 1000
 
@@ -307,7 +319,7 @@ class ChatView(View):
         # films): otherwise the shortfall may not be the catalog running out.
         could_exclude = bool(exclude_ids) or bool(intent.reference_films)
         short_filters = (
-            _describe_filters(intent_dict) if len(top_movies) < settings.TOP_N and not could_exclude else ""
+            _describe_filters(intent_dict) if len(top_movies) < top_n and not could_exclude else ""
         )
         count = len(top_movies)
         short_line = (

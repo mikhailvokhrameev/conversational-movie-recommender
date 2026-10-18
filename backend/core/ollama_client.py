@@ -96,42 +96,47 @@ JSON fields:
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
 - "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
+- "result_count": the number of movies the user asks to be shown ("only one", "just 1 more" -> 1, "top 10" -> 10), else null
 
 Example:
 User: "I want something funny, but not horror"
-{{"category": "new_search", "semantic_query": "a fun film", "standalone_query": "a funny film without horror", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
+{{"category": "new_search", "semantic_query": "a fun film", "standalone_query": "a funny film without horror", "genres": ["Comedy"], "mood": "happy", "themes": [], "negations": ["Horror"], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 Earlier: the user said "I liked The Godfather". Latest message: "suggest something similar"
-{{"category": "refinement", "semantic_query": "mafia family crime saga like The Godfather", "standalone_query": "crime dramas similar to The Godfather", "genres": ["Crime", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": ["The Godfather"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
+{{"category": "refinement", "semantic_query": "mafia family crime saga like The Godfather", "standalone_query": "crime dramas similar to The Godfather", "genres": ["Crime", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": ["The Godfather"], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 User: "tell me about the first movie"
-{{"category": "follow_up", "semantic_query": "tell me about the first movie", "standalone_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
+{{"category": "follow_up", "semantic_query": "tell me about the first movie", "standalone_query": "tell me about the first movie", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 User: "hi"
-{{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
+{{"category": "general_chat", "semantic_query": "hi", "standalone_query": "hi", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 User: "recommend something"
-{{"category": "clarify", "semantic_query": "recommend something", "standalone_query": "recommend something", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": []}}
+{{"category": "clarify", "semantic_query": "recommend something", "standalone_query": "recommend something", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 User: "a highly rated 90s Korean thriller"
-{{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"], "unsupported_constraints": []}}
+{{"category": "new_search", "semantic_query": "a thriller", "standalone_query": "a highly rated Korean thriller from the 90s", "genres": ["Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": 7.0, "min_release_year": 1990, "max_release_year": 1999, "min_runtime": null, "max_runtime": null, "original_languages": ["ko"], "unsupported_constraints": [], "result_count": null}}
 
 Example:
 User: "1950s movies with Keanu Reeves"
-{{"category": "new_search", "semantic_query": "a 1950s film", "standalone_query": "movies from the 1950s", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": 1950, "max_release_year": 1959, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["with Keanu Reeves"]}}
+{{"category": "new_search", "semantic_query": "a 1950s film", "standalone_query": "movies from the 1950s", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": 1950, "max_release_year": 1959, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["with Keanu Reeves"], "result_count": null}}
 
 Example:
 User: "animated silent documentary under 20 minutes"
-{{"category": "new_search", "semantic_query": "an animated documentary", "standalone_query": "animated documentary under 20 minutes", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"]}}
+{{"category": "new_search", "semantic_query": "an animated documentary", "standalone_query": "animated documentary under 20 minutes", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"], "result_count": null}}
+
+Example:
+Earlier: the user asked for a good comedy and was shown some. Latest message: "only 1 more movie"
+{{"category": "refinement", "semantic_query": "a good comedy", "standalone_query": "a good comedy", "genres": ["Comedy"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": [], "result_count": 1}}
 
 Example:
 Earlier: the user asked for short animated documentaries and was shown some. Latest message: "They are not silent"
-{{"category": "refinement", "semantic_query": "a short animated documentary", "standalone_query": "short animated documentaries", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"]}}
+{{"category": "refinement", "semantic_query": "a short animated documentary", "standalone_query": "short animated documentaries", "genres": ["Animation", "Documentary"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": 20, "original_languages": [], "unsupported_constraints": ["silent"], "result_count": null}}
 """
 
 CONVERSATIONAL_SYSTEM_PROMPT = """You are a movie recommendation assistant. You ONLY discuss movies, directors, actors, genres, and cinema.
@@ -597,6 +602,9 @@ class MessageIntent(BaseModel):
     # silent/black-and-white, awards, studio). ChatView asks before searching
     # without them instead of passing them to the pipeline.
     unsupported_constraints: list[str] = Field(default_factory=list)
+    # Not a filter: how many movies the user asks to see; None = no preference
+    # (ChatView then uses diversification.top_n and clamps to diversification.max_n).
+    result_count: Optional[int] = None
 
     @field_validator("genres", "themes", "negations", "reference_films", mode="before")
     @classmethod
@@ -621,7 +629,8 @@ class MessageIntent(BaseModel):
         return _coerce_float(value)
 
     @field_validator(
-        "min_release_year", "max_release_year", "min_runtime", "max_runtime", mode="before"
+        "min_release_year", "max_release_year", "min_runtime", "max_runtime", "result_count",
+        mode="before",
     )
     @classmethod
     def _coerce_year_or_runtime(cls, value):
@@ -695,7 +704,9 @@ CLASSIFY_PARSE_SCHEMA = _ollama_schema(MessageIntent)
 # The MessageIntent fields that are not search filters: only the combined call
 # produces them, and every caller drops them before handing the intent to the
 # pipeline. What is left is what `_extract_intent` reads.
-NON_FILTER_FIELDS = ("category", "semantic_query", "standalone_query", "unsupported_constraints")
+NON_FILTER_FIELDS = (
+    "category", "semantic_query", "standalone_query", "unsupported_constraints", "result_count",
+)
 INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=NON_FILTER_FIELDS)
 
 

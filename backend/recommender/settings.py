@@ -288,6 +288,7 @@ NEUTRAL_SCORE = _scoring["neutral_score"]
 
 _diversification = PARAMS["diversification"]
 TOP_N = _diversification["top_n"]
+MAX_N = _diversification["max_n"]
 MMR_LAMBDA = _diversification["lambda"]
 
 def _validate_rerank_min_score(reranking: dict) -> None:

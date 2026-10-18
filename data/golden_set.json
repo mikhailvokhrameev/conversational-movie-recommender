@@ -651,6 +651,22 @@
         {"title": "Warrior", "year": 2011},
         {"title": "Hands of Stone", "year": 2016}
       ]
+    },
+    {
+      "id": "mt-comedy-then-only-one-more",
+      "query": "only 1 more movie",
+      "context": ["I want to watch a good comedy"],
+      "category": "refinement",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Comedy"]},
+      "relevant": [
+        {"title": "Superbad", "year": 2007},
+        {"title": "The Grand Budapest Hotel", "year": 2014},
+        {"title": "Groundhog Day", "year": 1993},
+        {"title": "The Hangover", "year": 2009},
+        {"title": "Hot Fuzz", "year": 2007},
+        {"title": "Bridesmaids", "year": 2011}
+      ]
     }
   ]
 }
