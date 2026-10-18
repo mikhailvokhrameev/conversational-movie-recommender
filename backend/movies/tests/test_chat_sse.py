@@ -920,7 +920,7 @@ class TestUnsupportedConstraintsAndRelaxation:
         seen = []
         intent = MessageIntent(category="new_search", semantic_query="documentaries")
         await self._run(intent, explain=self._recording_explain(seen))
-        assert seen == [None]
+        assert seen == [[]]
 
     @staticmethod
     def _empty_generate():

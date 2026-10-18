@@ -405,7 +405,7 @@ class ChatView(View):
             # live under the existing caret; each per-movie description goes out
             # as a "blurb" addressed to the card it belongs to.
             async for slot, text in astream_explanation_parts(
-                message, movies_for_llm, history, unverified=unverified or None,
+                message, movies_for_llm, history, unverified=unverified,
             ):
                 has_tokens = True
                 explanation_parts.append(text)
