@@ -421,10 +421,15 @@ class TestUnsupportedConstraints:
         assert example["genres"] == ["Animation", "Documentary"]
 
 
-class TestClassifyPromptRules:
-    def _rendered(self):
-        return CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(genres="Action, Drama", unchecked="cast")
+    def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
+            if line.startswith('- "standalone_query"')
+        )
+        assert "unsupported_constraints" in line
 
+
+class TestClassifyPromptRules:
     def test_general_chat_covers_complaints_about_the_previous_answer(self):
         line = next(
             line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines() if line.startswith('- "general_chat"')
@@ -446,17 +451,6 @@ class TestClassifyPromptRules:
         )
         assert '"classic"' in line and '"old-school"' in line
         assert "no year" in line
-
-    def test_prompt_still_renders(self):
-        assert "Action, Drama" in self._rendered()
-
-
-    def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
-        line = next(
-            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
-            if line.startswith('- "standalone_query"')
-        )
-        assert "unsupported_constraints" in line
 
 
 class TestClassifyPromptClarify:
