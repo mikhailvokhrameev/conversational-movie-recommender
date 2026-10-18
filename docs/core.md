@@ -352,8 +352,11 @@ which the `metadata` signal computes from the same genres:
 
 Loads and validates `data/golden_set.json` (`load_golden_set`, `select_split`) and
 resolves its `{tmdb_id}` / `{title, year}` references to catalog `tmdb_id`s
-(`resolve_references`), returning the unresolved ones for the caller to report. Kept
-apart from the command for reuse. The labels are an unreviewed draft written without
+(`resolve_references`), returning the unresolved ones for the caller to report. An
+entry's `expected` (`EXPECTED`: `results` default, `empty`, `ask`) says whether its
+right answer is a ranked list, nothing, or a question; `prior_turns` turns its
+`context` (user messages) or `history` (`{role, content}` turns) into the messages
+replayed to the classify+parse call. Kept apart from the command for reuse. The labels are an unreviewed draft written without
 catalog access; see `docs/ML.md` (Evaluation Framework) for methodology, intent modes,
 splits and run records.
 

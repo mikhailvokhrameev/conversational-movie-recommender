@@ -29,7 +29,10 @@ test split. Procedure: export with `evaluate_scoring --intent oracle --k 10
 --label-export labels.csv`, mark each row's `label` 1/0 by hand (the golden lists are
 incomplete, so `--gate-report`'s "hit" undercounts relevance), run `evaluate_scoring
 --label-report labels.csv` for the absolute and relative curves, pick, then confirm on
-test. `--gate-report` remains as the golden-hit view. The command never writes
+test. `--gate-report` remains as the golden-hit view; next to the cost columns it
+prints the benefit, `unanswerable_emptied_share` (the share of the golden set's
+`expected: "empty"` queries a threshold would correctly empty), and the label export
+includes those queries' rows as negatives to mark 0. The command never writes
 `params.yaml`.
 
 ## Consequences
@@ -37,9 +40,10 @@ test. `--gate-report` remains as the golden-hit view. The command never writes
 - Behaviour is unchanged until someone calibrates; no number is shipped on a guess.
 - Calibration is blocked on the golden set review and an imported catalog
   ([0007](0007-evaluation-methodology.md)).
-- The golden set has no unanswerable queries, so the report shows the cost of a
-  threshold (hits dropped, queries emptied) but not its benefit. Queries the catalog
-  cannot serve must be added before trusting a chosen value.
+- The golden set now holds `expected: "empty"` queries (five draft entries, two on
+  dev), so the report prices a threshold's benefit as well as its cost. Two dev
+  entries cannot pick a value on their own; more unanswerable queries, reviewed like the
+  rest, are needed before a chosen value is trusted.
 - The [0..1] range rests on reading sentence-transformers 2.7.0 source; the model was
   not available on the build host, so the report prints the observed min/max to confirm.
 - 2026-10-17 calibration run (oracle, dev, GPU): 6 hits against 129 non-hits, scores

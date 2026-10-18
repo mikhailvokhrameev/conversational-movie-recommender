@@ -57,10 +57,11 @@ which does not tell the user which constraint to loosen.
   it in the new `unsupported_constraints` counter and flags its row
   (`UNSUPPORTED(...)`): in production that query would show no movies, so its nDCG is
   not what a user would get.
-- The golden set holds user messages only, so the e2e history has no assistant turns.
-  The exclusion of shown movies and the `pending_relaxation` follow-up are therefore not
-  reproduced in evaluation. The golden set also cannot express "the right answer is a
-  question" or "the right answer is nothing" (the validator requires `relevant`), so
-  neither reply is measured offline.
+- The golden set can express "the right answer is a question" (`expected: "ask"`,
+  correct iff the e2e parse fills `unsupported_constraints`) and "the right answer is
+  nothing" (`expected: "empty"`), and prior turns can include assistant replies
+  (`history`) -- see [0007](0007-evaluation-methodology.md). Only the text is replayed,
+  though: the exclusion of shown movies and the `pending_relaxation` follow-up are not
+  reproduced in evaluation.
 - Loading cast and crew from TMDB would make some of these constraints checkable. That
   is a separate project.

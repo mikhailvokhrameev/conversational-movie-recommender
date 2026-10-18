@@ -362,10 +362,14 @@ turn's "yes" searches even if the classifier lists them again.
   "hit" undercounts relevance. Export the ungated dev results, label them, and
   read the curves back: `evaluate_scoring --intent oracle --k 10 --label-export
   labels.csv` (dev only; one row per query and returned movie with `query`,
-  `context`, `ranked_query` -- the text the reranker saw, the standalone rewrite
-  for oracle follow-ups --, `overview`, `rerank_score`, `golden_hit`, and an empty
-  `label`). Mark `label` 1 (relevant to `ranked_query`) or 0; blank rows are
-  skipped. `evaluate_scoring --label-report labels.csv` needs no database or
+  `context` (role-prefixed for a `history` entry), `ranked_query` -- the text the
+  reranker saw, the standalone rewrite for oracle follow-ups --, `expected`,
+  `overview`, `rerank_score`, `golden_hit`, and an empty `label`). `expected:
+  "empty"` queries are exported too -- their rows are the negatives you mark 0 --
+  and `expected: "ask"` queries are not. Mark `label` 1 (relevant to
+  `ranked_query`) or 0; blank rows are skipped. The reader accepts a CSV with or
+  without the `expected` column (it ignores it) and with a spreadsheet's BOM, and
+  refuses a labelled row whose `rerank_score` is not a finite number in [0, 1]. `evaluate_scoring --label-report labels.csv` needs no database or
   model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
   relative margins below each query's best score (`GATE_REPORT_MARGINS`), the kept
   precision, the share of relevant movies dropped and the share of queries
@@ -381,10 +385,14 @@ turn's "yes" searches even if the classifier lists them again.
   would empty (a query empties when the best score in its whole reranked pool is
   below the threshold). The same report is in the run record's `gate_report`
   key, and each query's `recommended` entries carry `rerank_score`/`hit`. A good
-  threshold drops few hits and many non-hits while emptying few queries. The
-  golden set holds only answerable queries, so "queries emptied" measures the cost
-  of a threshold, not the benefit on unanswerable queries -- that side (queries
-  the catalog genuinely cannot serve) is not measured yet. The command never
+  threshold drops few hits and many non-hits while emptying few queries. Those
+  columns are over answerable queries only, so "queries emptied" is the cost of a
+  threshold. The benefit is the last column, "unanswerable emptied"
+  (`unanswerable_emptied_share`): the share of the `expected: "empty"` queries
+  with scores whose best pool score is below the threshold, i.e. that the gate
+  would correctly empty (`-` when there are none; their count is
+  `unanswerable_considered`). They stay out of the hit/non-hit distributions;
+  `expected: "ask"` queries are left out of the report entirely. The command never
   writes `params.yaml`; set the chosen value by hand, then report on the `test`
   split (`counters.empty_results` counts gated-empty queries in a normal run).
 - *2026-10-17 run: gate stays off.* On the dev split (oracle) the report had 6 hits
@@ -477,10 +485,34 @@ It is built so that a number it prints measures what ships:
 `{"title": str, "year": int}`, optionally with `grade` (1 relevant, 2 highly
 relevant; default 1). Optional fields: `negated_genres` (for the
 negation-violation check), `oracle_intent` (the intent `--intent oracle` uses),
-`context` (prior user messages, for multi-turn entries), `oracle_standalone_query`
-(the final message rewritten to stand alone given its `context`; required when
-`context` is non-empty) and `category` (`new_search`/`refinement`, the final
-message's category in oracle mode).
+`context` (prior user messages, for multi-turn entries), `history` (prior turns
+as `{"role": "user"|"assistant", "content": str}`, for a follow-up to an
+assistant reply; not together with `context`), `oracle_standalone_query`
+(the final message rewritten to stand alone given its prior turns; required when
+`context` or `history` is non-empty) and `category` (`new_search`/`refinement`,
+the final message's category in oracle mode).
+
+`expected` (optional) says what a correct answer is:
+
+| `expected` | Correct answer | Scored by |
+|------------|----------------|-----------|
+| `results` (default) | A ranked list | P/R/nDCG against `relevant` (required) |
+| `empty` | Nothing: the catalog cannot serve the request | `outcome_correct` iff no movie is returned; needs `oracle_intent` (may be `{}`) |
+| `ask` | A question: a condition the catalog cannot check (ADR 0011) | `outcome_correct` iff the e2e parse lists `unsupported_constraints`; `e2e` only |
+
+`empty`/`ask` entries have no `relevant` list (absent or `[]`). They are not
+accuracy-scored, are not `unscorable_queries` (that counter means a labelling
+or catalog gap), and stay out of the aggregates and so out of `--sweep`'s
+ranking. They are counted instead: `expected_empty`/`expected_empty_correct`,
+`expected_ask`/`expected_ask_correct`, and each query record carries
+`expected` and `outcome_correct` (`null` for `results`). `--intent oracle` has
+no parse to ask from, so it skips `ask` entries and counts them in
+`skipped_ask_entries`. With the gate off (`min_score: null`, or the ungated
+`--gate-report`/`--label-export` runs) an `empty` entry will usually be
+answered wrongly -- that is the gap the gate calibration prices. The shipped
+`none-*` entries ask for things the catalog (ends 2023-09-30) cannot hold,
+named without a year so the year rule does not route them, or a premise no film
+has; the `ask-*` entries name a director, an actor or an award.
 
 **The labels are a draft.** They were written from general film knowledge
 without catalog access, as `{title, year}` references, and have not been
@@ -508,8 +540,9 @@ you then report on overstates the result.
 | `e2e` (default) | `aclassify_and_parse(message, history)`, as `ChatView` calls it | `encode_query(intent.semantic_query)` | What users get |
 | `oracle` | The entry's `oracle_intent` (`{}` if absent) | `encode_query(oracle_standalone_query or query)`; the lexical channel and reranker get the same text | Retrieval in isolation from parsing |
 
-In `e2e` the prior `context` messages are passed as user-role history entries
-(the shape `ChatSession.history` uses), and the predicted category is
+In `e2e` the prior turns (`core.golden_set.prior_turns`: `history` as written,
+or each `context` message as a user turn) are passed as history (the shape
+`ChatSession.history` uses), and the predicted category is
 recorded per query. A golden query classified `follow_up`/`general_chat` is
 still searched, so it still gets metrics, but it counts in `misclassified`
 -- in production it would have produced no recommendations.
@@ -523,8 +556,10 @@ vague query can genuinely parse that way, but a run where many do is a run
 where parsing failed. A parsed intent with `unsupported_constraints` (ADR
 0011) is still searched, but its row is flagged `UNSUPPORTED(...)` and it
 counts in `unsupported_constraints`: in production that turn asks a question
-and shows no movies. The golden set holds user turns only, so the exclusion
-of already-shown movies on refinements is not reproduced. Comparing `e2e`
+and shows no movies (an `expected: "ask"` entry is correct exactly then). Only the
+text of the prior turns is replayed, not the session state stored beside them,
+so the exclusion of already-shown movies on refinements and the
+`pending_relaxation` follow-up are not reproduced. Comparing `e2e`
 against `oracle` on the same split separates parsing errors from retrieval
 errors (oracle intents are labels too, so they are only as good as the
 draft).
@@ -593,7 +628,9 @@ timestamp, per-query results (recommended ids/titles, hits, resolved and
 unresolved references, predicted category in `e2e`, judge scores), aggregate
 metrics, and counters (`unresolved_refs`, `unscorable_queries`,
 `judge_failures`, `misclassified`, `possible_parse_fallbacks`, `unsupported_constraints`,
-`empty_results`). A sweep records every configuration this
+`empty_results`, `expected_empty`, `expected_empty_correct`, `expected_ask`,
+`expected_ask_correct`, `skipped_ask_entries`). A `history` entry's record also
+holds its `history`. A sweep records every configuration this
 way, sorted best first. Stdout stays a human-readable summary.
 
 ### Running Evaluation
