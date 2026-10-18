@@ -324,6 +324,10 @@ reranking:
   # threshold, the share of hits it would drop and of queries it would empty.
   # Pick the value by hand and judge it on the test split; the report never
   # writes this file.
+  # 2026-10-17 run (oracle, dev): 6 hits vs 129 non-hits, scores in [0, 1];
+  # 0.01 drops no hits and 14% of non-hits, 0.02 empties 7.4% of queries.
+  # Too few hits to pick a value until the golden labels are reviewed, so the
+  # gate stays off (docs/adr/0009).
   min_score: null
   max_length: 256
   # Characters of description passed to the cross-encoder. The model truncates

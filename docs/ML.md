@@ -373,6 +373,11 @@ turn's "yes" searches even if the classifier lists them again.
   the catalog genuinely cannot serve) is not measured yet. The command never
   writes `params.yaml`; set the chosen value by hand, then report on the `test`
   split (`counters.empty_results` counts gated-empty queries in a normal run).
+- *2026-10-17 run: gate stays off.* On the dev split (oracle) the report had 6 hits
+  against 129 non-hits, with scores inside [0, 1]. A threshold of 0.01 drops no hits
+  and 14% of non-hits; 0.02 empties 7.4% of queries. Six hits are too few to choose
+  a value, so `min_score` stays `null` until the golden labels are reviewed
+  ([ADR 0009](adr/0009-relevance-gate-off-until-calibrated.md), still Proposed).
 
 **Not yet measured**: whether reranking improves results here is unverified.
 It is a well-established technique and the reasoning is sound, but a

@@ -38,6 +38,11 @@ on the dev split on the GPU box, then judged on the test split. The command neve
   cannot serve must be added before trusting a chosen value.
 - The [0..1] range rests on reading sentence-transformers 2.7.0 source; the model was
   not available on the build host, so the report prints the observed min/max to confirm.
+- 2026-10-17 calibration run (oracle, dev, GPU): 6 hits against 129 non-hits, scores
+  inside [0, 1]. A threshold of 0.01 drops no hits and 14% of non-hits; 0.02 empties
+  7.4% of queries. Six hits are too few to choose a value, so the gate stays off
+  (`min_score: null`) and this record stays Proposed until the golden labels are
+  reviewed and the run is repeated.
 - This record moves to Accepted once a value is set and checked on test.
 
 Details: [ML.md, "Nothing suitable" gate](../ML.md#cross-encoder-reranking),
