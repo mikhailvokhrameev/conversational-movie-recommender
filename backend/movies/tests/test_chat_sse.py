@@ -3,11 +3,13 @@ import json
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
+from django.conf import settings
 from django.test import AsyncRequestFactory
 
 from core.ollama_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import (
     NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _first_line, _generate_and_score, _no_match_message,
+    _unchecked_constraints,
 )
 
 
@@ -816,6 +818,40 @@ class TestUnsupportedConstraintsAndRelaxation:
 
         assert len(calls) == 1
         assert [m["serial_name"] for m in dict(events)["movies"]["movies"]] == ["Test Film"]
+
+    @pytest.mark.asyncio
+    async def test_the_offer_survives_an_intervening_chat_turn(self):
+        calls = []
+        history = [
+            {"role": "user", "content": "silent documentaries"},
+            {"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent films"]}},
+            {"role": "user", "content": "why?"},
+            {"role": "assistant", "content": "Because the catalog has no such data."},
+        ]
+        intent = MessageIntent(category="new_search", semantic_query="documentaries", unsupported_constraints=["silent"])
+        events, _ = await self._run(intent, history=history, generate=self._recording_generate(calls))
+
+        assert len(calls) == 1
+        assert [m["serial_name"] for m in dict(events)["movies"]["movies"]] == ["Test Film"]
+
+    def test_unchecked_constraints_match_loosely_in_either_direction(self):
+        history = [{"role": "assistant", "pending_relaxation": {"dropped": ["Silent", "with Keanu Reeves"]}}]
+
+        assert _unchecked_constraints(["silent films", "keanu"], history) == []
+        assert _unchecked_constraints(["directed by Kubrick"], history) == ["directed by Kubrick"]
+
+    def test_unchecked_constraints_read_the_whole_window_but_not_beyond_it(self):
+        offer = {"role": "assistant", "pending_relaxation": {"dropped": ["silent"]}}
+        filler = [{"role": "user", "content": "x"}, {"role": "assistant", "content": "y"}]
+        window = settings.SESSION_HISTORY_MAX_TURNS
+
+        assert _unchecked_constraints(["silent"], [offer] + filler * (window - 1)) == []
+        assert _unchecked_constraints(["silent"], [offer] + filler * window) == ["silent"]
+
+    def test_unchecked_constraints_ignore_an_empty_offer(self):
+        history = [{"role": "assistant", "pending_relaxation": {"dropped": [" "]}}]
+
+        assert _unchecked_constraints(["silent"], history) == ["silent"]
 
     @pytest.mark.asyncio
     async def test_a_new_unsupported_constraint_still_asks_after_an_offer(self):

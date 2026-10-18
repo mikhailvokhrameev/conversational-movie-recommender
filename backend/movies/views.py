@@ -66,24 +66,36 @@ def _no_match_message(intent_dict: dict) -> str:
     return f"Nothing in the catalog matches all of: {', '.join(parts)}. Which one should I loosen?"
 
 
+def _history_window(history: list[dict]) -> list[dict]:
+    """The last session.history_max_turns pairs. Stored history is not capped,
+    so the window keeps what is replayed bounded and in step with what the
+    model still sees of the conversation."""
+    return history[-(settings.SESSION_HISTORY_MAX_TURNS * 2):]
+
+
 def _unchecked_constraints(constraints: list[str], history: list[dict]) -> list[str]:
-    """The intent's unsupported constraints minus those the assistant's last
-    turn already offered to drop: a "yes" to that offer searches even if the
-    classifier lists the constraint again."""
-    last_assistant = next((e for e in reversed(history) if e.get("role") == "assistant"), {})
-    offered = (last_assistant.get("pending_relaxation") or {}).get("dropped") or []
-    dropped = {c.strip().casefold() for c in offered}
-    return [c for c in constraints if c.strip().casefold() not in dropped]
+    """The intent's unsupported constraints minus those an assistant turn in the
+    history window already offered to drop: a "yes" or "okay" to that offer
+    searches even after a chat turn in between, and even if the classifier
+    words the constraint differently ("silent films" vs "silent")."""
+    dropped = {
+        c.strip().casefold() for entry in _history_window(history) if entry.get("role") == "assistant"
+        for c in (entry.get("pending_relaxation") or {}).get("dropped") or []
+    }
+    dropped.discard("")
+
+    def _offered(constraint: str) -> bool:
+        key = constraint.strip().casefold()
+        return any(d in key or key in d for d in dropped)
+
+    return [c for c in constraints if not _offered(c)]
 
 
 def _shown_movie_ids(history: list[dict]) -> set[int]:
     """tmdb_ids of the movies shown within the replayed history window, for a
-    refinement to skip. Stored history is not capped, so the window
-    (session.history_max_turns pairs) keeps the excluded set bounded and in
-    step with what the model still sees of the conversation."""
-    windowed = history[-(settings.SESSION_HISTORY_MAX_TURNS * 2):]
+    refinement to skip."""
     return {
-        movie_id for entry in windowed if entry.get("role") == "assistant"
+        movie_id for entry in _history_window(history) if entry.get("role") == "assistant"
         for movie_id in entry.get("movie_ids") or []
     }
 
