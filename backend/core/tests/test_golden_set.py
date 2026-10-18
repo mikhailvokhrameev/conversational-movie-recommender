@@ -42,7 +42,26 @@ class TestShippedGoldenSet:
     def test_every_entry_has_a_split_and_a_reference(self, entries):
         for entry in entries:
             assert entry["split"] in ("dev", "test")
-            assert entry["relevant"]
+            if entry.get("expected", "results") == "results":
+                assert entry["relevant"]
+
+    def test_unanswerable_and_ask_entries(self, entries):
+        empty = [e for e in entries if e.get("expected") == "empty"]
+        ask = [e for e in entries if e.get("expected") == "ask"]
+        assert len(empty) == 5 and len(ask) == 3
+        assert all(e["id"].startswith("none-") for e in empty)
+        assert all(e["id"].startswith("ask-") for e in ask)
+
+        def after_assistant(e):
+            return any(turn["role"] == "assistant" for turn in e.get("history", []))
+
+        assert sum(map(after_assistant, empty)) >= 2
+        assert sum(map(after_assistant, ask)) >= 1
+        unanswered = empty + ask
+        for split in ("dev", "test"):
+            kinds = [e["expected"] for e in unanswered if e["split"] == split]
+            assert len(kinds) == 4 and set(kinds) == {"empty", "ask"}, split
+        assert sum(1 for e in empty if e["split"] == "test") >= 2
 
     def test_ids_are_unique(self, entries):
         ids = [entry["id"] for entry in entries]
@@ -65,7 +84,7 @@ class TestShippedGoldenSet:
         # Labels were drafted without catalog access, so a tmdb_id here would
         # be a guess. Remove this once reviewed ids are added on purpose.
         for entry in entries:
-            for ref in entry["relevant"]:
+            for ref in entry.get("relevant", []):
                 assert "tmdb_id" not in ref, (entry["id"], ref)
 
     def test_every_context_entry_has_a_standalone_rewrite(self, entries):
@@ -76,6 +95,7 @@ class TestShippedGoldenSet:
     def test_note_flags_the_labels_as_unreviewed_drafts(self):
         note = json.loads(GOLDEN_SET_PATH.read_text())["_note"].lower()
         assert "draft" in note and "review" in note
+        assert "expected" in note and "history" in note
 
 
 class TestValidation:

@@ -1,5 +1,5 @@
 {
-  "_note": "DRAFT LABELS - NOT YET REVIEWED. Every 'relevant' list here was written from general film knowledge, without access to the catalog, and needs human review before its numbers mean much. References are {title, year} so they can be checked against the catalog: evaluate_scoring resolves them at run time and reports every reference it cannot find. Lists are a sample of good answers, not exhaustive, so precision is a lower bound on broad queries ('a good comedy'). oracle_standalone_query: for entries with a context, the hand-written stand-alone rewrite of the final message (what a correct classify+parse puts in standalone_query); oracle mode ranks and embeds that instead of the raw follow-up fragment. Grades: 1 = relevant, 2 = highly relevant (default 1). split: 'dev' is for tuning (--sweep only ever reads it), 'test' is held out for the final report. The first 18 entries are migrated from the old data/test_queries.json; their oracle_intent is what its genre-oracle mode used. The mt-switch-*, mt-*-then-what-else/similar and the last four refinement entries were added for the session-vector ablation (evaluate_scoring --session-ablation); same draft status.",
+  "_note": "DRAFT LABELS - NOT YET REVIEWED. Every 'relevant' list here was written from general film knowledge, without access to the catalog, and needs human review before its numbers mean much. References are {title, year} so they can be checked against the catalog: evaluate_scoring resolves them at run time and reports every reference it cannot find. Lists are a sample of good answers, not exhaustive, so precision is a lower bound on broad queries ('a good comedy'). oracle_standalone_query: for entries with a context, the hand-written stand-alone rewrite of the final message (what a correct classify+parse puts in standalone_query); oracle mode ranks and embeds that instead of the raw follow-up fragment. Grades: 1 = relevant, 2 = highly relevant (default 1). split: 'dev' is for tuning (--sweep only ever reads it), 'test' is held out for the final report. The first 18 entries are migrated from the old data/test_queries.json; their oracle_intent is what its genre-oracle mode used. The mt-switch-*, mt-*-then-what-else/similar and the last four refinement entries were added for the session-vector ablation (evaluate_scoring --session-ablation); same draft status. expected: what a correct answer is -- 'results' (default; a ranked list scored against 'relevant'), 'empty' (the catalog cannot serve the request: correct iff nothing is recommended, what the relevance gate is for) or 'ask' (a condition the catalog cannot check, e.g. cast, director or awards: correct iff the classify+parse call lists it in unsupported_constraints, so the chat asks instead of searching). 'empty' and 'ask' entries have no 'relevant' list. history: prior turns as {role, content} with assistant replies (context holds user messages only); only the text is replayed, not session state. The none-* entries ask for films the catalog (TMDB, ends 2023-09-30) cannot hold -- events or releases after its end, named without a year so the year rule does not route them -- or a premise no film has; the ask-* entries name a director, an actor or an award. Same draft status: an 'empty' label is a claim about the catalog that a human should check.",
   "queries": [
     {
       "id": "comedy-good",
@@ -686,6 +686,74 @@
         {"title": "Hot Fuzz", "year": 2007},
         {"title": "Bridesmaids", "year": 2011}
       ]
+    },
+    {
+      "id": "none-paris-olympics-doc",
+      "query": "a documentary about the Paris Olympics where Leon Marchand won four gold medals",
+      "expected": "empty",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Documentary"]}
+    },
+    {
+      "id": "none-dune-two-making-of",
+      "query": "any behind-the-scenes documentary on the making of Dune: Part Two?",
+      "history": [
+        {"role": "user", "content": "epic science fiction like Dune"},
+        {"role": "assistant", "content": "Here are some epic science fiction films: Dune (2021), Blade Runner 2049 (2017), Arrival (2016), Interstellar (2014), Prometheus (2012)."}
+      ],
+      "oracle_standalone_query": "a behind-the-scenes documentary about the making of Dune: Part Two",
+      "expected": "empty",
+      "split": "dev",
+      "oracle_intent": {"genres": ["Documentary"]}
+    },
+    {
+      "id": "none-octopus-chess-lighthouse",
+      "query": "a film about a lighthouse keeper who teaches an octopus to play chess",
+      "expected": "empty",
+      "split": "test",
+      "oracle_intent": {}
+    },
+    {
+      "id": "none-robot-raises-gosling",
+      "query": "show me the one where a robot stranded on a wild island raises an orphaned gosling",
+      "history": [
+        {"role": "user", "content": "animated films about friendship"},
+        {"role": "assistant", "content": "Here are some animated films about friendship: Toy Story (1995), Luca (2021), How to Train Your Dragon (2010), WALL-E (2008), Ratatouille (2007)."}
+      ],
+      "oracle_standalone_query": "an animated film where a robot stranded on a wild island raises an orphaned gosling",
+      "expected": "empty",
+      "split": "test",
+      "oracle_intent": {"genres": ["Animation"]}
+    },
+    {
+      "id": "none-key-bridge-collapse-doc",
+      "query": "a documentary about the Francis Scott Key Bridge collapse in Baltimore",
+      "expected": "empty",
+      "split": "test",
+      "oracle_intent": {"genres": ["Documentary"]}
+    },
+    {
+      "id": "ask-villeneuve-thriller",
+      "query": "a slow-burning psychological thriller directed by Denis Villeneuve",
+      "expected": "ask",
+      "split": "dev"
+    },
+    {
+      "id": "ask-romcom-hugh-grant",
+      "query": "only ones starring Hugh Grant please",
+      "history": [
+        {"role": "user", "content": "a romantic comedy for tonight"},
+        {"role": "assistant", "content": "Here are some romantic comedies: When Harry Met Sally... (1989), Crazy, Stupid, Love. (2011), 10 Things I Hate About You (1999), The Proposal (2009), Pretty Woman (1990)."}
+      ],
+      "oracle_standalone_query": "a romantic comedy for tonight",
+      "expected": "ask",
+      "split": "dev"
+    },
+    {
+      "id": "ask-oscar-war-film",
+      "query": "a war film that won Best Picture at the Oscars",
+      "expected": "ask",
+      "split": "test"
     }
   ]
 }
