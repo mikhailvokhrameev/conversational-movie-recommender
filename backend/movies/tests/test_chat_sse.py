@@ -1077,7 +1077,9 @@ class TestUnsupportedConstraintsAndRelaxation:
                 MessageIntent(**self.FILTERED, result_count=3),
                 generate=_mock_generate_and_score(movies),
             )
-            assert "Only 2 movies" in "".join(d["text"] for name, d in events if name == "token")
+            assert [d["text"] for name, d in events if name == "token"][0].strip() == (
+                "Only 2 movies in the catalog match: released 1959 or earlier."
+            )
         with patch.object(settings, "TOP_N", 5):
             events, _ = await self._run(
                 MessageIntent(**self.FILTERED, result_count=2),
