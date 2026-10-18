@@ -400,6 +400,9 @@ def _validate_intent(intent) -> None:
             "params.yaml: intent.genre_match_threshold was removed; genre matching is "
             "configured under intent.resolution.genres (match_threshold, match_margin, synonyms)."
         )
+    recent_years = intent.get("recent_years") if isinstance(intent, dict) else None
+    if not isinstance(recent_years, int) or isinstance(recent_years, bool) or recent_years < 1:
+        raise ValueError(f"params.yaml: intent.recent_years must be an integer >= 1 (got {recent_years!r}).")
     resolution = intent.get("resolution") if isinstance(intent, dict) else None
     if not isinstance(resolution, dict) or set(resolution) != set(_RESOLUTION_EMBEDDED):
         raise ValueError(
@@ -433,6 +436,7 @@ def _validate_intent(intent) -> None:
 
 _validate_intent(PARAMS["intent"])
 INTENT_RESOLUTION = PARAMS["intent"]["resolution"]
+INTENT_RECENT_YEARS = PARAMS["intent"]["recent_years"]
 
 
 def _validate_evaluation(evaluation: dict) -> None:

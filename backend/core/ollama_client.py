@@ -37,6 +37,7 @@ from asgiref.sync import sync_to_async
 from django.conf import settings
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
+from core.catalog_bounds import catalog_year_range
 from core.entity_resolution import EntityResolver, catalog_countries, catalog_languages
 
 logger = logging.getLogger(__name__)
@@ -90,7 +91,7 @@ JSON fields:
 - "country_exclusions": list of production countries the user does NOT want (e.g. "United States of America", "France" -- common English country name, not a genre)
 - "country_inclusions": list of production countries the user explicitly wants (e.g. "a French film" -> ["France"])
 - "min_vote_average": if the user wants highly-rated/critically-acclaimed films, a minimum rating out of 10 (e.g. "highly rated" -> 7.0, "critically acclaimed" -> 7.5), else null
-- "min_release_year": if the user wants recent/newer films (e.g. "something newer", "after 2015", "modern") a minimum release year, else null
+- "min_release_year": if the user wants recent/newer films (e.g. "something newer", "after 2015", "modern") a minimum release year, else null{year_rule}
 - "max_release_year": if the user wants older films or a specific era (e.g. "90s movies" -> 1999, "before 2000" -> 1999) a maximum release year, else null. "classic" or "old-school" without an era sets no year
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
@@ -725,11 +726,30 @@ def _intent_payload(query: str) -> dict:
     }
 
 
+# Appended to the min_release_year bullet when the catalog's bounds are known.
+CATALOG_YEAR_RULE = (
+    ' The catalog has films released up to {catalog_max_year}: for "newest", "latest" or "recent" '
+    "set it to {recent_min_year} (the catalog's last {recent_years} years), never the calendar year"
+)
+
+
+def _catalog_year_rule(year_bounds: tuple | None) -> str:
+    if year_bounds is None:
+        return ""
+    catalog_max_year = year_bounds[1]
+    return CATALOG_YEAR_RULE.format(
+        catalog_max_year=catalog_max_year,
+        recent_years=settings.INTENT_RECENT_YEARS,
+        recent_min_year=catalog_max_year - settings.INTENT_RECENT_YEARS + 1,
+    )
+
+
 def _classify_and_parse_payload(
-    message: str, history: list[dict], repair_note: str | None = None
+    message: str, history: list[dict], repair_note: str | None = None, year_bounds: tuple | None = None
 ) -> dict:
     system_prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(
-        genres=", ".join(CATALOG_GENRES), unchecked=settings.CATALOG_UNCHECKED_TEXT
+        genres=", ".join(CATALOG_GENRES), unchecked=settings.CATALOG_UNCHECKED_TEXT,
+        year_rule=_catalog_year_rule(year_bounds),
     )
     current_content = message
     if repair_note:
@@ -1040,11 +1060,12 @@ def is_available() -> bool:
 async def _request_classify_and_parse(
     message: str, history: list[dict], repair_note: str | None = None
 ) -> dict:
+    year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
     async with httpx.AsyncClient() as client:
         await _alog_model_digest_once(client)
         response = await client.post(
             f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json=_classify_and_parse_payload(message, history, repair_note=repair_note),
+            json=_classify_and_parse_payload(message, history, repair_note=repair_note, year_bounds=year_bounds),
             timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
         )
         response.raise_for_status()

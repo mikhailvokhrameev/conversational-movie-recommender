@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 from unittest.mock import AsyncMock, patch, MagicMock
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 import httpx
 import numpy as np
 import pytest
+from django.conf import settings
 from pydantic import ValidationError
 
 from core.ollama_client import (
@@ -47,6 +49,14 @@ from core.ollama_client import (
     parse_intent,
 )
 from core.entity_resolution import catalog_countries, catalog_languages
+
+
+@pytest.fixture(autouse=True)
+def _no_catalog_db():
+    """The classify request reads the catalog's year bounds from the DB; no
+    test here has one, and the bounds are None-safe (the rule is omitted)."""
+    with patch("core.ollama_client.catalog_year_range", return_value=None):
+        yield
 
 
 def _unresolved(values):
@@ -1689,3 +1699,42 @@ class TestExplanationDescriptionCap:
         from recommender.settings import _validate_explanation_description_chars
 
         _validate_explanation_description_chars({"explanation_description_chars": 1})
+
+
+class TestCatalogYearRule:
+    """The classify prompt tells the model where the catalog ends, so "newest"
+    never turns into the calendar year."""
+
+    BOUNDS = (1915, 2023, datetime.date(2023, 9, 30))
+
+    def _system_prompt(self, bounds):
+        return _classify_and_parse_payload("newest movies", [], year_bounds=bounds)["messages"][0]["content"]
+
+    def test_rule_names_the_catalog_max_year_and_the_recent_window(self):
+        prompt = self._system_prompt(self.BOUNDS)
+        assert "up to 2023" in prompt
+        assert "never the calendar year" in prompt
+        assert f"{2023 - settings.INTENT_RECENT_YEARS + 1}" in prompt
+
+    def test_rule_is_absent_when_bounds_are_none(self):
+        prompt = self._system_prompt(None)
+        assert "never the calendar year" not in prompt
+
+    def test_prompt_formats_with_no_stray_placeholders(self):
+        for bounds in (self.BOUNDS, None):
+            assert "{year_rule}" not in self._system_prompt(bounds)
+            assert "{catalog_max_year}" not in self._system_prompt(bounds)
+
+    def test_default_payload_omits_the_rule(self):
+        assert "never the calendar year" not in _classify_and_parse_payload("hi", [])["messages"][0]["content"]
+
+    @pytest.mark.asyncio
+    async def test_request_passes_the_catalog_bounds_into_the_prompt(self):
+        mock_client = _mock_ollama_responses(
+            json.dumps({"category": "new_search", "semantic_query": "x", "standalone_query": "x"})
+        )
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+                patch("core.ollama_client.catalog_year_range", return_value=self.BOUNDS):
+            await aclassify_and_parse("newest movies")
+        sent = mock_client.post.call_args.kwargs["json"]["messages"][0]["content"]
+        assert "up to 2023" in sent

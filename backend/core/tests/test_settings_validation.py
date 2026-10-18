@@ -163,7 +163,7 @@ class TestUncheckedAttributes:
         text = settings.CATALOG_UNCHECKED_TEXT
         assert all(a in text for a in settings.CATALOG_UNCHECKED_ATTRIBUTES)
         assert text in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(
-            genres="G", unchecked=text
+            genres="G", unchecked=text, year_rule=""
         )
         assert text in UNSUPPORTED_MESSAGE.format(constraints="x", unchecked=text)
 
@@ -196,7 +196,7 @@ GOOD_RESOLUTION = {
 
 def _intent(**fields):
     resolution = {name: {**GOOD_RESOLUTION[name], **fields.get(name, {})} for name in GOOD_RESOLUTION}
-    return {"resolution": resolution}
+    return {"recent_years": 2, "resolution": resolution}
 
 
 class TestIntentResolution:
@@ -210,6 +210,11 @@ class TestIntentResolution:
     def test_accepts_a_good_config(self):
         _validate_intent(_intent())
         _validate_intent(_intent(genres={"match_margin": 0, "match_threshold": 1}))
+
+    @pytest.mark.parametrize("bad", [None, 0, -1, 1.5, True, "2"])
+    def test_rejects_a_bad_recent_years(self, bad):
+        with pytest.raises(ValueError, match=r"intent\.recent_years"):
+            _validate_intent({**_intent(), "recent_years": bad})
 
     def test_removed_genre_match_threshold_points_to_resolution(self):
         with pytest.raises(ValueError, match=r"intent\.genre_match_threshold.*intent\.resolution\.genres"):

@@ -384,6 +384,11 @@ evaluation:
   judge_timeout_seconds: 30
 
 intent:
+  # "newest/latest/recent" means the last N catalog years, counted back from the
+  # newest year the catalog holds (never the calendar year; the data can end
+  # earlier). min_release_year = catalog max year - recent_years + 1.
+  recent_years: 2
+
   # Entity resolution (core/entity_resolution.py): maps the parsed genres and
   # negations, country inclusions/exclusions and original languages onto exact
   # catalog values, because the filters compare them as exact strings ("USA"

@@ -12,6 +12,7 @@ from django.views import View
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from core.catalog_bounds import catalog_year_range
 from core.embedding_service import encode_query
 from core.ollama_client import (
     CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS,
@@ -64,9 +65,19 @@ def _describe_filters(intent_dict: dict) -> str:
     return ", ".join(parts)
 
 
-def _no_match_message(intent_dict: dict) -> str:
+def _no_match_message(intent_dict: dict, year_bounds: tuple | None = None) -> str:
     """Name the hard filters that were active, so the user knows what to
-    loosen; with no hard filter the cause was the relevance gate."""
+    loosen; with no hard filter the cause was the relevance gate. A
+    min_release_year past the catalog's last film is not something to loosen
+    by guesswork: say where the catalog ends and offer its newest years."""
+    min_year = intent_dict.get("min_release_year")
+    if year_bounds is not None and min_year is not None and min_year > year_bounds[1]:
+        _, max_year, max_date = year_bounds
+        first_recent = max_year - settings.INTENT_RECENT_YEARS + 1
+        return (
+            f"The catalog only covers films released up to {max_date:%B %Y}, so there is nothing "
+            f"from {min_year}. Want the newest films it has ({first_recent}\u2013{max_year})?"
+        )
     filters = _describe_filters(intent_dict)
     if not filters:
         return NO_MATCH_MESSAGE
@@ -452,9 +463,11 @@ class ChatView(View):
         was shown, so a later follow-up must not be grounded in movies the user
         never saw.
         """
-        text = _no_match_message(intent_dict)
-
         async def event_stream():
+            year_bounds = None
+            if intent_dict.get("min_release_year") is not None:
+                year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
+            text = _no_match_message(intent_dict, year_bounds)
             yield _sse_event("movies", {
                 "session_id": str(session.session_id),
                 "session_token": session.session_token,

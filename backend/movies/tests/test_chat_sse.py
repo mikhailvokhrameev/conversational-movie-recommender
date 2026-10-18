@@ -1,3 +1,4 @@
+import datetime
 import inspect
 import json
 import logging
@@ -982,12 +983,25 @@ class TestUnsupportedConstraintsAndRelaxation:
             category="new_search", semantic_query="x", min_release_year=1950, max_release_year=1959,
             max_runtime=20, min_vote_average=9.0,
         )
-        events, _ = await self._run(intent, generate=_no_results)
+        with patch("movies.views.catalog_year_range", return_value=(1915, 2023, datetime.date(2023, 9, 30))):
+            events, _ = await self._run(intent, generate=_no_results)
         assert dict(events)["token"]["text"] == _no_match_message(
             intent.model_dump(exclude=set(NON_FILTER_FIELDS)),
         )
         assert dict(events)["movies"]["no_match"] is True
 
+
+    @pytest.mark.asyncio
+    async def test_empty_result_past_the_catalog_end_gets_the_boundary_reply(self):
+        async def _no_results(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
+            return [], []
+
+        intent = MessageIntent(category="new_search", semantic_query="x", min_release_year=2025)
+        with patch("movies.views.catalog_year_range", return_value=(1915, 2023, datetime.date(2023, 9, 30))):
+            events, _ = await self._run(intent, generate=_no_results)
+        assert dict(events)["token"]["text"].startswith(
+            "The catalog only covers films released up to September 2023, so there is nothing from 2025."
+        )
 
     # Fixed "Only N movie(s)" line: fewer than top_n results under hard filters.
     FILTERED = dict(category="new_search", semantic_query="thrillers", max_release_year=1959)
@@ -1136,6 +1150,28 @@ class TestNoMatchMessage:
         text = _no_match_message({"min_release_year": 2015, "min_runtime": 150})
         assert "released 2015 or later" in text
         assert "at least 150 min" in text
+
+    def test_year_past_the_catalog_end_gets_the_boundary_reply(self):
+        bounds = (1915, 2023, datetime.date(2023, 9, 30))
+        text = _no_match_message({"min_release_year": 2025, "genres": ["Drama"]}, bounds)
+        assert text == (
+            "The catalog only covers films released up to September 2023, so there is "
+            "nothing from 2025. Want the newest films it has (2022\u20132023)?"
+        )
+
+    def test_boundary_reply_follows_the_bounds_and_recent_years(self):
+        bounds = (1950, 2019, datetime.date(2019, 3, 5))
+        text = _no_match_message({"min_release_year": 2021}, bounds)
+        assert "up to March 2019" in text and "nothing from 2021" in text
+        assert f"({2019 - settings.INTENT_RECENT_YEARS + 1}\u20132019)" in text
+
+    def test_year_inside_the_catalog_keeps_the_filter_list(self):
+        bounds = (1915, 2023, datetime.date(2023, 9, 30))
+        text = _no_match_message({"min_release_year": 2023, "min_runtime": 150}, bounds)
+        assert text.startswith("Nothing in the catalog matches all of:")
+
+    def test_no_bounds_keeps_the_filter_list(self):
+        assert _no_match_message({"min_release_year": 2030}, None).startswith("Nothing in the catalog")
 
     def test_no_hard_filters_falls_back_to_the_generic_message(self):
         assert _no_match_message({"genres": ["Drama"], "mood": "sad"}) == NO_MATCH_MESSAGE
