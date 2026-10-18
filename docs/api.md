@@ -116,8 +116,9 @@ the format in words and show an example without angle brackets.
 
 **Short result under hard filters**: when fewer than `diversification.top_n` movies come
 back and at least one hard filter is active (the same list `_no_match_message` names),
-the server first emits one fixed `token` line, "Only N movie(s) in the catalog match:
-<filters>." (e.g. "Only 1 movie in the catalog match: released 1959 or earlier."),
+the server first emits one fixed `token` line, "Only N movies in the catalog match:
+<filters>." ("Only 1 movie in the catalog matches: <filters>." for one, e.g.
+"Only 1 movie in the catalog matches: released 1959 or earlier."),
 then the model's intro streams after it. The line is part of the `token` text, of
 `intro_final` (which keeps it ahead of the first line of the model's reply) and of the
 stored assistant turn. With `top_n` results, or no hard filter, there is no line.

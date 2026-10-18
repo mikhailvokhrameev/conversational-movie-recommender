@@ -294,9 +294,10 @@ class ChatView(View):
         # Fewer than top_n under hard filters: say so before the model's intro,
         # in fixed words, so the intro cannot pass the short list off as a full one.
         short_filters = _describe_filters(intent_dict) if len(top_movies) < settings.TOP_N else ""
+        count = len(top_movies)
         short_line = (
-            f"Only {len(top_movies)} movie{'' if len(top_movies) == 1 else 's'} "
-            f"in the catalog match: {short_filters}.\n"
+            f"Only {count} movie in the catalog matches: {short_filters}.\n" if count == 1
+            else f"Only {count} movies in the catalog match: {short_filters}.\n"
         ) if short_filters else ""
 
         async def event_stream():
@@ -330,12 +331,13 @@ class ChatView(View):
             if not has_tokens:
                 yield _sse_event("error", {"message": "explanation generation failed"})
 
-            intro = short_line + "".join(intro_parts)
-            if not slot_parts and intro.strip():
+            model_intro = "".join(intro_parts)
+            intro = short_line + model_intro
+            if not slot_parts and model_intro.strip():
                 # No markers at all: every description landed in the intro. The
                 # client replaces the streamed text with the opening line and the
                 # cards fall back to catalog copy; history gets the same line.
-                intro = short_line + _first_line(intro[len(short_line):])
+                intro = short_line + _first_line(model_intro)
                 yield _sse_event("intro_final", {"text": intro})
             assistant_text = _assistant_turn_text(intro, slot_parts)
             # Skip storing only when there is nothing to keep: with an empty

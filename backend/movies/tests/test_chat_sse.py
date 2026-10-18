@@ -936,7 +936,7 @@ class TestUnsupportedConstraintsAndRelaxation:
             intent, explain=_mock_explanation_parts((None, "Here you go.\n"), (0, "Desc.")),
         )
 
-        line = "Only 1 movie in the catalog match: released 1959 or earlier."
+        line = "Only 1 movie in the catalog matches: released 1959 or earlier."
         tokens = [d["text"] for name, d in events if name == "token"]
         assert tokens[0].strip() == line
         assert "".join(tokens).endswith("Here you go.\n")
@@ -946,7 +946,7 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert "Here you go." in stored and "[[1]]\nDesc." in stored
 
     @pytest.mark.asyncio
-    async def test_plural_count(self):
+    async def test_singular_and_plural_agree_with_the_count(self):
         intent = MessageIntent(**self.FILTERED)
         with patch.object(settings, "TOP_N", 3):
             events, _ = await self._run(
@@ -956,6 +956,17 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert [d["text"] for name, d in events if name == "token"][0].strip() == (
             "Only 2 movies in the catalog match: released 1959 or earlier."
         )
+        events, _ = await self._run(intent, explain=_mock_explanation_parts((None, "Hi.")))
+        assert [d["text"] for name, d in events if name == "token"][0].strip() == (
+            "Only 1 movie in the catalog matches: released 1959 or earlier."
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_intro_final_when_the_model_streams_nothing(self):
+        intent = MessageIntent(**self.FILTERED)
+        events, _ = await self._run(intent, explain=_mock_explanation_parts())
+        names = [name for name, _ in events]
+        assert "error" in names and "intro_final" not in names
 
     @pytest.mark.asyncio
     async def test_intro_final_keeps_the_line(self):
@@ -964,7 +975,7 @@ class TestUnsupportedConstraintsAndRelaxation:
             intent, explain=_mock_explanation_parts((None, "Opening.\nstray second line")),
         )
         final = dict(events)["intro_final"]["text"]
-        assert final.startswith("Only 1 movie in the catalog match:")
+        assert final.startswith("Only 1 movie in the catalog matches:")
         assert final.endswith("Opening.")
         assert append_history.call_args.args[2] == final
 
