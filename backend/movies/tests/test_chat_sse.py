@@ -1,5 +1,6 @@
 import inspect
 import json
+import logging
 from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
@@ -833,6 +834,46 @@ class TestUnsupportedConstraintsAndRelaxation:
 
         assert len(calls) == 1
         assert [m["serial_name"] for m in dict(events)["movies"]["movies"]] == ["Test Film"]
+
+    @staticmethod
+    def _turn_lines(caplog):
+        return [r.getMessage() for r in caplog.records if r.getMessage().startswith("search_turn ")]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("movies, results", [(None, 1), ([], 0)])
+    async def test_a_search_turn_logs_one_diagnostics_line(self, caplog, movies, results):
+        caplog.set_level(logging.INFO, logger="movies.views")
+        generate = _mock_generate_and_score(movies) if movies is None else self._empty_generate()
+        intent = MessageIntent(
+            category="refinement", semantic_query="x", standalone_query="slow westerns",
+            unsupported_constraints=["silent"],
+        )
+        history = [{"role": "assistant", "pending_relaxation": {"dropped": ["silent"]}}]
+        await self._run(intent, history=history, generate=generate)
+
+        assert self._turn_lines(caplog) == [
+            f"search_turn category=refinement unsupported_constraints=['silent'] "
+            f"standalone_query='slow westerns' results={results}"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_unsupported_offer_logs_one_diagnostics_line_with_no_results(self, caplog):
+        caplog.set_level(logging.INFO, logger="movies.views")
+        intent = MessageIntent(
+            category="new_search", standalone_query="silent documentaries", unsupported_constraints=["silent"],
+        )
+        await self._run(intent)
+
+        assert self._turn_lines(caplog) == [
+            "search_turn category=new_search unsupported_constraints=['silent'] "
+            "standalone_query='silent documentaries' results=0"
+        ]
+
+    @staticmethod
+    def _empty_generate():
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None):
+            return [], []
+        return _gen
 
     def test_unchecked_constraints_match_loosely_in_either_direction(self):
         history = [{"role": "assistant", "pending_relaxation": {"dropped": ["Silent", "with Keanu Reeves"]}}]

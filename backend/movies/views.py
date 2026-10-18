@@ -215,6 +215,14 @@ def _log_turn_latency(category, **stage_ms):
     )
 
 
+def _log_search_turn(intent, results):
+    """One line per search turn, whichever way it ends (listed, empty, or the offer)."""
+    logger.info(
+        "search_turn category=%s unsupported_constraints=%s standalone_query=%r results=%d",
+        intent.category, intent.unsupported_constraints, intent.standalone_query, results,
+    )
+
+
 class ChatView(View):
     async def post(self, request):
         try:
@@ -255,6 +263,7 @@ class ChatView(View):
         intent_dict = intent.model_dump(exclude=set(NON_FILTER_FIELDS))
         unchecked = _unchecked_constraints(intent.unsupported_constraints, history)
         if unchecked:
+            _log_search_turn(intent, 0)
             return await self._unsupported_response(
                 session, message, intent, intent_dict, unchecked, classify_parse_ms,
             )
@@ -278,6 +287,7 @@ class ChatView(View):
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)
 
+        _log_search_turn(intent, len(top_movies))
         if not top_movies:
             return self._no_match_response(
                 session, intent, intent_dict, classify_parse_ms, embed_ms, score_ms,
