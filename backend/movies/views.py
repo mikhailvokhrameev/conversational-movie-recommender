@@ -171,7 +171,7 @@ async def _get_or_create_session(session_id: str | None, token: str) -> ChatSess
 
 
 @sync_to_async(thread_sensitive=False)
-def _save_session(session: ChatSession, query: str, intent: dict, movies: list[dict]):
+def _save_session(session: ChatSession, query: str, intent: dict):
     """Read-modify-write under a row lock, so concurrent turns compose instead
     of overwriting each other's preferences, history and turn count."""
     with transaction.atomic():
@@ -353,7 +353,7 @@ class ChatView(View):
             score_ms = (time.perf_counter() - t_score) * 1000
 
             serialized = [_serialize_movie(m) for m in top_movies]
-            await _save_session(session, message, intent_dict, top_movies)
+            await _save_session(session, message, intent_dict)
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)
@@ -469,7 +469,7 @@ class ChatView(View):
         the classifier lists the same constraint again.
         """
         try:
-            await _save_session(session, message, intent_dict, [])
+            await _save_session(session, message, intent_dict)
         except Exception:
             logger.exception(f"ChatView {intent.category} error")
             return JsonResponse({"error": "internal error"}, status=500)

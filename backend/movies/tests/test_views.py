@@ -153,8 +153,8 @@ class TestSaveSessionConcurrency:
         session = await ChatSession.objects.acreate()
 
         await asyncio.gather(
-            _save_session(session, "q1", {"genres": ["Drama"]}, []),
-            _save_session(session, "q2", {"genres": ["Comedy"]}, []),
+            _save_session(session, "q1", {"genres": ["Drama"]}),
+            _save_session(session, "q2", {"genres": ["Comedy"]}),
         )
         await session.arefresh_from_db()
 
@@ -288,9 +288,7 @@ class TestSaveSessionHistoryEntry:
         from movies.models import ChatSession
         session = await ChatSession.objects.acreate()
 
-        await _save_session(
-            session, "q", {}, [{"serial_name": "Test Film"}],
-        )
+        await _save_session(session, "q", {})
         await session.arefresh_from_db()
 
         assert session.history == [{"role": "user", "content": "q"}]
