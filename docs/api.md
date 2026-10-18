@@ -121,7 +121,10 @@ the server first emits one fixed `token` line, "Only N movies in the catalog mat
 "Only 1 movie in the catalog matches: released 1959 or earlier."),
 then the model's intro streams after it. The line is part of the `token` text, of
 `intro_final` (which keeps it ahead of the first line of the model's reply) and of the
-stored assistant turn. With `top_n` results, or no hard filter, there is no line.
+stored assistant turn. With `top_n` results, or no hard filter, there is no line. There is
+also no line when candidates may have been excluded (a refinement with movies already
+shown in the history window, or any turn with `reference_films`), since the shortfall
+then need not mean the catalog ran out.
 
 **Degradation**: if the model emits no markers at all, every token lands in the intro
 slot -- `token` events only, zero `blurb` events. After the stream the server then

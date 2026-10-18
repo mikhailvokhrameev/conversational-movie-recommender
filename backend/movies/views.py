@@ -303,7 +303,12 @@ class ChatView(View):
         candidate_titles = [m["serial_name"] for m in candidate_pool]
         # Fewer than top_n under hard filters: say so before the model's intro,
         # in fixed words, so the intro cannot pass the short list off as a full one.
-        short_filters = _describe_filters(intent_dict) if len(top_movies) < settings.TOP_N else ""
+        # Only when nothing could have been excluded (shown movies, reference
+        # films): otherwise the shortfall may not be the catalog running out.
+        could_exclude = bool(exclude_ids) or bool(intent.reference_films)
+        short_filters = (
+            _describe_filters(intent_dict) if len(top_movies) < settings.TOP_N and not could_exclude else ""
+        )
         count = len(top_movies)
         short_line = (
             f"Only {count} movie in the catalog matches: {short_filters}.\n" if count == 1

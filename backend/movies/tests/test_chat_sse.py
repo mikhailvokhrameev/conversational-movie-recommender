@@ -1031,6 +1031,23 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert "Only" not in append_history.call_args.args[2]
 
     @pytest.mark.asyncio
+    async def test_no_line_on_a_refinement_that_excluded_shown_movies(self):
+        # The shortfall may come from dropping the movies already shown, not
+        # from the catalog running out, so the server must not claim a count.
+        intent = MessageIntent(**{**self.FILTERED, "category": "refinement"})
+        history = [{"role": "assistant", "content": "a", "movies": ["A"], "movie_ids": [10]}]
+        events, append_history = await self._run(intent, history=history)
+        assert "Only" not in "".join(d["text"] for name, d in events if name == "token")
+        assert "Only" not in append_history.call_args.args[2]
+
+    @pytest.mark.asyncio
+    async def test_no_line_when_reference_films_may_have_been_excluded(self):
+        intent = MessageIntent(**self.FILTERED, reference_films=["Alien"])
+        events, append_history = await self._run(intent)
+        assert "Only" not in "".join(d["text"] for name, d in events if name == "token")
+        assert "Only" not in append_history.call_args.args[2]
+
+    @pytest.mark.asyncio
     async def test_no_line_without_hard_filters(self):
         intent = MessageIntent(category="new_search", semantic_query="thrillers", genres=["Thriller"])
         events, append_history = await self._run(intent)
