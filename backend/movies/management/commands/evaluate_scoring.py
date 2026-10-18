@@ -36,6 +36,12 @@ What makes this an honest measurement:
   - `--label-report` reads that CSV back and prints, per candidate absolute
     threshold and relative margin, the kept precision and the share of
     human-labelled relevant movies dropped. It needs no database or model.
+  - Entries whose right answer is nothing (`expected: "empty"`) or a question
+    (`expected: "ask"`) are not accuracy-scored: each gets `outcome_correct`
+    and the `expected_*` counters instead, and stays out of the aggregates, the
+    sweep's ranking and the hit/non-hit distributions. `--gate-report` prices
+    a threshold's benefit with them (`unanswerable_emptied_share`). Oracle mode
+    has no parse to ask from, so it skips "ask" entries and counts them.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
@@ -45,6 +51,7 @@ import csv
 import hashlib
 import json
 import logging
+import math
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -66,6 +73,7 @@ from core.evaluation import (
     llm_relevance_score,
 )
 from core.golden_set import (
+    DEFAULT_EXPECTED,
     default_golden_set_path,
     load_golden_set,
     prior_turns,
@@ -171,6 +179,10 @@ class PreparedQuery:
     @property
     def misclassified(self) -> bool:
         return self.predicted_category in NON_SEARCH_CATEGORIES
+
+    @property
+    def expected(self) -> str:
+        return self.entry.get("expected", DEFAULT_EXPECTED)
 
 
 class Command(BaseCommand):
@@ -304,6 +316,22 @@ class Command(BaseCommand):
         entries = select_split(load_golden_set(golden_path), split)
         if not entries:
             raise CommandError(f"no golden-set entries in split {split!r}")
+        self.skipped_ask_entries = 0
+        if intent_mode == "oracle":
+            # "ask" is judged on the parse's unsupported_constraints, and oracle
+            # mode does not parse: there is nothing to score these on.
+            asks = [e for e in entries if e.get("expected") == "ask"]
+            if asks:
+                entries = [e for e in entries if e.get("expected") != "ask"]
+                self.skipped_ask_entries = len(asks)
+                self.stdout.write(
+                    f"Oracle mode skipped {len(asks)} expected-ask entries: they are scored on the "
+                    "classify+parse call's unsupported_constraints, which only --intent e2e runs."
+                )
+            if not entries:
+                raise CommandError(
+                    f"split {split!r} holds only expected-ask entries, which --intent oracle cannot run"
+                )
         self.stdout.write(f"Loaded {len(entries)} {split} queries from {golden_path} (intent: {intent_mode})")
         if use_llm:
             self.stdout.write("LLM-as-judge enabled (this will be slow)")
@@ -400,7 +428,10 @@ class Command(BaseCommand):
             unsupported = None
             intent = dict(entry.get("oracle_intent", {}))
 
-        grades, unresolved = resolve_references(entry["relevant"])
+        if entry.get("expected", DEFAULT_EXPECTED) == "results":
+            grades, unresolved = resolve_references(entry["relevant"])
+        else:
+            grades, unresolved = {}, []
         return PreparedQuery(
             entry=entry,
             intent=intent,
@@ -476,13 +507,23 @@ class Command(BaseCommand):
             judge_scores=judge_scores,
             k=k,
         )
-        unscorable = not p.grades
-        if unscorable:
+        answerable = p.expected == "results"
+        unscorable = answerable and not p.grades
+        if not answerable or unscorable:
             # No resolved label means no ground truth: a 0.0 here would blame the
             # ranker for a labelling/catalog gap. Reported and counted instead.
+            # An "empty"/"ask" entry has no labels by design; it is judged by
+            # outcome_correct.
             for key in ACCURACY_KEYS:
                 metrics.pop(key, None)
         metrics["negation_violations"] = negation_violations
+        if p.expected == "empty":
+            outcome_correct = not top
+        elif p.expected == "ask":
+            # What makes ChatView ask instead of searching (ADR 0011).
+            outcome_correct = bool(p.unsupported_constraints)
+        else:
+            outcome_correct = None
 
         result = {
             "id": entry["id"],
@@ -513,6 +554,8 @@ class Command(BaseCommand):
             "resolved_refs": len(p.grades),
             "unresolved_refs": [reference_label(ref) for ref in p.unresolved],
             "unscorable": unscorable,
+            "expected": p.expected,
+            "outcome_correct": outcome_correct,
             "metrics": metrics,
         }
         if "history" in entry:
@@ -532,13 +575,20 @@ class Command(BaseCommand):
         apply_gate: bool = True,
     ) -> dict:
         queries = [self._score_query(p, k, weights, use_llm, apply_gate) for p in prepared]
-        aggregate = aggregate_metrics([q["metrics"] for q in queries])
+        # Aggregates (and so the sweep's ranking) describe answerable queries
+        # only: an "empty"/"ask" entry's movies are wrong by definition.
+        answerable = [q for q in queries if q["expected"] == "results"]
+        aggregate = aggregate_metrics([q["metrics"] for q in answerable])
         aggregate["coverage"] = coverage(
-            [[r["tmdb_id"] for r in q["recommended"]] for q in queries], self.catalog_size,
+            [[r["tmdb_id"] for r in q["recommended"]] for q in answerable], self.catalog_size,
         )
+
+        def outcomes(expected):
+            return [q["outcome_correct"] for q in queries if q["expected"] == expected]
+
         counters = {
             "queries": len(queries),
-            "scored_queries": sum(1 for q in queries if not q["unscorable"]),
+            "scored_queries": sum(1 for q in answerable if not q["unscorable"]),
             "unscorable_queries": sum(1 for q in queries if q["unscorable"]),
             "unresolved_refs": sum(len(p.unresolved) for p in prepared),
             "judge_failures": sum(q.get("judge_failures", 0) for q in queries),
@@ -547,6 +597,11 @@ class Command(BaseCommand):
             "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
             # Queries production would answer with a question and no movies.
             "unsupported_constraints": sum(1 for p in prepared if p.unsupported_constraints),
+            "expected_empty": len(outcomes("empty")),
+            "expected_empty_correct": sum(outcomes("empty")),
+            "expected_ask": len(outcomes("ask")),
+            "expected_ask_correct": sum(outcomes("ask")),
+            "skipped_ask_entries": self.skipped_ask_entries,
         }
         return {"queries": queries, "aggregate": aggregate, "counters": counters}
 
@@ -570,7 +625,10 @@ class Command(BaseCommand):
 
         for q in result["queries"]:
             m = q["metrics"]
-            if q["unscorable"]:
+            if q["expected"] != "results":
+                verdict = "correct" if q["outcome_correct"] else "WRONG"
+                accuracy = f"EXPECTED {q['expected'].upper()}: {verdict} ({len(q['recommended'])} returned)"
+            elif q["unscorable"]:
                 accuracy = "UNSCORED (no resolved labels)"
             else:
                 accuracy = (
@@ -617,7 +675,9 @@ class Command(BaseCommand):
     def _read_labelled_csv(path: Path):
         """Rows for `label_report`; a bad row is an error naming its CSV line."""
         try:
-            f = open(path, newline="", encoding="utf-8")
+            # utf-8-sig: a spreadsheet saving the CSV may prepend a BOM, which
+            # would otherwise glue itself to the first column name.
+            f = open(path, newline="", encoding="utf-8-sig")
         except OSError as e:
             raise CommandError(f"cannot read --label-report file {path}: {e}")
         rows = []
@@ -639,6 +699,11 @@ class Command(BaseCommand):
                 except ValueError:
                     raise CommandError(
                         f"{path} line {line}: a labelled row needs a numeric rerank_score, "
+                        f"got {row['rerank_score']!r}"
+                    )
+                if not (math.isfinite(score) and 0.0 <= score <= 1.0):
+                    raise CommandError(
+                        f"{path} line {line}: rerank_score must be a sigmoid score in [0, 1], "
                         f"got {row['rerank_score']!r}"
                     )
                 rows.append({"query_id": row["query_id"], "rerank_score": score, "label": int(label)})
@@ -694,7 +759,8 @@ class Command(BaseCommand):
         considered = report["queries_considered"]
         self.stdout.write(
             f"  queries: {considered} with scores, {report['queries_unscorable']} unscorable "
-            f"(no resolved labels), {report['queries_without_scores']} without rerank scores"
+            f"(no resolved labels), {report['queries_without_scores']} without rerank scores; "
+            f"{report['unanswerable_considered']} expected-empty with scores"
         )
         if not considered:
             self.stdout.write(self.style.WARNING(
@@ -712,13 +778,19 @@ class Command(BaseCommand):
             return f"{share:>7.1%}" if share is not None else f"{'-':>7}"
 
         self.stdout.write(
-            f"\n  {'min_score':>9} {'hits dropped':>13} {'non-hits dropped':>17} {'queries emptied':>16}"
+            f"\n  {'min_score':>9} {'hits dropped':>13} {'non-hits dropped':>17} {'queries emptied':>16} "
+            f"{'unanswerable emptied':>21}"
         )
         for row in report["thresholds"]:
             self.stdout.write(
                 f"  {row['min_score']:>9.3f} {pct(row['hits_dropped_share']):>13} "
-                f"{pct(row['non_hits_dropped_share']):>17} {pct(row['queries_emptied_share']):>16}"
+                f"{pct(row['non_hits_dropped_share']):>17} {pct(row['queries_emptied_share']):>16} "
+                f"{pct(row['unanswerable_emptied_share']):>21}"
             )
+        self.stdout.write(
+            "\n  `queries emptied` is over answerable queries (a cost); `unanswerable emptied` is "
+            "the share of expected-empty queries the threshold would correctly empty (the benefit)."
+        )
         self.stdout.write(
             "\nPick a value by hand (a threshold that drops few hits but many non-hits), set "
             "reranking.min_score in params.yaml, and judge it on the test split. This command "

@@ -426,7 +426,7 @@ class TestLabelExport:
     """--label-export: dev-split CSV of reranked results for human labelling."""
 
     HEADER = [
-        "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+        "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
         "year", "overview", "rerank_score", "golden_hit", "label",
     ]
 
@@ -459,6 +459,23 @@ class TestLabelExport:
         assert rows[0]["query"] == "query d1" and rows[0]["overview"] == "d"
         assert rows[0]["year"] == "2000" and rows[0]["label"] == ""
         assert str(csv_path) in run.stdout
+
+    def test_expected_empty_entries_are_exported_ask_entries_skipped(self, tmp_path):
+        import csv
+
+        csv_path = tmp_path / "label.csv"
+        entries = [
+            *self._entries(),
+            _entry("n1", "dev", expected="empty", oracle_intent={}, relevant=[]),
+            _entry("a1", "dev", expected="ask", relevant=[]),
+        ]
+        run = _Run(tmp_path, entries, movies=self._scored_movies())
+        run("--label-export", str(csv_path), "--intent", "oracle", "--k", "2")
+        with open(csv_path, newline="", encoding="utf-8") as f:
+            rows = list(csv.DictReader(f))
+        assert [(r["query_id"], r["expected"]) for r in rows] == [
+            ("d1", "results"), ("d1", "results"), ("n1", "empty"), ("n1", "empty"),
+        ]
 
     def test_runs_the_pipeline_with_the_gate_disabled(self, tmp_path):
         run = _Run(tmp_path, self._entries(), movies=self._scored_movies())
@@ -511,6 +528,37 @@ class TestLabelReport:
         with pytest.raises(CommandError, match="line 2"):
             call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
 
+    def test_accepts_the_expected_column(self, tmp_path):
+        path = tmp_path / "labelled.csv"
+        path.write_text(
+            "query_id,query,context,ranked_query,expected,rank,tmdb_id,title,year,overview,"
+            "rerank_score,golden_hit,label\n"
+            "a,q,,q,results,1,1,T,2000,o,0.9,1,1\n"
+            "n,q,,q,empty,1,2,T,2000,o,0.2,0,0\n",
+            encoding="utf-8",
+        )
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        assert "2 queries, 2 labelled rows (1 relevant)" in out.getvalue()
+
+    def test_reads_a_spreadsheet_bom(self, tmp_path):
+        path = tmp_path / "labelled.csv"
+        path.write_text(self.HEADER + self._line("a", 0.9, 1), encoding="utf-8-sig")
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        assert "1 queries, 1 labelled rows" in out.getvalue()
+
+    @pytest.mark.parametrize("score", ["nan", "inf", "-inf", "1.5", "-0.1"])
+    def test_out_of_range_score_on_labelled_row_names_the_line(self, tmp_path, score):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1), self._line("a", score, 0)])
+        with pytest.raises(CommandError, match="line 3"):
+            call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
+
+    @pytest.mark.parametrize("score", ["0", "1", "0.0", "1.0"])
+    def test_score_bounds_are_inclusive(self, tmp_path, score):
+        path = self._csv(tmp_path, [self._line("a", score, 1)])
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
+
     def test_missing_file(self, tmp_path):
         with pytest.raises(CommandError, match="not found|No such"):
             call_command("evaluate_scoring", "--label-report", str(tmp_path / "nope.csv"), stdout=StringIO())
@@ -520,6 +568,96 @@ class TestLabelReport:
         path = self._csv(tmp_path, [self._line("a", 0.9, 1)])
         with pytest.raises(CommandError, match="separate"):
             call_command("evaluate_scoring", "--label-report", str(path), *other, stdout=StringIO())
+
+
+def _empty(id_="n1", split="test", **extra):
+    return _entry(id_, split, expected="empty", oracle_intent={}, relevant=[], **extra)
+
+
+def _ask(id_="a1", split="test", **extra):
+    entry = _entry(id_, split, expected="ask", **extra)
+    del entry["relevant"]
+    return entry
+
+
+ASKING = MessageIntent(
+    category="new_search", semantic_query="rewritten query", standalone_query="rewritten standalone query",
+    unsupported_constraints=["with Keanu Reeves"],
+)
+
+
+class TestExpectedEmptyAndAsk:
+    """Entries whose right answer is no recommendations or a question."""
+
+    def test_e2e_outcomes_and_counters(self, tmp_path):
+        run = _Run(tmp_path, [_entry(), _empty(), _ask()], intent=ASKING, movies=[])
+        record = run()
+        by_id = {q["id"]: q for q in record["queries"]}
+        assert by_id["q1"]["expected"] == "results" and by_id["q1"]["outcome_correct"] is None
+        assert by_id["n1"]["expected"] == "empty" and by_id["n1"]["outcome_correct"] is True
+        assert by_id["a1"]["expected"] == "ask" and by_id["a1"]["outcome_correct"] is True
+        counters = record["counters"]
+        assert counters["queries"] == 3
+        assert counters["expected_empty"] == 1 and counters["expected_empty_correct"] == 1
+        assert counters["expected_ask"] == 1 and counters["expected_ask_correct"] == 1
+        assert counters["skipped_ask_entries"] == 0
+        assert "expected_empty_correct: 1" in run.stdout
+
+    def test_wrong_outcomes(self, tmp_path):
+        run = _Run(tmp_path, [_empty(), _ask()])  # movies returned, nothing unsupported
+        record = run()
+        assert [q["outcome_correct"] for q in record["queries"]] == [False, False]
+        assert record["counters"]["expected_empty_correct"] == 0
+        assert record["counters"]["expected_ask_correct"] == 0
+
+    def test_not_unscorable_and_not_in_accuracy_aggregates(self, tmp_path):
+        run = _Run(tmp_path, [_entry(), _empty(), _ask()], movies=[_movie(1), _movie(2)], grades={1: 2})
+        record = run("--k", "2")
+        # Their references are never resolved: there are none.
+        assert run.resolve.call_count == 1
+        counters = record["counters"]
+        assert counters["unscorable_queries"] == 0
+        assert counters["scored_queries"] == 1
+        for q in record["queries"][1:]:
+            assert q["unscorable"] is False
+            assert "precision_at_k" not in q["metrics"]
+        # q1 alone: one hit of two returned
+        assert record["aggregate"]["precision_at_k"] == 0.5
+
+    def test_only_unanswerable_entries_give_no_accuracy_aggregate(self, tmp_path):
+        record = _Run(tmp_path, [_empty()])()
+        assert "precision_at_k" not in record["aggregate"]
+
+    def test_oracle_skips_ask_entries(self, tmp_path):
+        run = _Run(tmp_path, [_entry(), _empty(), _ask()])
+        record = run("--intent", "oracle")
+        assert [q["id"] for q in record["queries"]] == ["q1", "n1"]
+        assert run.pipeline.call_count == 2
+        assert record["counters"]["skipped_ask_entries"] == 1
+        assert record["counters"]["expected_ask"] == 0
+        assert "skipped 1 expected-ask" in run.stdout
+
+    def test_oracle_with_only_ask_entries_refuses(self, tmp_path):
+        with pytest.raises(CommandError, match="ask"):
+            _Run(tmp_path, [_ask()])("--intent", "oracle")
+
+    def test_sweep_ranks_on_answerable_queries_only(self, tmp_path):
+        run = _Run(tmp_path, [_entry("d1", "dev"), _empty("n1", "dev")], grades={1: 2})
+        record = run("--sweep", "--intent", "oracle", "--k", "2")
+        assert record["configs"][0]["aggregate"]["precision_at_k"] == 0.5
+        assert record["configs"][0]["counters"]["expected_empty"] == 1
+
+    def test_gate_report_prints_the_benefit_column(self, tmp_path):
+        movies = [_movie(1), _movie(2)]
+        for movie, score in zip(movies, (0.9, 0.2)):
+            movie["rerank_score"] = score
+        run = _Run(tmp_path, [_entry("d1", "dev"), _empty("n1", "dev")], movies=movies)
+        record = run("--gate-report", "--intent", "oracle")
+        report = record["gate_report"]
+        assert report["queries_considered"] == 1
+        assert report["unanswerable_considered"] == 1
+        assert all("unanswerable_emptied_share" in row for row in report["thresholds"])
+        assert "unanswerable emptied" in run.stdout
 
 
 class TestEmptyResults:

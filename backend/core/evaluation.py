@@ -235,9 +235,20 @@ def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
     list: the gate runs before MMR on the full pool, so a query empties exactly
     when nothing in the pool reaches the threshold. A share is None when its
     denominator is zero.
+
+    All of that is over answerable queries (`expected` "results", the default
+    for records without the field) -- the cost of a threshold. Its benefit is
+    `unanswerable_emptied_share`: of the scored `expected: "empty"` queries,
+    the share the threshold would correctly empty. `expected: "ask"` queries
+    are not a gate question and are left out entirely.
     """
-    considered = [
+    answerable = [q for q in queries if q.get("expected", "results") == "results"]
+    unanswerable = [
         q for q in queries
+        if q.get("expected") == "empty" and q.get("pool_max_rerank_score") is not None
+    ]
+    considered = [
+        q for q in answerable
         if not q["unscorable"] and q.get("pool_max_rerank_score") is not None
     ]
     hit_scores, non_hit_scores = [], []
@@ -257,15 +268,19 @@ def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
             "queries_emptied_share": _share(
                 sum(q["pool_max_rerank_score"] < threshold for q in considered), len(considered),
             ),
+            "unanswerable_emptied_share": _share(
+                sum(q["pool_max_rerank_score"] < threshold for q in unanswerable), len(unanswerable),
+            ),
         }
         for threshold in thresholds
     ]
     return {
         "queries_considered": len(considered),
-        "queries_unscorable": sum(1 for q in queries if q["unscorable"]),
+        "queries_unscorable": sum(1 for q in answerable if q["unscorable"]),
         "queries_without_scores": sum(
-            1 for q in queries if not q["unscorable"] and q.get("pool_max_rerank_score") is None
+            1 for q in answerable if not q["unscorable"] and q.get("pool_max_rerank_score") is None
         ),
+        "unanswerable_considered": len(unanswerable),
         "hits": _distribution(hit_scores),
         "non_hits": _distribution(non_hit_scores),
         "thresholds": rows,
@@ -327,7 +342,7 @@ def label_report(
 
 
 LABEL_EXPORT_COLUMNS = (
-    "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+    "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
     "year", "overview", "rerank_score", "golden_hit", "label",
 )
 
@@ -338,19 +353,32 @@ def label_export_rows(queries: list[dict]) -> list[dict]:
     `queries` are per-query results of a dev run with the gate off. `query` is
     what the user typed and `ranked_query` the text the reranker actually saw
     (the standalone rewrite for a follow-up in oracle mode): the labeller
-    judges relevance against `ranked_query`, with `context` for orientation.
-    `golden_hit` is informative only -- the golden lists are incomplete, which
-    is why a human label column exists. `label` is left empty.
+    judges relevance against `ranked_query`, with `context` (the prior turns,
+    role-prefixed for a `history` entry) for orientation. `golden_hit` is
+    informative only -- the golden lists are incomplete, which is why a human
+    label column exists. `label` is left empty.
+
+    `expected: "empty"` queries are exported: their rows are the negatives the
+    labeller marks 0. `expected: "ask"` queries are not -- production asks
+    instead of showing their movies, so no threshold applies to them.
     """
     rows = []
     for q in queries:
+        expected = q.get("expected", "results")
+        if expected == "ask":
+            continue
+        if q.get("history"):
+            context = " | ".join(f"{turn['role']}: {turn['content']}" for turn in q["history"])
+        else:
+            context = " | ".join(q.get("context", []))
         for rank, movie in enumerate(q["recommended"], start=1):
             score = movie.get("rerank_score")
             rows.append({
                 "query_id": q["id"],
                 "query": q["query"],
-                "context": " | ".join(q.get("context", [])),
+                "context": context,
                 "ranked_query": q["query_text"],
+                "expected": expected,
                 "rank": rank,
                 "tmdb_id": movie["tmdb_id"],
                 "title": movie["title"],

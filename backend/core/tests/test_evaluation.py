@@ -182,14 +182,17 @@ class TestEvaluationSettingsValidation:
         _validate_evaluation({"judge_description_chars": 1, "judge_timeout_seconds": 0.5})
 
 
-def _gq(returned, pool_max, unscorable=False):
+def _gq(returned, pool_max, unscorable=False, expected=None):
     """A per-query result as evaluate_scoring records it: `returned` is a list
-    of (rerank_score, is_hit)."""
-    return {
+    of (rerank_score, is_hit). Without `expected` it is a pre-`expected` record."""
+    query = {
         "unscorable": unscorable,
         "recommended": [{"rerank_score": score, "hit": hit} for score, hit in returned],
         "pool_max_rerank_score": pool_max,
     }
+    if expected is not None:
+        query["expected"] = expected
+    return query
 
 
 class TestGateReport:
@@ -262,6 +265,34 @@ class TestGateReport:
         assert row["hits_dropped_share"] is None
         assert row["queries_emptied_share"] is None
 
+    def test_unanswerable_emptied_share_is_the_benefit_column(self):
+        queries = [
+            _gq([(0.9, True), (0.1, False)], 0.9, expected="results"),
+            _gq([(0.3, False)], 0.3),
+            _gq([(0.2, False)], 0.2, expected="empty"),
+            _gq([(0.6, False)], 0.6, expected="empty"),
+            _gq([(None, False)], None, expected="empty"),  # no scores: not counted
+            _gq([(0.01, False)], 0.01, expected="ask"),  # not a gate question at all
+        ]
+        report = gate_report(queries, thresholds=[0.25, 0.5, 0.7])
+        assert report["queries_considered"] == 2
+        assert report["unanswerable_considered"] == 2
+        assert report["queries_without_scores"] == 0
+        # Distributions and the answerable columns ignore the expected-empty rows.
+        assert report["hits"]["count"] == 1
+        assert report["non_hits"]["count"] == 2  # 0.1 and 0.3
+        low, mid, high = report["thresholds"]
+        # empty pools 0.2 / 0.6: below 0.25 -> 1 of 2, below 0.5 -> 1, below 0.7 -> 2
+        assert [r["unanswerable_emptied_share"] for r in (low, mid, high)] == [0.5, 0.5, 1.0]
+        # answerable pools 0.9 / 0.3
+        assert [r["queries_emptied_share"] for r in (low, mid, high)] == [0.0, 0.5, 0.5]
+        assert low["non_hits_dropped_share"] == 0.5
+
+    def test_unanswerable_share_is_none_without_expected_empty_queries(self):
+        report = gate_report([_gq([(0.9, True)], 0.9)], thresholds=[0.5])
+        assert report["unanswerable_considered"] == 0
+        assert report["thresholds"][0]["unanswerable_emptied_share"] is None
+
     def test_default_grid_is_sorted_and_inside_the_sigmoid_range(self):
         grid = [row["min_score"] for row in gate_report([])["thresholds"]]
         assert grid == sorted(grid)
@@ -292,7 +323,7 @@ class TestLabelExportRows:
     def test_columns_and_order(self):
         rows = label_export_rows(self._queries())
         assert list(rows[0]) == [
-            "query_id", "query", "context", "ranked_query", "rank", "tmdb_id", "title",
+            "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
             "year", "overview", "rerank_score", "golden_hit", "label",
         ]
         assert [(r["query_id"], r["rank"], r["tmdb_id"]) for r in rows] == [("d1", 1, 5), ("d1", 2, 7), ("d2", 1, 9)]
@@ -320,6 +351,33 @@ class TestLabelExportRows:
 
     def test_overview_kept_verbatim(self):
         assert label_export_rows(self._queries())[2]["overview"] == 'Multi\nline, "quoted"'
+
+    def test_expected_defaults_to_results_and_empty_entries_are_kept(self):
+        queries = self._queries()
+        queries.append({
+            "id": "n1", "query": "q", "context": [], "query_text": "q", "expected": "empty",
+            "recommended": [_rec(11, 0.02)],
+        })
+        rows = label_export_rows(queries)
+        assert [(r["query_id"], r["expected"]) for r in rows] == [
+            ("d1", "results"), ("d1", "results"), ("d2", "results"), ("n1", "empty"),
+        ]
+
+    def test_ask_entries_are_left_out(self):
+        queries = self._queries()
+        queries.append({
+            "id": "a1", "query": "q", "context": [], "query_text": "q", "expected": "ask",
+            "recommended": [_rec(11, 0.02)],
+        })
+        assert "a1" not in {r["query_id"] for r in label_export_rows(queries)}
+
+    def test_history_shows_roles_in_the_context_column(self):
+        query = {
+            "id": "h1", "query": "older", "context": [], "query_text": "an older heist film",
+            "history": [{"role": "user", "content": "a heist film"}, {"role": "assistant", "content": "Heat."}],
+            "recommended": [_rec(5, 0.5)],
+        }
+        assert label_export_rows([query])[0]["context"] == "user: a heist film | assistant: Heat."
 
     def test_missing_overview_is_blank(self):
         q = self._queries()
