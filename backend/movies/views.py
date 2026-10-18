@@ -231,23 +231,24 @@ def _load_selected_movie(tmdb_id: int) -> dict | None:
     ).first()
 
 
-def _selection(selected_tmdb_id, history: list[dict]) -> tuple[int | None, str | None]:
+def _selection(selected_tmdb_id, history: list[dict]) -> tuple[int | None, int | None, str | None]:
     """The client-reported card, kept only if it is one of the movies in the
     latest recommendation (the last assistant entry with movie_facts); anything
-    else is ignored. Returns (tmdb_id, note for the classifier)."""
+    else is ignored. Returns (tmdb_id, 1-based position in that list, note for the
+    classifier)."""
     if type(selected_tmdb_id) is not int:
-        return None, None
+        return None, None, None
     latest = next(
         (e for e in reversed(history) if e.get("role") == "assistant" and e.get("movie_facts")), None,
     )
     ids = (latest or {}).get("movie_ids") or []
     facts = (latest or {}).get("movie_facts") or []
     if selected_tmdb_id not in ids or ids.index(selected_tmdb_id) >= len(facts):
-        return None, None
+        return None, None, None
     position = ids.index(selected_tmdb_id)
     fact = facts[position]
     year = f" ({fact['year']})" if fact.get("year") else ""
-    return selected_tmdb_id, (
+    return selected_tmdb_id, position + 1, (
         f"[The user is viewing movie {position + 1} of the latest list: {fact['title']}{year}]"
     )
 
@@ -303,7 +304,7 @@ class ChatView(View):
             token = request.headers.get("X-Session-Token", "")
             session = await _get_or_create_session(session_id, token)
             t0 = time.perf_counter()
-            selected_id, selection_note = _selection(body.get("selected_tmdb_id"), session.history)
+            selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history)
             intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
@@ -314,6 +315,7 @@ class ChatView(View):
             return await self._handle_conversational(
                 session, message, intent.category, classify_parse_ms,
                 selected_id=selected_id if intent.category == "follow_up" else None,
+                selected_position=selected_position,
             )
         else:
             return await self._handle_search_like(session, message, intent, classify_parse_ms)
@@ -540,14 +542,21 @@ class ChatView(View):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def _handle_conversational(self, session, message, category, classify_parse_ms, selected_id=None):
+    async def _handle_conversational(self, session, message, category, classify_parse_ms, selected_id=None,
+                                   selected_position=None):
         # See the matching comment in _handle_search_like: captured before the
         # user-turn _append_history call below, which writes via a separately-
         # fetched row and doesn't mutate this in-memory `session`.
         history = session.history
 
         await _append_history(session, "user", message)
-        selected_movie = await _load_selected_movie(selected_id) if selected_id is not None else None
+        selected_movie = None
+        if selected_id is not None:
+            try:
+                selected_movie = await _load_selected_movie(selected_id)
+            except Exception:
+                # The card facts are an extra; answer from the history facts instead.
+                logger.warning("failed to load the selected movie %s", selected_id, exc_info=True)
 
         async def event_stream():
             yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
@@ -556,6 +565,7 @@ class ChatView(View):
             system_prompt = CLARIFY_SYSTEM_PROMPT if category == "clarify" else CONVERSATIONAL_SYSTEM_PROMPT
             async for token in astream_conversational(
                 message, history, system_prompt=system_prompt, selected_movie=selected_movie,
+                selected_position=selected_position,
             ):
                 reply_parts.append(token)
                 yield _sse_event("token", {"text": token})

@@ -1779,6 +1779,10 @@ class TestCatalogYearRule:
         assert "never the calendar year" in prompt
         assert f"{2023 - settings.INTENT_RECENT_YEARS + 1}" in prompt
 
+    def test_rule_starts_a_new_sentence(self):
+        prompt = self._system_prompt(self.BOUNDS)
+        assert "else null. The catalog has films released up to 2023" in prompt
+
     def test_rule_is_absent_when_bounds_are_none(self):
         prompt = self._system_prompt(None)
         assert "never the calendar year" not in prompt
@@ -1861,6 +1865,25 @@ class TestSelectedMovieBlock:
     async def test_no_selected_movie_leaves_the_turn_untouched(self):
         assert await self._last_user_turn() == "is it good?"
 
-    def test_prompt_answers_about_the_selected_movie_only(self):
-        assert "Selected movie (full catalog facts)" in CONVERSATIONAL_SYSTEM_PROMPT
-        assert "names another film" in CONVERSATIONAL_SYSTEM_PROMPT
+    @pytest.mark.asyncio
+    async def test_block_carries_the_position_in_the_latest_list(self):
+        content = await self._last_user_turn(selected_movie=SELECTED_MOVIE, selected_position=3)
+        assert "Position: movie 3 of the latest list" in content
+
+    @pytest.mark.asyncio
+    async def test_block_omits_the_position_when_unknown(self):
+        content = await self._last_user_turn(selected_movie=SELECTED_MOVIE)
+        assert "Position:" not in content
+
+    def test_prompt_scopes_the_block_to_this_it_questions(self):
+        rule = next(
+            line for line in CONVERSATIONAL_SYSTEM_PROMPT.splitlines() if "Selected movie (full catalog facts)" in line
+        )
+        assert '"this", "it", "this one"' in rule
+        # An ordinal or comparison follow-up must go to the listed facts.
+        assert '"the second one"' in rule and '"which one is shorter?"' in rule
+        assert "(Recommended movies: ...)" in rule
+        assert "Answer about it only" not in rule
+
+    def test_classify_prompt_excludes_other_positions_from_the_note(self):
+        assert '"the second one") is not about the note' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT

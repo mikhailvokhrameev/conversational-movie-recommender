@@ -76,7 +76,7 @@ Categories (put the best match in "category"):
 
 The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the earlier messages of this conversation, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
 
-If the latest message ends with a note like "[The user is viewing movie N of the latest list: Title (year)]", that is the film the user has open. "this", "it", "this one" and "this movie" mean that film: a question about it is a "follow_up"; "more like this" is a "refinement" with that title in "reference_films". The note is context, not part of the request -- never copy it into the queries.
+If the latest message ends with a note like "[The user is viewing movie N of the latest list: Title (year)]", that is the film the user has open. "this", "it", "this one" and "this movie" mean that film: a question about it is a "follow_up"; "more like this" is a "refinement" with that title in "reference_films". A message that names another film or points to another position ("the second one") is not about the note. The note is context, not part of the request -- never copy it into the queries.
 
 ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
@@ -156,7 +156,7 @@ Rules:
 - The most recent "(Recommended movies: ...)" block in the conversation lists the movies shown to the user, with year, genres, runtime and description from our catalog. Treat those facts as the source of truth when the user asks about those movies (which is shorter, what year, what it is about)
 - Our catalog has no director, cast, awards or box-office data. If asked for a detail that is not in the listed facts, say that detail is not in your catalog data; do not state it as fact. You may add general knowledge only if you clearly mark it as such (for example "from general knowledge, not our catalog: ...")
 - If the user complains about the movies just shown (for example "they are not silent", "I told you I wanted old ones"), acknowledge the complaint. If it is about something our catalog cannot check ({unchecked}), say honestly that the catalog cannot verify it and the shown movies were not checked against it. Offer one concrete next step (for example a new search on the parts the catalog can check). Do not give a new list of movies and do not name any film that is not in the listed facts
-- If the latest user message is followed by a "Selected movie (full catalog facts)" block, the user is looking at that movie. Answer about it only, using that block, unless the question names another film
+- If the latest user message is followed by a "Selected movie (full catalog facts)" block, the user has that movie open (it is movie N of the latest list). Use that block only when the question refers to it with "this", "it", "this one" or "this movie". A question that points to another film by title or by position ("the second one", "the first one"), or that compares or ranks the listed movies ("which one is shorter?"), is answered from the "(Recommended movies: ...)" facts, not from the block
 """.format(unchecked=settings.CATALOG_UNCHECKED_TEXT)
 
 CLARIFY_SYSTEM_PROMPT = """You are a movie recommendation assistant. The user wants a movie but has not said anything to search on yet.
@@ -741,7 +741,7 @@ def _intent_payload(query: str) -> dict:
 
 # Appended to the min_release_year bullet when the catalog's bounds are known.
 CATALOG_YEAR_RULE = (
-    ' The catalog has films released up to {catalog_max_year}: for "newest", "latest" or "recent" '
+    '. The catalog has films released up to {catalog_max_year}: for "newest", "latest" or "recent" '
     "set it to {recent_min_year} (the catalog's last {recent_years} years), never the calendar year"
 )
 
@@ -1146,10 +1146,11 @@ async def aclassify_and_parse(
     return intent
 
 
-def _selected_movie_block(movie: dict) -> str:
+def _selected_movie_block(movie: dict, position: int | None = None) -> str:
     """The full catalog record of the card the user is viewing, for the current turn."""
     release_date = movie.get("release_date")
     lines = [
+        *([f"Position: movie {position} of the latest list"] if position else []),
         f"Title: {movie['serial_name']}",
         f"Year: {str(release_date)[:4] if release_date else 'unknown'}",
         f"Genres: {', '.join(movie.get('genres') or []) or 'unknown'}",
@@ -1164,17 +1165,18 @@ def _selected_movie_block(movie: dict) -> str:
 
 async def astream_conversational(
     message: str, history: list[dict] | None = None, system_prompt: str = CONVERSATIONAL_SYSTEM_PROMPT,
-    selected_movie: dict | None = None,
+    selected_movie: dict | None = None, selected_position: int | None = None,
 ):
     """Stream a conversational response (no movie search). Yields tokens.
 
     `selected_movie` is the catalog row of the card the user is viewing; its
-    facts ride on the current turn so "this"/"it" questions are answered from it.
+    facts ride on the current turn so "this"/"it" questions are answered from it;
+    `selected_position` is its 1-based place in the latest list.
     """
     history = history or []
     current_content = message
     if selected_movie:
-        current_content += f"\n\n{_selected_movie_block(selected_movie)}"
+        current_content += f"\n\n{_selected_movie_block(selected_movie, selected_position)}"
     messages = _build_chat_messages(
         history=history,
         system_prompt=system_prompt,

@@ -1216,7 +1216,7 @@ class TestSelectedMovie:
         {"role": "assistant", "content": "[[1]] a", "movie_ids": [10, 20], "movie_facts": FACTS},
     ]
 
-    async def _run(self, selected, history=None):
+    async def _run(self, selected, history=None, load=None):
         seen = {}
         session = MagicMock()
         session.session_id = "00000000-0000-0000-0000-000000000001"
@@ -1227,11 +1227,13 @@ class TestSelectedMovie:
             seen["note"] = selection_note
             return MessageIntent(category="follow_up", semantic_query=message, standalone_query=message)
 
-        async def _converse(message, history=None, system_prompt=None, selected_movie=None):
+        async def _converse(message, history=None, system_prompt=None, selected_movie=None,
+                           selected_position=None):
             seen["selected_movie"] = selected_movie
+            seen["selected_position"] = selected_position
             yield "ok"
 
-        load = AsyncMock(return_value={"serial_name": "Heat"})
+        load = load or AsyncMock(return_value={"serial_name": "Heat"})
         body = {"message": "is it good?"}
         if selected is not None:
             body["selected_tmdb_id"] = selected
@@ -1253,7 +1255,14 @@ class TestSelectedMovie:
         seen, load = await self._run(20)
         assert seen["note"] == "[The user is viewing movie 2 of the latest list: Heat (1995)]"
         assert seen["selected_movie"] == {"serial_name": "Heat"}
+        assert seen["selected_position"] == 2
         load.assert_awaited_once_with(20)
+
+    @pytest.mark.asyncio
+    async def test_load_failure_degrades_to_no_selected_movie(self):
+        seen, load = await self._run(20, load=AsyncMock(side_effect=RuntimeError("db down")))
+        load.assert_awaited_once_with(20)
+        assert seen["selected_movie"] is None
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("selected", [None, 999, "20", True])
