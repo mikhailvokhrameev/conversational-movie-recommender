@@ -43,7 +43,7 @@ reranking.rerank_candidates(query_text, scored)   [optional, GPU cross-encoder]
   v
 pipeline.apply_relevance_gate(reranked, min_score)   [off by default: min_score null]
   |   drops rerank_score < min_score and unscored candidates; skipped if the
-  |   reranker did not score the request; may leave fewer than 5, or none
+  |   reranker did not score the request; may leave fewer than the requested count (default top_n), or none
   v
 scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
   |   Greedy MMR: balance relevance vs diversity

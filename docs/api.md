@@ -79,10 +79,10 @@ filter set, "Nothing in the catalog matched that well. Try rephrasing your reque
 or loosening some of the constraints."). When the active `min_release_year` is past the
 newest film the catalog holds, the reply instead says where the catalog ends ("The catalog
 only covers films released up to <month year>, so there is nothing from <year>. Want the
-newest films it has (<first>–<last>)?"; the years come from `intent.recent_years`), and `done` -- no `blurb`, no `error`. The
+newest films it has (<first>–<last>)?"; the range is the newest `intent.recent_years` catalog years), and `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
-non-empty `movies` array can also hold fewer than 5 items; those take the
+non-empty `movies` array can also hold fewer items than requested (the `result_count`, default `diversification.top_n`); those take the
 normal explanation path.
 
 A search turn whose request names something the catalog cannot check (actors,

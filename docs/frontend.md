@@ -132,8 +132,10 @@ reply (which also clears the loading skeleton).
 Each message gets a stable numeric `id` (module-level counter) for React keys.
 
 **Card selection.** `selectMovie(messageId, movie)` records the card the user is viewing;
-`sendMessage` sends it as `selected_tmdb_id` (see [API](api.md)). `selectedTmdbIdRef`
-holds that selection and `latestListRef` the id of the latest shown list. A `movies`
+`sendMessage` sends it as `selected_tmdb_id` (see [API](api.md)). `selectedRef`
+(`{messageId, tmdbId}`) holds that selection and `latestListRef` the id of the latest
+shown list. The new carousel reports card 0 on mount, so a fresh list selects its first
+card right away. A `movies`
 event with results makes its message the latest list and resets the selection to none,
 so a card from an older list is never sent. `selectMovie` ignores calls from any other
 message. `reset` clears both refs.
@@ -172,7 +174,7 @@ when present and falls back to a film-reel SVG icon when it is null.
 **Navigation.** Left/right chevron arrows flank the deck and step the active index; the
 same step is bound to the arrow keys when the deck has focus, and to a horizontal swipe
 on touch. The index wraps in both directions, so the deck never dead-ends at either
-edge. A row of position dots under the deck shows where you are in the five results.
+edge. A row of position dots under the deck shows where you are in the results.
 
 **Description panel.** Sits under the deck and describes the *centered* movie only:
 - Title in serif (`font-display`), linking to the movie's TMDB page
