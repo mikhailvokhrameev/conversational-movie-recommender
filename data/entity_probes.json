@@ -1,0 +1,6 @@
+{
+  "_note": "Probe values for calibrating intent.resolution.<field> in params.yaml: names an LLM may produce that the catalog spells differently, or not at all. Read by `python manage.py entity_resolution_report`. Keys are the resolver names in core.ollama_client.RESOLVERS.",
+  "genres": ["sci-fi", "rom-com", "scary", "cartoon"],
+  "countries": ["USA", "Britain", "Korea", "Soviet Union", "West Germany", "Holland"],
+  "languages": ["korean", "mandarin"]
+}
