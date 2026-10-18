@@ -486,7 +486,7 @@ class TestResolveFields:
     def test_resolves_each_field_through_its_resolver(self):
         fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
         for name, fake in fakes.items():
-            fake.resolve.side_effect = lambda raw, name=name: [f"{name}:{v}" for v in raw]
+            fake.resolve.side_effect = lambda raw, field, name=name: [f"{name}:{v}" for v in raw]
         with patch.dict("core.ollama_client.RESOLVERS", fakes):
             result = _resolve_fields({
                 "genres": ["a"], "negations": ["b"], "country_inclusions": ["c"],
@@ -501,7 +501,7 @@ class TestResolveFields:
     def test_missing_or_null_fields_resolve_to_empty(self):
         fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
         for fake in fakes.values():
-            fake.resolve.side_effect = lambda raw: list(raw)
+            fake.resolve.side_effect = lambda raw, field: list(raw)
         with patch.dict("core.ollama_client.RESOLVERS", fakes):
             assert _resolve_fields({"genres": None}) == {field: [] for field in RESOLVED_FIELDS}
 
