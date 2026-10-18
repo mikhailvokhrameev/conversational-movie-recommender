@@ -85,7 +85,7 @@ a slot for `ThemeToggle`, a sun/moon icon button that flips `useTheme`'s
 ### `useChat.js` (hook)
 
 Manages chat state and SSE streaming. Returns
-`{ messages, isStreaming, sendMessage, sessionId, reset }`. `reset` aborts any
+`{ messages, isStreaming, sendMessage, selectMovie, sessionId, reset }`. `reset` aborts any
 in-flight stream and clears `messages`/`sessionId`/the session token, returning
 to the empty state; `App.jsx` wires it to `Header`'s home button.
 
@@ -130,6 +130,13 @@ message. The client needs no special case and does not read `no_match`: an empty
 reply (which also clears the loading skeleton).
 
 Each message gets a stable numeric `id` (module-level counter) for React keys.
+
+**Card selection.** `selectMovie(messageId, movie)` records the card the user is viewing;
+`sendMessage` sends it as `selected_tmdb_id` (see [API](api.md)). `selectedTmdbIdRef`
+holds that selection and `latestListRef` the id of the latest shown list. A `movies`
+event with results makes its message the latest list and resets the selection to none,
+so a card from an older list is never sent. `selectMovie` ignores calls from any other
+message. `reset` clears both refs.
 
 ### `ChatMessage.jsx`
 
@@ -180,6 +187,10 @@ edge. A row of position dots under the deck shows where you are in the five resu
      the model emitted no `[[n]]` markers at all (see [API](api.md)).
 
 Focus-visible rings in amber on the arrows, dots, and title link.
+
+**Reporting the active card.** `onActiveChange(movie)` is called with the centered movie
+whenever it changes, and once on mount for index 0 of a new list. `ChatMessage` passes it
+on as `onSelectMovie(message.id, movie)`, which feeds `useChat`'s selection.
 
 ### `ChatInput.jsx`
 

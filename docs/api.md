@@ -20,6 +20,7 @@ via Server-Sent Events.
 |-------|------|----------|-------------|-------------|
 | `message` | string | yes | 1-2000 chars, trimmed | Movie query in natural language |
 | `session_id` | UUID string | no | valid UUID v4 | Existing session to continue |
+| `selected_tmdb_id` | integer | no | a `tmdb_id` | The card the user is viewing in the carousel. Ignored unless it is one of the movies in the latest shown list (the last assistant turn with `movie_facts`). Its title is given to the classifier; on a `follow_up` turn its full catalog record is also given to the answer model |
 
 Continuing a session requires **both** `session_id` in the body **and** the
 `X-Session-Token` header (the `session_token` value returned by the previous
@@ -62,8 +63,9 @@ data: {}
 **Phase 1 (instant)**: The `movies` event fires as soon as candidates are scored.
 Contains the session UUID and session token (send both back -- `session_id` in
 the body, `session_token` as the `X-Session-Token` header -- to continue the
-session on the next request), the top-5 movie objects, the `no_match` flag, and
-the parsed intent.
+session on the next request), the movie objects (the requested count when `result_count` is
+set, clamped to `diversification.max_n`; otherwise `diversification.top_n`, 5), the
+`no_match` flag, and the parsed intent.
 
 `no_match` is `false` on every normal response. It is `true` only when
 the turn ends with no movies to show: either the relevance gate
@@ -74,7 +76,10 @@ the stream is just `movies`, one `token` event carrying a fixed short message
 naming the active hard filters ("Nothing in the catalog matches all of: released
 1950–1959, under 20 min, rating ≥ 9.0. Which one should I loosen?"; with no hard
 filter set, "Nothing in the catalog matched that well. Try rephrasing your request
-or loosening some of the constraints."), and `done` -- no `blurb`, no `error`. The
+or loosening some of the constraints."). When the active `min_release_year` is past the
+newest film the catalog holds, the reply instead says where the catalog ends ("The catalog
+only covers films released up to <month year>, so there is nothing from <year>. Want the
+newest films it has (<first>–<last>)?"; the years come from `intent.recent_years`), and `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
 non-empty `movies` array can also hold fewer than 5 items; those take the
@@ -114,14 +119,14 @@ brackets, such as `<opening line>`) are dropped from the intro and every descrip
 with the same hold-back for one split across chunks; the prompts themselves describe
 the format in words and show an example without angle brackets.
 
-**Short result under hard filters**: when fewer than `diversification.top_n` movies come
-back and at least one hard filter is active (the same list `_no_match_message` names),
+**Short result under hard filters**: when fewer than the requested count (`result_count`, or
+`diversification.top_n` when none was asked for) movies come back and at least one hard filter is active (the same list `_no_match_message` names),
 the server first emits one fixed `token` line, "Only N movies in the catalog match:
 <filters>." ("Only 1 movie in the catalog matches: <filters>." for one, e.g.
 "Only 1 movie in the catalog matches: released 1959 or earlier."),
 then the model's intro streams after it. The line is part of the `token` text, of
 `intro_final` (which keeps it ahead of the first line of the model's reply) and of the
-stored assistant turn. With `top_n` results, or no hard filter, there is no line. There is
+stored assistant turn. With the requested count of results, or no hard filter, there is no line. There is
 also no line when candidates may have been excluded (a refinement with movies already
 shown in the history window, or any turn with `reference_films`), since the shortfall
 then need not mean the catalog ran out.
@@ -400,7 +405,8 @@ these can be changed -- no environment variable overrides them.
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
 | `scoring.weights.*` | 0.4667 / 0.3333 / 0.2 | Signal weights (semantic / metadata / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
-| `diversification.top_n` | `5` | Results returned |
+| `diversification.top_n` | `5` | Results returned when the user does not ask for a count |
+| `diversification.max_n` | `10` | Upper bound on a user-requested count (intent `result_count`, e.g. "top 10"); a larger request is clamped to it. Minimum 1 |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
 | `reranking.enabled` | `true` | Cross-encoder reranking on/off |
 | `reranking.model` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |
@@ -416,6 +422,7 @@ these can be changed -- no environment variable overrides them.
 | `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |
 | `evaluation.judge_description_chars` | `300` | Description chars shown to the `evaluate_scoring --llm-judge` judge. Minimum 1 |
 | `evaluation.judge_timeout_seconds` | `30` | Per-call judge timeout; a timeout counts as a judge failure, never a substitute score |
+| `intent.recent_years` | `2` | "Newest" / "recent" means the last N catalog years, counted back from the newest year the catalog holds (not the calendar year). Minimum 1 |
 | `intent.resolution.<field>.synonyms` | see file | `genres` / `countries` / `languages`: names the catalog spells differently, mapped to a catalog value (missing targets warn and are ignored) |
 | `intent.resolution.<field>.match_threshold` | `0.5` | `genres`, `countries`: min top-1 cosine for the embedding fallback, in (0, 1]. Uncalibrated (`entity_resolution_report`) |
 | `intent.resolution.<field>.match_margin` | `0.05` | `genres`, `countries`: min top1 - top2 cosine gap, in [0, 1). Uncalibrated. The removed `intent.genre_match_threshold` fails settings |

@@ -97,11 +97,11 @@ overridable by an environment variable -- change the file and restart.
 | `embedding` | Embedding model, its Hugging Face revision, and vector dimensions |
 | `retrieval` | Candidate count, RRF constants, lexical search settings |
 | `scoring` | Signal weights (non-negative, sum to 1.0, checked at load), neutral score |
-| `diversification` | MMR top_n and lambda |
+| `diversification` | Default top_n, `max_n` (cap on a requested result count) and MMR lambda |
 | `reranking` | Cross-encoder model and revision, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
 | `session` | session TTL, LLM history replay caps |
 | `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
-| `intent` | Genre-match threshold |
+| `intent` | Entity resolution (genres, countries, languages), `recent_years` for "newest" requests |
 | `catalog` | Import and embedding batch sizes, the import vote-count floor, poster URL parts |
 
 Changing `embedding.model` or `embedding.dimensions` additionally requires a

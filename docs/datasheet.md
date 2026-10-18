@@ -86,6 +86,13 @@ the description and up to 10 keywords, and records provenance
   Italian, Spanish, Japanese and German follow far behind. Descriptions are English
   (`overview`), so non-English titles are retrieved through English summaries.
 - **Recency.** About 46% of the filtered rows are from 2010 or later (*measured*).
+- **Coverage ends 2023-09-30.** The CSV's `vote_count` snapshot froze around September
+  2023, so films released from 2024 on have `vote_count` of at most 2 and fail
+  `catalog.min_vote_count` (20). Lowering the threshold does not bring them back: only one
+  2024 film reaches 5 votes (*measured*). The recommender therefore cannot offer films
+  after that date. A "newest" request is counted back from the catalog's newest year
+  (`intent.recent_years`, 2), and a year past the end gets a no-match reply that states
+  where the catalog ends (`_no_match_message`, `core/catalog_bounds.py`).
 - **TMDB's genre taxonomy.** Only 19 coarse genres, assigned by TMDB contributors, with
   no sub-genres or tone; mood and themes are therefore carried by description text and
   keywords, not by a taxonomy.
@@ -127,6 +134,8 @@ check the terms of the export and of TMDB's API terms of use.
 
 - Owner: the repository maintainer. There is no update schedule; the catalog is a
   snapshot of the CSV and does not follow TMDB.
+- Coverage past 2023-09-30 needs a fresh CSV with a current `vote_count` snapshot; an old
+  one cannot be fixed by lowering `catalog.min_vote_count`.
 - To refresh: replace the CSV, run `import_catalog` (`--skip-existing` adds new
   titles but does not update existing rows) and `generate_embeddings`. Changing
   the import filter changes the catalog size and the popularity distribution, so
