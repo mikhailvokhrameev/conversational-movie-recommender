@@ -85,16 +85,19 @@ llm:
   # plus an assistant reply near the session.history_max_chars_per_entry cap
   # (1000 chars ~250) plus the "(Recommended: ...)" titles line (~30) plus
   # chat-template markers (~10) ~340. Heaviest call of a turn is classify+parse
-  # (the long system prompt, 4760 chars with the genre list ~1.2k):
-  # 1.2k system + 6 pairs ~2.0k + the latest set's facts block ~0.3k (see
-  # below) + current message ~0.05k + JSON reply ~0.2k = ~3.8k of 6144, ~2.3k
-  # of headroom. The explanation call is lighter (~3.3k: 0.23k system +
+  # (the long system prompt: the template is ~11.3k chars, ~11.7k rendered with
+  # the genre list ~0.2k and the year rule, so ~2.9k tokens):
+  # 2.9k system + 6 pairs ~2.0k + the latest set's facts block ~0.3k (~0.65k at
+  # the max_n=10 cap; see below) + current message ~0.05k + JSON reply ~0.2k
+  # = ~5.5k of 6144 (~5.8k with 10 movies of facts), only ~0.3-0.6k of
+  # headroom. The explanation call is lighter (~3.3k: 0.23k system +
   # history + facts + 5 movies x (~15 + 50) ~0.4k + ~0.3k answer).
   # The window is generous now, but it is NOT a hard guarantee: if both
   # entries of every pair hit the 1000-char cap a pair is ~540 tokens, history
-  # ~3.2k and classify+parse ~5.0k (~1.1k headroom); at 3.5 chars/token
-  # (titles, names and JSON tokenize worse than prose) that case is ~5.7k,
-  # inside the window but past the 90% context warning. The current message
+  # ~3.2k and classify+parse ~6.3k, past the window: history is then trimmed
+  # by the turn cap or the model sees a truncated prompt; at 3.5 chars/token
+  # (titles, names and JSON tokenize worse than prose) even the typical case
+  # nears the 90% context warning. The current message
   # has no character cap. The per-call log (`Ollama call=... prompt_tokens=`)
   # gives the measured figure: re-size from it, not from this estimate. Caveat:
   # Ollama's prompt_eval_count may count only the tokens it newly evaluated
@@ -363,8 +366,9 @@ session:
   # LATEST shown set is replayed to the model (older ones stay titles-only),
   # so this is paid once per prompt: diversification.max_n (10) x (~200 chars
   # description ~50 tokens + ~15 tokens of title/year/genres/runtime) ~0.65k
-  # tokens at the 10-movie cap (~0.33k for the default 5), which is why it is 200 and not the full TMDB overview (500+ chars
-  # would cost ~0.7k and take a third of the llm.num_ctx headroom). 200 chars is
+  # tokens at the 10-movie cap (~0.33k for the default 5), which is why it is
+  # 200 and not the full TMDB overview (500+ chars would cost ~0.7k and take a
+  # third of the llm.num_ctx headroom). 200 chars is
   # enough for a follow-up like "what is the second one about?" to be answered
   # from the catalog, not from the model's memory. This is a storage-time cap:
   # lowering it only affects turns stored afterwards. Minimum 1.
