@@ -169,8 +169,12 @@ window is capped by `session.history_max_turns` (6 user/assistant pairs) and
 `session.history_max_chars_per_entry` (1000) in `params.yaml` (both minimum 1 --
 `settings.py` refuses to load a smaller value, so 0 never means "unlimited"), and every
 Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived
-session's prompt stays bounded. The heaviest call, classify+parse, measured mean ~2.7k / max ~4.0k prompt tokens (per-call log, GPU box, before the year rule, result_count, selected-card block, up-to-10-movie facts and unverified-conditions additions); after them it is expected at ~4.8k at the heavy end (an estimate, to be re-measured on the GPU run), ~1.3k of headroom in 6144. The derivation is in the `llm.num_ctx` comment in `params.yaml`; the logged
-`prompt_tokens` (below) is the measured figure (it may count only newly evaluated
+session's prompt stays bounded. The heaviest call, classify+parse, measured mean ~2.7k / max
+~4.0k prompt tokens (per-call log, GPU box, before the year rule, result_count,
+selected-card block, up-to-10-movie facts and unverified-conditions additions); after them
+it is expected at ~4.8k at the heavy end (an estimate, to be re-measured on the GPU run),
+~1.3k of headroom in 6144. The derivation is in the `llm.num_ctx` comment in `params.yaml`;
+the logged `prompt_tokens` (below) is the measured figure (it may count only newly evaluated
 tokens when Ollama reuses a cached prompt prefix, so read it from a cold call). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start (dropping the system prompt and oldest turns
 first) with no error. All calls must use the same `num_ctx` (one helper,
