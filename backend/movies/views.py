@@ -223,6 +223,36 @@ def _append_history(session: ChatSession, role: str, content: str,
 
 
 @sync_to_async(thread_sensitive=False)
+def _load_selected_movie(tmdb_id: int) -> dict | None:
+    """Full catalog record of the card the user is viewing, or None."""
+    return Movie.objects.filter(tmdb_id=tmdb_id).values(
+        "serial_name", "description", "release_date", "genres", "runtime",
+        "vote_average", "country", "original_language",
+    ).first()
+
+
+def _selection(selected_tmdb_id, history: list[dict]) -> tuple[int | None, str | None]:
+    """The client-reported card, kept only if it is one of the movies in the
+    latest recommendation (the last assistant entry with movie_facts); anything
+    else is ignored. Returns (tmdb_id, note for the classifier)."""
+    if type(selected_tmdb_id) is not int:
+        return None, None
+    latest = next(
+        (e for e in reversed(history) if e.get("role") == "assistant" and e.get("movie_facts")), None,
+    )
+    ids = (latest or {}).get("movie_ids") or []
+    facts = (latest or {}).get("movie_facts") or []
+    if selected_tmdb_id not in ids or ids.index(selected_tmdb_id) >= len(facts):
+        return None, None
+    position = ids.index(selected_tmdb_id)
+    fact = facts[position]
+    year = f" ({fact['year']})" if fact.get("year") else ""
+    return selected_tmdb_id, (
+        f"[The user is viewing movie {position + 1} of the latest list: {fact['title']}{year}]"
+    )
+
+
+@sync_to_async(thread_sensitive=False)
 def _generate_and_score(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
     """Async wrapper over `core.pipeline.generate_and_score` -- the same function
     `evaluate_scoring` runs, so what is evaluated is what ships."""
@@ -273,14 +303,18 @@ class ChatView(View):
             token = request.headers.get("X-Session-Token", "")
             session = await _get_or_create_session(session_id, token)
             t0 = time.perf_counter()
-            intent = await aclassify_and_parse(message, session.history)
+            selected_id, selection_note = _selection(body.get("selected_tmdb_id"), session.history)
+            intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
             logger.exception("ChatView classification error")
             return JsonResponse({"error": "internal error"}, status=500)
 
         if intent.category in ("follow_up", "general_chat", "clarify"):
-            return await self._handle_conversational(session, message, intent.category, classify_parse_ms)
+            return await self._handle_conversational(
+                session, message, intent.category, classify_parse_ms,
+                selected_id=selected_id if intent.category == "follow_up" else None,
+            )
         else:
             return await self._handle_search_like(session, message, intent, classify_parse_ms)
 
@@ -506,20 +540,23 @@ class ChatView(View):
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    async def _handle_conversational(self, session, message, category, classify_parse_ms):
+    async def _handle_conversational(self, session, message, category, classify_parse_ms, selected_id=None):
         # See the matching comment in _handle_search_like: captured before the
         # user-turn _append_history call below, which writes via a separately-
         # fetched row and doesn't mutate this in-memory `session`.
         history = session.history
 
         await _append_history(session, "user", message)
+        selected_movie = await _load_selected_movie(selected_id) if selected_id is not None else None
 
         async def event_stream():
             yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
             t_explain = time.perf_counter()
             reply_parts = []
             system_prompt = CLARIFY_SYSTEM_PROMPT if category == "clarify" else CONVERSATIONAL_SYSTEM_PROMPT
-            async for token in astream_conversational(message, history, system_prompt=system_prompt):
+            async for token in astream_conversational(
+                message, history, system_prompt=system_prompt, selected_movie=selected_movie,
+            ):
                 reply_parts.append(token)
                 yield _sse_event("token", {"text": token})
             explain_ms = (time.perf_counter() - t_explain) * 1000

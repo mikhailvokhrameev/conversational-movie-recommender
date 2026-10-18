@@ -8,7 +8,7 @@ import ChatInput from './components/ChatInput'
 import WelcomeScreen from './components/WelcomeScreen'
 
 export default function App() {
-  const { messages, isStreaming, sendMessage, reset } = useChat()
+  const { messages, isStreaming, sendMessage, selectMovie, reset } = useChat()
   const { theme, toggle: toggleTheme } = useTheme()
   const scrollRef = useRef(null)
   const isEmpty = messages.length === 0
@@ -40,6 +40,7 @@ export default function App() {
                 message={msg}
                 isStreaming={isStreaming}
                 isLast={i === messages.length - 1}
+                onSelectMovie={selectMovie}
               />
             ))}
           </div>

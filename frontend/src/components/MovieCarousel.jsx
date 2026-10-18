@@ -77,12 +77,14 @@ const ARROW_CLASS =
   'disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-ink disabled:active:scale-100 ' +
   'focus-visible:outline-2 focus-visible:outline-amber focus-visible:outline-offset-2 rounded-md'
 
-export default function MovieCarousel({ movies, descriptions, isStreaming }) {
+export default function MovieCarousel({ movies, descriptions, isStreaming, onActiveChange }) {
   const [active, setActive] = useState(0)
   const [announcement, setAnnouncement] = useState('')
   const pointerRef = useRef(null)
   const swipedRef = useRef(false)
   const announcedRef = useRef(false)
+  const onActiveChangeRef = useRef(onActiveChange)
+  onActiveChangeRef.current = onActiveChange
 
   const count = movies?.length ?? 0
   const safeIndex = count > 0 ? Math.min(active, count - 1) : 0
@@ -100,6 +102,11 @@ export default function MovieCarousel({ movies, descriptions, isStreaming }) {
 
   const activeMovie = count > 0 ? movies[safeIndex] : null
   const activeTitle = activeMovie?.serial_name ?? ''
+
+  /* Reports the card in view (also on mount, i.e. index 0 of a new list) so the chat can say what "this" is. */
+  useEffect(() => {
+    if (activeMovie) onActiveChangeRef.current?.(activeMovie)
+  }, [activeMovie])
 
   useEffect(() => {
     if (!announcedRef.current) {

@@ -21,7 +21,7 @@ def _mock_classify_and_parse(category, semantic_query="", standalone_query="", *
         standalone_query=standalone_query or semantic_query, **filters,
     )
 
-    async def _classify(message, history=None):
+    async def _classify(message, history=None, selection_note=None):
         return intent
     return _classify
 
@@ -778,7 +778,7 @@ class TestUnsupportedConstraintsAndRelaxation:
             "/api/chat/", data=json.dumps({"message": "msg"}), content_type="application/json",
         )
 
-        async def _classify(message, history=None):
+        async def _classify(message, history=None, selection_note=None):
             return intent
 
         with patch("movies.views._get_or_create_session", AsyncMock(return_value=self._session(history))), \
@@ -1205,3 +1205,71 @@ class TestNoMatchMessage:
 
     def test_no_hard_filters_falls_back_to_the_generic_message(self):
         assert _no_match_message({"genres": ["Drama"], "mood": "sad"}) == NO_MATCH_MESSAGE
+
+
+class TestSelectedMovie:
+    """No DB: session, history writers and the Movie lookup are patched."""
+
+    FACTS = [{"title": "Alien", "year": 1979}, {"title": "Heat", "year": 1995}]
+    HISTORY = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "[[1]] a", "movie_ids": [10, 20], "movie_facts": FACTS},
+    ]
+
+    async def _run(self, selected, history=None):
+        seen = {}
+        session = MagicMock()
+        session.session_id = "00000000-0000-0000-0000-000000000001"
+        session.session_token = "token"
+        session.history = list(self.HISTORY if history is None else history)
+
+        async def _classify(message, history=None, selection_note=None):
+            seen["note"] = selection_note
+            return MessageIntent(category="follow_up", semantic_query=message, standalone_query=message)
+
+        async def _converse(message, history=None, system_prompt=None, selected_movie=None):
+            seen["selected_movie"] = selected_movie
+            yield "ok"
+
+        load = AsyncMock(return_value={"serial_name": "Heat"})
+        body = {"message": "is it good?"}
+        if selected is not None:
+            body["selected_tmdb_id"] = selected
+        request = AsyncRequestFactory().post(
+            "/api/chat/", data=json.dumps(body), content_type="application/json",
+        )
+        with patch("movies.views._get_or_create_session", AsyncMock(return_value=session)), \
+             patch("movies.views.aclassify_and_parse", _classify), \
+             patch("movies.views._load_selected_movie", load), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views.astream_conversational", _converse):
+            response = await ChatView.as_view()(request)
+            async for _ in response.streaming_content:
+                pass
+        return seen, load
+
+    @pytest.mark.asyncio
+    async def test_valid_selection_reaches_classify_and_conversational(self):
+        seen, load = await self._run(20)
+        assert seen["note"] == "[The user is viewing movie 2 of the latest list: Heat (1995)]"
+        assert seen["selected_movie"] == {"serial_name": "Heat"}
+        load.assert_awaited_once_with(20)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("selected", [None, 999, "20", True])
+    async def test_invalid_or_missing_selection_is_ignored(self, selected):
+        seen, load = await self._run(selected)
+        assert seen["note"] is None
+        assert seen["selected_movie"] is None
+        load.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_selection_must_come_from_the_latest_assistant_entry_with_facts(self):
+        history = self.HISTORY + [{"role": "user", "content": "thanks"}, {"role": "assistant", "content": "np"}]
+        seen, _ = await self._run(20, history)
+        assert seen["note"] is not None
+        later = self.HISTORY + [
+            {"role": "assistant", "content": "[[1]] b", "movie_ids": [30], "movie_facts": [{"title": "Up", "year": 2009}]},
+        ]
+        seen, _ = await self._run(20, later)
+        assert seen["note"] is None

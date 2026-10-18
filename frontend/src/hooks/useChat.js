@@ -9,6 +9,13 @@ export function useChat() {
   const [sessionId, setSessionId] = useState(null)
   const abortRef = useRef(null)
   const sessionTokenRef = useRef(null)
+  // The card in view in the carousel the user last looked at; the server
+  // ignores it unless it belongs to the latest shown list.
+  const selectedRef = useRef({ messageId: null, tmdbId: null })
+
+  const selectMovie = useCallback((messageId, movie) => {
+    selectedRef.current = { messageId, tmdbId: movie?.tmdb_id ?? null }
+  }, [])
 
   const sendMessage = useCallback(async (text) => {
     if (!text.trim() || isStreaming) return
@@ -38,7 +45,11 @@ export function useChat() {
       const response = await fetch(API_URL, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ message: text, session_id: sessionId }),
+        body: JSON.stringify({
+          message: text,
+          session_id: sessionId,
+          selected_tmdb_id: selectedRef.current.tmdbId,
+        }),
         signal: controller.signal,
       })
 
@@ -92,10 +103,11 @@ export function useChat() {
     setMessages([])
     setSessionId(null)
     sessionTokenRef.current = null
+    selectedRef.current = { messageId: null, tmdbId: null }
     setIsStreaming(false)
   }, [])
 
-  return { messages, isStreaming, sendMessage, sessionId, reset }
+  return { messages, isStreaming, sendMessage, selectMovie, sessionId, reset }
 }
 
 function handleSSEEvent(event, data, setMessages, setSessionId, sessionTokenRef) {

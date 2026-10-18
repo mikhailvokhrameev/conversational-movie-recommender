@@ -1801,3 +1801,66 @@ class TestCatalogYearRule:
             await aclassify_and_parse("newest movies")
         sent = mock_client.post.call_args.kwargs["json"]["messages"][0]["content"]
         assert "up to 2023" in sent
+
+
+SELECTED_MOVIE = {
+    "serial_name": "Heat", "release_date": "1995-12-15", "genres": ["Crime", "Drama"], "runtime": 170,
+    "vote_average": 7.9, "country": ["United States of America"], "original_language": "en",
+    "description": "A group of professional bank robbers start to feel the heat from police.",
+}
+
+
+class TestSelectionNote:
+    def test_note_is_appended_to_the_current_user_message(self):
+        note = "[The user is viewing movie 2 of the latest list: Heat (1995)]"
+        payload = _classify_and_parse_payload("is it good?", [], selection_note=note)
+        assert payload["messages"][-1] == {"role": "user", "content": f"is it good?\n\n{note}"}
+
+    def test_no_note_leaves_the_message_untouched(self):
+        payload = _classify_and_parse_payload("is it good?", [])
+        assert payload["messages"][-1] == {"role": "user", "content": "is it good?"}
+
+    @pytest.mark.asyncio
+    async def test_aclassify_passes_the_note_to_the_request(self):
+        content = json.dumps({"category": "follow_up", "semantic_query": "is it good?"})
+        mock_client = _mock_ollama_responses(content)
+        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+            await aclassify_and_parse("is it good?", [], selection_note="[NOTE]")
+        sent = mock_client.post.call_args.kwargs["json"]["messages"]
+        assert sent[-1]["content"].endswith("[NOTE]")
+
+    def test_prompt_maps_this_to_the_selected_film(self):
+        assert "viewing movie" in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        assert '"more like this"' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        assert all("result_count" in ex for ex in _prompt_examples())
+
+
+class TestSelectedMovieBlock:
+    async def _last_user_turn(self, **kwargs):
+        sent = {}
+
+        def _capture(messages):
+            sent["messages"] = messages
+            raise httpx.ConnectError("no ollama in tests")
+
+        with patch("core.ollama_client._stream_chat_payload", side_effect=_capture):
+            [t async for t in astream_conversational("is it good?", [], **kwargs)]
+        return sent["messages"][-1]["content"]
+
+    @pytest.mark.asyncio
+    async def test_block_carries_the_full_catalog_facts(self):
+        content = await self._last_user_turn(selected_movie=SELECTED_MOVIE)
+        assert content.startswith("is it good?")
+        assert "Selected movie (full catalog facts)" in content
+        for fact in ("Heat", "1995", "Crime, Drama", "170", "7.9", "United States of America", "en",
+                     SELECTED_MOVIE["description"]):
+            assert fact in content
+
+    @pytest.mark.asyncio
+    async def test_no_selected_movie_leaves_the_turn_untouched(self):
+        assert await self._last_user_turn() == "is it good?"
+
+    def test_prompt_answers_about_the_selected_movie_only(self):
+        assert "Selected movie (full catalog facts)" in CONVERSATIONAL_SYSTEM_PROMPT
+        assert "names another film" in CONVERSATIONAL_SYSTEM_PROMPT

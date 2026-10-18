@@ -36,7 +36,7 @@ function RetrievalSkeleton() {
   )
 }
 
-export default function ChatMessage({ message, isStreaming, isLast }) {
+export default function ChatMessage({ message, isStreaming, isLast, onSelectMovie }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end">
@@ -72,6 +72,7 @@ export default function ChatMessage({ message, isStreaming, isLast }) {
           movies={message.movies}
           descriptions={message.descriptions}
           isStreaming={isStreaming && isLast}
+          onActiveChange={(movie) => onSelectMovie?.(message.id, movie)}
         />
       )}
 

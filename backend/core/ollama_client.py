@@ -76,6 +76,8 @@ Categories (put the best match in "category"):
 
 The latest message can be incomplete on its own -- a short reply, a pronoun, a bare agreement like "sure" or "yes". Interpret it in light of the earlier messages of this conversation, and fill in field values (a referenced film, a genre, etc.) from that history when the latest message alone doesn't have them.
 
+If the latest message ends with a note like "[The user is viewing movie N of the latest list: Title (year)]", that is the film the user has open. "this", "it", "this one" and "this movie" mean that film: a question about it is a "follow_up"; "more like this" is a "refinement" with that title in "reference_films". The note is context, not part of the request -- never copy it into the queries.
+
 ALLOWED GENRES (use ONLY these exact strings, copy-paste):
 {genres}
 
@@ -154,6 +156,7 @@ Rules:
 - The most recent "(Recommended movies: ...)" block in the conversation lists the movies shown to the user, with year, genres, runtime and description from our catalog. Treat those facts as the source of truth when the user asks about those movies (which is shorter, what year, what it is about)
 - Our catalog has no director, cast, awards or box-office data. If asked for a detail that is not in the listed facts, say that detail is not in your catalog data; do not state it as fact. You may add general knowledge only if you clearly mark it as such (for example "from general knowledge, not our catalog: ...")
 - If the user complains about the movies just shown (for example "they are not silent", "I told you I wanted old ones"), acknowledge the complaint. If it is about something our catalog cannot check ({unchecked}), say honestly that the catalog cannot verify it and the shown movies were not checked against it. Offer one concrete next step (for example a new search on the parts the catalog can check). Do not give a new list of movies and do not name any film that is not in the listed facts
+- If the latest user message is followed by a "Selected movie (full catalog facts)" block, the user is looking at that movie. Answer about it only, using that block, unless the question names another film
 """.format(unchecked=settings.CATALOG_UNCHECKED_TEXT)
 
 CLARIFY_SYSTEM_PROMPT = """You are a movie recommendation assistant. The user wants a movie but has not said anything to search on yet.
@@ -755,13 +758,16 @@ def _catalog_year_rule(year_bounds: tuple | None) -> str:
 
 
 def _classify_and_parse_payload(
-    message: str, history: list[dict], repair_note: str | None = None, year_bounds: tuple | None = None
+    message: str, history: list[dict], repair_note: str | None = None, year_bounds: tuple | None = None,
+    selection_note: str | None = None,
 ) -> dict:
     system_prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT.format(
         genres=", ".join(CATALOG_GENRES), unchecked=settings.CATALOG_UNCHECKED_TEXT,
         year_rule=_catalog_year_rule(year_bounds),
     )
     current_content = message
+    if selection_note:
+        current_content += f"\n\n{selection_note}"
     if repair_note:
         current_content += (
             f"\n\nYour previous response was invalid: {repair_note}\n"
@@ -1068,14 +1074,16 @@ def is_available() -> bool:
 
 
 async def _request_classify_and_parse(
-    message: str, history: list[dict], repair_note: str | None = None
+    message: str, history: list[dict], repair_note: str | None = None, selection_note: str | None = None
 ) -> dict:
     year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
     async with httpx.AsyncClient() as client:
         await _alog_model_digest_once(client)
         response = await client.post(
             f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json=_classify_and_parse_payload(message, history, repair_note=repair_note, year_bounds=year_bounds),
+            json=_classify_and_parse_payload(
+                message, history, repair_note=repair_note, year_bounds=year_bounds, selection_note=selection_note,
+            ),
             timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
         )
         response.raise_for_status()
@@ -1088,7 +1096,9 @@ def _fallback_message_intent(message: str) -> MessageIntent:
     return MessageIntent(category="new_search", semantic_query=message, standalone_query=message)
 
 
-async def aclassify_and_parse(message: str, history: list[dict] | None = None) -> MessageIntent:
+async def aclassify_and_parse(
+    message: str, history: list[dict] | None = None, selection_note: str | None = None,
+) -> MessageIntent:
     """Classify the message and extract structured intent in a single call.
 
     Replaces the old two-call aclassify_message + aparse_intent sequence used
@@ -1098,13 +1108,14 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     "category"), retries once with the validation error fed back to the
     model; a request-level failure (network/HTTP/JSON) skips the retry and
     falls back immediately, since repairing a message that never arrived
-    can't help. A second failure of any kind falls back to
+    can't help. `selection_note` is appended to the user message (the card the
+    user is viewing, so "this"/"it" resolve). A second failure of any kind falls back to
     category="new_search" with empty filters, same as the old classify
     default -- semantic search still works without parsed intent.
     """
     history = history or []
     try:
-        raw = await _request_classify_and_parse(message, history)
+        raw = await _request_classify_and_parse(message, history, selection_note=selection_note)
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Classify+parse request failed, using fallback: {e}")
         return _fallback_message_intent(message)
@@ -1114,7 +1125,9 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     except ValidationError as e:
         logger.warning(f"Classify+parse validation failed, retrying with repair: {e}")
         try:
-            repaired = await _request_classify_and_parse(message, history, repair_note=str(e))
+            repaired = await _request_classify_and_parse(
+                message, history, repair_note=str(e), selection_note=selection_note,
+            )
             intent = MessageIntent.model_validate(repaired)
         except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValidationError) as e2:
             logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
@@ -1133,15 +1146,39 @@ async def aclassify_and_parse(message: str, history: list[dict] | None = None) -
     return intent
 
 
+def _selected_movie_block(movie: dict) -> str:
+    """The full catalog record of the card the user is viewing, for the current turn."""
+    release_date = movie.get("release_date")
+    lines = [
+        f"Title: {movie['serial_name']}",
+        f"Year: {str(release_date)[:4] if release_date else 'unknown'}",
+        f"Genres: {', '.join(movie.get('genres') or []) or 'unknown'}",
+        f"Runtime: {movie['runtime']} min" if movie.get("runtime") else "Runtime: unknown",
+        f"Rating: {movie.get('vote_average')}",
+        f"Countries: {', '.join(movie.get('country') or []) or 'unknown'}",
+        f"Original language: {movie.get('original_language') or 'unknown'}",
+        f"Overview: {movie.get('description') or 'not available'}",
+    ]
+    return "Selected movie (full catalog facts):\n" + "\n".join(lines)
+
+
 async def astream_conversational(
     message: str, history: list[dict] | None = None, system_prompt: str = CONVERSATIONAL_SYSTEM_PROMPT,
+    selected_movie: dict | None = None,
 ):
-    """Stream a conversational response (no movie search). Yields tokens."""
+    """Stream a conversational response (no movie search). Yields tokens.
+
+    `selected_movie` is the catalog row of the card the user is viewing; its
+    facts ride on the current turn so "this"/"it" questions are answered from it.
+    """
     history = history or []
+    current_content = message
+    if selected_movie:
+        current_content += f"\n\n{_selected_movie_block(selected_movie)}"
     messages = _build_chat_messages(
         history=history,
         system_prompt=system_prompt,
-        current_content=message,
+        current_content=current_content,
         max_turns=settings.SESSION_HISTORY_MAX_TURNS,
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
