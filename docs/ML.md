@@ -369,7 +369,8 @@ turn's "yes" searches even if the classifier lists them again.
   and `expected: "ask"` queries are not. Mark `label` 1 (relevant to
   `ranked_query`) or 0; blank rows are skipped. The reader accepts a CSV with or
   without the `expected` column (it ignores it) and with a spreadsheet's BOM, and
-  refuses a labelled row whose `rerank_score` is not a finite number in [0, 1]. `evaluate_scoring --label-report labels.csv` needs no database or
+  refuses a labelled row whose `rerank_score` is not a finite number in [0, 1].
+  `evaluate_scoring --label-report labels.csv` needs no database or
   model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
   relative margins below each query's best score (`GATE_REPORT_MARGINS`), the kept
   precision, the share of relevant movies dropped and the share of queries
@@ -394,7 +395,9 @@ turn's "yes" searches even if the classifier lists them again.
   `unanswerable_considered`). They stay out of the hit/non-hit distributions;
   `expected: "ask"` queries are left out of the report entirely. The command never
   writes `params.yaml`; set the chosen value by hand, then report on the `test`
-  split (`counters.empty_results` counts gated-empty queries in a normal run).
+  split (`counters.empty_results` counts gated-empty queries in a normal run, over the
+  answerable `expected: "results"` queries only; `expected_empty_correct` is the
+  benefit side).
 - *2026-10-17 run: gate stays off.* On the dev split (oracle) the report had 6 hits
   against 129 non-hits, with scores inside [0, 1]. A threshold of 0.01 drops no hits
   and 14% of non-hits; 0.02 empties 7.4% of queries. Six hits are too few to choose
@@ -480,7 +483,7 @@ It is built so that a number it prints measures what ships:
 
 ### Golden Set
 
-`data/golden_set.json`: ~30 queries, each with `id`, `query`, `split`
+`data/golden_set.json`: 52 queries, each with `id`, `query`, `split`
 (`dev`/`test`), and `relevant` -- movie references as `{"tmdb_id": int}` or
 `{"title": str, "year": int}`, optionally with `grade` (1 relevant, 2 highly
 relevant; default 1). Optional fields: `negated_genres` (for the
@@ -509,7 +512,10 @@ ranking. They are counted instead: `expected_empty`/`expected_empty_correct`,
 no parse to ask from, so it skips `ask` entries and counts them in
 `skipped_ask_entries`. With the gate off (`min_score: null`, or the ungated
 `--gate-report`/`--label-export` runs) an `empty` entry will usually be
-answered wrongly -- that is the gap the gate calibration prices. The shipped
+answered wrongly -- that is the gap the gate calibration prices. In `e2e`, an
+`empty` entry whose parse routes to a question or a non-search category scores
+as not-correct (it is still searched). With `--llm-judge` only `results` entries
+are judged. The shipped
 `none-*` entries ask for things the catalog (ends 2023-09-30) cannot hold,
 named without a year so the year rule does not route them, or a premise no film
 has; the `ask-*` entries name a director, an actor or an award.

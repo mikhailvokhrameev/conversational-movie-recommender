@@ -152,6 +152,11 @@ def _json_default(value):
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
 
+def entry_expected(entry: dict) -> str:
+    """What a golden-set entry expects: "results", "empty" or "ask"."""
+    return entry.get("expected", DEFAULT_EXPECTED)
+
+
 @dataclass
 class PreparedQuery:
     """Everything about a golden entry that does not depend on the scoring
@@ -182,7 +187,7 @@ class PreparedQuery:
 
     @property
     def expected(self) -> str:
-        return self.entry.get("expected", DEFAULT_EXPECTED)
+        return entry_expected(self.entry)
 
 
 class Command(BaseCommand):
@@ -428,7 +433,7 @@ class Command(BaseCommand):
             unsupported = None
             intent = dict(entry.get("oracle_intent", {}))
 
-        if entry.get("expected", DEFAULT_EXPECTED) == "results":
+        if entry_expected(entry) == "results":
             grades, unresolved = resolve_references(entry["relevant"])
         else:
             grades, unresolved = {}, []
@@ -494,7 +499,9 @@ class Command(BaseCommand):
         negation_violations = sum(1 for m in top if negated & set(m.get("genres", [])))
 
         judge_scores = None
-        if use_llm:
+        # Only answerable entries have scores the judge feeds; an "empty"/"ask"
+        # entry's are dropped, so judging them would be wasted calls.
+        if use_llm and p.expected == "results":
             judge_query = self._judge_query(entry)
             judge_scores = [llm_relevance_score(judge_query, m) for m in top]
 
@@ -592,7 +599,7 @@ class Command(BaseCommand):
             "unscorable_queries": sum(1 for q in queries if q["unscorable"]),
             "unresolved_refs": sum(len(p.unresolved) for p in prepared),
             "judge_failures": sum(q.get("judge_failures", 0) for q in queries),
-            "empty_results": sum(1 for q in queries if not q["recommended"]),
+            "empty_results": sum(1 for q in answerable if not q["recommended"]),
             "misclassified": sum(1 for p in prepared if p.misclassified),
             "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
             # Queries production would answer with a question and no movies.

@@ -589,6 +589,22 @@ ASKING = MessageIntent(
 class TestExpectedEmptyAndAsk:
     """Entries whose right answer is no recommendations or a question."""
 
+    def test_only_answerable_entries_are_judged(self, tmp_path):
+        run = _Run(tmp_path, [_entry("q1"), _empty("n1"), _ask("a1")],
+                   judge=[5, 4], intent=ASKING)
+        record = run("--llm-judge", "--k", "2")
+        by_id = {q["id"]: q for q in record["queries"]}
+        assert run.judge.call_count == 2
+        assert "judge_scores" in by_id["q1"]
+        assert "judge_scores" not in by_id["n1"] and "judge_scores" not in by_id["a1"]
+        assert record["counters"]["judge_failures"] == 0
+
+    def test_empty_results_counts_answerable_queries_only(self, tmp_path):
+        run = _Run(tmp_path, [_entry("q1"), _empty("n1")], movies=[])
+        record = run("--intent", "oracle")
+        assert record["counters"]["empty_results"] == 1
+        assert record["counters"]["expected_empty_correct"] == 1
+
     def test_e2e_outcomes_and_counters(self, tmp_path):
         run = _Run(tmp_path, [_entry(), _empty(), _ask()], intent=ASKING, movies=[])
         record = run()
