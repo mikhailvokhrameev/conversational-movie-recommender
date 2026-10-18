@@ -588,7 +588,12 @@ class TestChatSSEEmptyReply:
         # The cards were shown, so the turn is kept (empty content + movies) for
         # the LLM context to know what was recommended.
         assistant_entries = [e for e in session.history if e["role"] == "assistant"]
-        assert assistant_entries == [{"role": "assistant", "content": "", "movies": ["Test Film"]}]
+        assert len(assistant_entries) == 1
+        entry = assistant_entries[0]
+        assert entry["content"] == ""
+        assert entry["movies"] == ["Test Film"]
+        assert entry["movie_ids"] == [1]
+        assert [fact["title"] for fact in entry["movie_facts"]] == ["Test Film"]
 
     @pytest.mark.asyncio
     async def test_whitespace_only_conversational_reply_is_not_stored(self):

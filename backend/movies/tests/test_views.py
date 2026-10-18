@@ -289,8 +289,7 @@ class TestSaveSessionHistoryEntry:
         session = await ChatSession.objects.acreate()
 
         await _save_session(
-            session, "q", {}, [0.1] * 1024,
-            [{"serial_name": "Test Film"}], category="new_search",
+            session, "q", {}, [{"serial_name": "Test Film"}],
         )
         await session.arefresh_from_db()
 

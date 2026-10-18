@@ -24,9 +24,7 @@ class TestSessionTokenBackfillMigration:
             OldChatSession = executor.loader.project_state(
                 (APP, "0001_initial")
             ).apps.get_model(APP, "ChatSession")
-            OldChatSession.objects.create()
-            OldChatSession.objects.create()
-            OldChatSession.objects.create()
+            created_ids = [OldChatSession.objects.create().pk for _ in range(3)]
 
             executor = MigrationExecutor(connection)
             executor.migrate([(APP, "0002_chatsession_session_token")])
@@ -35,7 +33,11 @@ class TestSessionTokenBackfillMigration:
             NewChatSession = executor.loader.project_state(
                 (APP, "0002_chatsession_session_token")
             ).apps.get_model(APP, "ChatSession")
-            tokens = list(NewChatSession.objects.values_list("session_token", flat=True))
+            # Filter to the rows made here: other tests' sessions may share the table.
+            tokens = list(
+                NewChatSession.objects.filter(pk__in=created_ids)
+                .values_list("session_token", flat=True)
+            )
 
             assert len(tokens) == 3
             assert all(tokens)
