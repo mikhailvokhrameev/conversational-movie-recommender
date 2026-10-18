@@ -94,7 +94,7 @@ llm:
   # history + facts + 5 movies x (~15 + 50) ~0.4k + ~0.3k answer).
   # The window is generous now, but it is NOT a hard guarantee: if both
   # entries of every pair hit the 1000-char cap a pair is ~540 tokens, history
-  # ~3.2k and classify+parse ~6.3k, past the window: history is then trimmed
+  # ~3.2k and classify+parse ~6.6k, past the window: history is then trimmed
   # by the turn cap or the model sees a truncated prompt; at 3.5 chars/token
   # (titles, names and JSON tokenize worse than prose) even the typical case
   # nears the 90% context warning. The current message
