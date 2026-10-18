@@ -77,32 +77,31 @@ llm:
   # sync/evaluation path. It is set explicitly so the window is a known,
   # budgeted size rather than whatever the Ollama default happens to be.
   #
-  # Why 6144 (re-derived for English text; the first figure here was a
-  # Russian estimate). ASSUMPTION: ~4 characters per token for English prose
-  # on Qwen-family tokenizers (Russian is ~2-2.5, which is why the old
-  # numbers were about twice these). One unit throughout: tokens per
-  # user+assistant PAIR of replayed history. A pair is a short user turn (~50)
-  # plus an assistant reply near the session.history_max_chars_per_entry cap
-  # (1000 chars ~250) plus the "(Recommended: ...)" titles line (~30) plus
-  # chat-template markers (~10) ~340. Heaviest call of a turn is classify+parse
-  # (the long system prompt: the template is ~11.3k chars, ~11.7k rendered with
-  # the genre list ~0.2k and the year rule, so ~2.9k tokens):
-  # 2.9k system + 6 pairs ~2.0k + the latest set's facts block ~0.3k (~0.65k at
-  # the max_n=10 cap; see below) + current message ~0.05k + JSON reply ~0.2k
-  # = ~5.5k of 6144 (~5.8k with 10 movies of facts), only ~0.3-0.6k of
-  # headroom. The explanation call is lighter (~3.3k: 0.23k system +
-  # history + facts + 5 movies x (~15 + 50) ~0.4k + ~0.3k answer).
-  # The window is generous now, but it is NOT a hard guarantee: if both
-  # entries of every pair hit the 1000-char cap a pair is ~540 tokens, history
-  # ~3.2k and classify+parse ~6.6k, past the window: history is then trimmed
-  # by the turn cap or the model sees a truncated prompt; at 3.5 chars/token
-  # (titles, names and JSON tokenize worse than prose) even the typical case
-  # nears the 90% context warning. The current message
-  # has no character cap. The per-call log (`Ollama call=... prompt_tokens=`)
-  # gives the measured figure: re-size from it, not from this estimate. Caveat:
-  # Ollama's prompt_eval_count may count only the tokens it newly evaluated
-  # when it reuses a cached prompt prefix, so it can under-report a repeated
-  # prompt; read it from a cold call (first request after a model load).
+  # Why 6144. MEASURED (per-call `Ollama call=... prompt_tokens=` log, GPU
+  # box, BEFORE the year rule with the catalog end date, result_count,
+  # selected-card block, facts for up to max_n=10 movies and unverified
+  # conditions were added): call=classify_parse (the heaviest call; 79 calls)
+  # mean ~2.7k, max ~4.0k (min ~2.4k); call=explanation (12 calls) mean ~1.5k,
+  # max ~2.2k; call=conversational (2 calls) ~1.8k; no context-tokens warning.
+  # EXPECTED after those additions: classify_parse ~4.8k at the heavy end,
+  # leaving ~1.3k of headroom in 6144. This is an estimate, to be re-measured
+  # on the GPU run.
+  #
+  # Derivation, for sizing only (ASSUMPTION: ~4 characters per token for
+  # English prose on Qwen-family tokenizers; titles, names and JSON tokenize
+  # worse). One replayed user+assistant PAIR is ~340 tokens: a short user turn
+  # (~50) plus an assistant reply near the session.history_max_chars_per_entry
+  # cap (1000 chars ~250) plus the "(Recommended: ...)" titles line (~30) plus
+  # chat-template markers (~10); ~540 if both entries hit the cap.
+  #
+  # The window is NOT a hard guarantee: if every pair is at the cap, history
+  # alone is ~3.2k, on top of the long classify system prompt, which can pass
+  # the window; history is then trimmed by the turn cap or the model sees a
+  # truncated prompt. The current message has no character cap. Re-size from
+  # the logged prompt_tokens, not from this estimate. Caveat: Ollama's
+  # prompt_eval_count may count only the tokens it newly evaluated when it
+  # reuses a cached prompt prefix, so it can under-report a repeated prompt;
+  # read it from a cold call (first request after a model load).
   #
   # Facts block: the latest recommendation set is replayed to the model as
   # facts (session.history_movie_description_chars): 5 movies x (200 chars ~50
@@ -114,9 +113,9 @@ llm:
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
   # of extra VRAM (see the budget in the header -- on estimate it is now over
-  # 11 GB). Each 1024 tokens of window is ~0.15 GB, so with the headroom above
-  # a smaller value is the first lever if the card does not fit; measure the
-  # prompt sizes first.
+  # 11 GB). Each 1024 tokens of window is ~0.15 GB, so a smaller value is the
+  # first lever if the card does not fit, but only a modest cut fits in the
+  # ~1.3k headroom above; measure the prompt sizes first.
   #
   # Keep this ONE value for every call (structured and generation alike --
   # see temperature below). Ollama reloads the model whenever the
@@ -346,12 +345,12 @@ session:
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
-  # this bounds the prompt: with 6 pairs a heavy-use prompt (~3.8k tokens
-  # for English text, including the latest set's facts block -- see
-  # llm.num_ctx for the derivation) fits the 6144-token window with ~2.3k
-  # headroom, and the all-entries-at-the-cap case (~5.0k) still fits. The
-  # window is roomy enough that a pair or two more would fit without touching
-  # llm.num_ctx (each pair is ~0.34k typical, ~0.54k at the cap); check the
+  # this bounds the prompt: with 6 pairs the heaviest call (classify_parse)
+  # measured mean ~2.7k / max ~4.0k tokens before this branch's prompt
+  # additions, expected ~4.8k at the heavy end after them (to be re-measured
+  # on the GPU run), so ~1.3k of headroom in the 6144-token window -- see
+  # llm.num_ctx for the figures and caveats. A pair is ~0.34k typical, ~0.54k
+  # at the cap, so adding turns eats that headroom quickly; check the
   # logged prompt_tokens first, and raise llm.num_ctx with it for more
   # (paying the extra KV-cache VRAM). Minimum 1: 0 does NOT
   # mean unlimited, and settings.py refuses to load a value below 1.
