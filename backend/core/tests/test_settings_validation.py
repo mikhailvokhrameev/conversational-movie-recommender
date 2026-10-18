@@ -4,6 +4,7 @@ import pytest
 
 from recommender.settings import (
     _unchecked_text,
+    _validate_diversification,
     _validate_intent,
     _validate_logging_level,
     _validate_placeholder_max_chars,
@@ -264,3 +265,21 @@ class TestIntentResolution:
 
     def test_accepts_empty_synonyms(self):
         _validate_intent(_intent(languages={"synonyms": {}}))
+
+
+class TestDiversification:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        _validate_diversification({"top_n": settings.TOP_N, "max_n": settings.MAX_N})
+
+    def test_accepts_max_n_equal_to_top_n(self):
+        _validate_diversification({"top_n": 5, "max_n": 5})
+
+    @pytest.mark.parametrize(
+        "top_n, max_n",
+        [(5, 4), (0, 10), (-1, 10), (5, True), (True, 10), (5, 10.0), (5.0, 10), (5, "10"), (5, None)],
+    )
+    def test_rejects_bad_bounds(self, top_n, max_n):
+        with pytest.raises(ValueError, match="diversification"):
+            _validate_diversification({"top_n": top_n, "max_n": max_n})

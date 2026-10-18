@@ -286,7 +286,25 @@ _validate_score_weights(_scoring["weights"])
 SCORE_WEIGHTS = _scoring["weights"]
 NEUTRAL_SCORE = _scoring["neutral_score"]
 
+def _validate_diversification(diversification: dict) -> None:
+    """Fail at load if top_n / max_n are not integers with max_n >= top_n >= 1.
+
+    max_n is the clamp for a user-requested count, so a max_n below top_n (or a
+    non-integer) would break the result-count bounds.
+    """
+    top_n, max_n = diversification["top_n"], diversification["max_n"]
+    for name, value in (("top_n", top_n), ("max_n", max_n)):
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"params.yaml: diversification.{name} must be an integer (got {value!r}).")
+    if not max_n >= top_n >= 1:
+        raise ValueError(
+            "params.yaml: diversification must satisfy max_n >= top_n >= 1 "
+            f"(got top_n={top_n!r}, max_n={max_n!r})."
+        )
+
+
 _diversification = PARAMS["diversification"]
+_validate_diversification(_diversification)
 TOP_N = _diversification["top_n"]
 MAX_N = _diversification["max_n"]
 MMR_LAMBDA = _diversification["lambda"]
