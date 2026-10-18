@@ -51,7 +51,8 @@ export function useChat() {
         body: JSON.stringify({
           message: text,
           session_id: sessionId,
-          selected_tmdb_id: selectedRef.current.tmdbId,
+          // Left out when nothing is selected; the server reads a missing key as null.
+          ...(selectedRef.current.tmdbId != null && { selected_tmdb_id: selectedRef.current.tmdbId }),
         }),
         signal: controller.signal,
       })
