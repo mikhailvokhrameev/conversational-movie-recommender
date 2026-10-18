@@ -452,10 +452,56 @@ class TestLabelExport:
         with pytest.raises(CommandError, match="dev"):
             _Run(tmp_path, self._entries())("--label-export", str(tmp_path / "l.csv"), "--split", split)
 
-    @pytest.mark.parametrize("other", [["--sweep"], ["--gate-report"]])
+    @pytest.mark.parametrize("other", [["--sweep"], ["--gate-report"], ["--label-report", "x.csv"]])
     def test_mutually_exclusive(self, tmp_path, other):
         with pytest.raises(CommandError, match="separate"):
             _Run(tmp_path, self._entries())("--label-export", str(tmp_path / "l.csv"), *other)
+
+
+class TestLabelReport:
+    """--label-report: curves from a hand-labelled CSV; needs no DB, LLM or golden set."""
+
+    HEADER = "query_id,query,context,ranked_query,rank,tmdb_id,title,year,overview,rerank_score,golden_hit,label\n"
+
+    def _csv(self, tmp_path, lines):
+        path = tmp_path / "labelled.csv"
+        path.write_text(self.HEADER + "".join(lines), encoding="utf-8")
+        return path
+
+    @staticmethod
+    def _line(qid, score, label):
+        return f"{qid},q,,q,1,1,T,2000,o,{score},0,{label}\n"
+
+    def test_prints_both_tables_without_touching_the_db(self, tmp_path):
+        path = self._csv(tmp_path, [
+            self._line("a", 0.9, 1), self._line("a", 0.2, 0), self._line("b", 0.5, " "),
+        ])
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        text = out.getvalue()
+        assert "1 rows unlabelled, skipped" in text
+        assert "min_score" in text and "margin" in text
+        assert "never empties" in text
+
+    def test_bad_label_names_the_line(self, tmp_path):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1), self._line("a", 0.2, "yes")])
+        with pytest.raises(CommandError, match="line 3"):
+            call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
+
+    def test_missing_score_on_labelled_row_names_the_line(self, tmp_path):
+        path = self._csv(tmp_path, [self._line("a", "", 1)])
+        with pytest.raises(CommandError, match="line 2"):
+            call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
+
+    def test_missing_file(self, tmp_path):
+        with pytest.raises(CommandError, match="not found|No such"):
+            call_command("evaluate_scoring", "--label-report", str(tmp_path / "nope.csv"), stdout=StringIO())
+
+    @pytest.mark.parametrize("other", [["--sweep"], ["--gate-report"], ["--label-export", "x.csv"]])
+    def test_mutually_exclusive(self, tmp_path, other):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1)])
+        with pytest.raises(CommandError, match="separate"):
+            call_command("evaluate_scoring", "--label-report", str(path), *other, stdout=StringIO())
 
 
 class TestEmptyResults:

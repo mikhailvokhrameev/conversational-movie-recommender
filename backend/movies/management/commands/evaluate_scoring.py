@@ -10,6 +10,8 @@ Usage:
   python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
   python manage.py evaluate_scoring --intent oracle --k 10 --label-export labels.csv
                                                            # CSV of reranked dev results to hand-label
+  python manage.py evaluate_scoring --label-report labels.csv
+                                                           # threshold curves from the labelled CSV (no DB needed)
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -31,6 +33,9 @@ What makes this an honest measurement:
     the reranker saw, movie, rerank_score) for a human to mark relevant 1/0,
     because the golden lists are incomplete: an unlabelled movie that is in
     fact relevant would otherwise count against a threshold. Dev only.
+  - `--label-report` reads that CSV back and prints, per candidate absolute
+    threshold and relative margin, the kept precision and the share of
+    human-labelled relevant movies dropped. It needs no database or model.
   - Every run writes a JSON record (git sha, params.yaml hash, options,
     per-query results, counters) so a number can be traced to what produced it.
 """
@@ -57,6 +62,7 @@ from core.evaluation import (
     LABEL_EXPORT_COLUMNS,
     gate_report,
     label_export_rows,
+    label_report,
     llm_relevance_score,
 )
 from core.golden_set import (
@@ -79,7 +85,7 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat", "clarify")
 OWN_OPTIONS = (
-    "golden_set", "split", "intent", "k", "sweep", "gate_report", "label_export", "weights",
+    "golden_set", "split", "intent", "k", "sweep", "gate_report", "label_export", "label_report", "weights",
     "llm_judge", "output",
 )
 
@@ -216,6 +222,14 @@ class Command(BaseCommand):
                  "CSV for hand-labelling relevant 1/0 (dev split only; use --k 10)",
         )
         parser.add_argument(
+            "--label-report",
+            type=str,
+            default=None,
+            metavar="PATH",
+            help="Read a hand-labelled --label-export CSV and print kept precision / relevant "
+                 "dropped / queries emptied per candidate threshold and margin (needs no database)",
+        )
+        parser.add_argument(
             "--weights",
             type=str,
             default=None,
@@ -246,10 +260,15 @@ class Command(BaseCommand):
         sweep = options["sweep"]
         report_gate = options["gate_report"]
         label_export = options["label_export"]
-        if sum([sweep, report_gate, label_export is not None]) > 1:
+        label_report_path = options["label_report"]
+        if sum([sweep, report_gate, label_export is not None, label_report_path is not None]) > 1:
             raise CommandError(
-                "--sweep, --gate-report and --label-export are separate runs; pick one."
+                "--sweep, --gate-report, --label-export and --label-report are separate runs; pick one."
             )
+        if label_report_path is not None:
+            # Before anything that needs the database, Ollama or the golden set.
+            self._write_label_report(label_report(self._read_labelled_csv(Path(label_report_path))))
+            return
         dev_only = sweep or report_gate or label_export is not None
         split = options["split"] or ("dev" if dev_only else "test")
         if sweep and split != "dev":
@@ -591,6 +610,79 @@ class Command(BaseCommand):
         self.stdout.write(
             f"\nWrote {len(rows)} rows for {len(queries)} queries to {path}; mark each row's "
             "label 1 (relevant to ranked_query) or 0, then run --label-report on the file."
+        )
+
+    @staticmethod
+    def _read_labelled_csv(path: Path):
+        """Rows for `label_report`; a bad row is an error naming its CSV line."""
+        try:
+            f = open(path, newline="", encoding="utf-8")
+        except OSError as e:
+            raise CommandError(f"cannot read --label-report file {path}: {e}")
+        rows = []
+        with f:
+            reader = csv.DictReader(f)
+            missing = {"query_id", "rerank_score", "label"} - set(reader.fieldnames or ())
+            if missing:
+                raise CommandError(f"{path} is missing column(s): {', '.join(sorted(missing))}")
+            for row in reader:
+                line = reader.line_num
+                label = (row["label"] or "").strip()
+                if label == "":
+                    rows.append({"query_id": row["query_id"], "rerank_score": None, "label": None})
+                    continue
+                if label not in ("0", "1"):
+                    raise CommandError(f"{path} line {line}: label must be 1 or 0, got {label!r}")
+                try:
+                    score = float((row["rerank_score"] or "").strip())
+                except ValueError:
+                    raise CommandError(
+                        f"{path} line {line}: a labelled row needs a numeric rerank_score, "
+                        f"got {row['rerank_score']!r}"
+                    )
+                rows.append({"query_id": row["query_id"], "rerank_score": score, "label": int(label)})
+        return rows
+
+    def _write_label_report(self, report: dict) -> None:
+        self.stdout.write("\n" + "=" * 70)
+        self.stdout.write("GATE CALIBRATION FROM HAND LABELS (reranking.min_score)")
+        self.stdout.write(
+            f"  {report['queries']} queries, {report['labelled_rows']} labelled rows "
+            f"({report['relevant_rows']} relevant); {report['unlabelled_rows']} rows unlabelled, skipped"
+        )
+        if not report["labelled_rows"]:
+            self.stdout.write(self.style.WARNING("No labelled rows -- label the CSV's `label` column first."))
+            return
+
+        def pct(share):
+            return f"{share:>7.1%}" if share is not None else f"{'-':>7}"
+
+        def table(title, key, rows):
+            self.stdout.write(
+                f"\n  {title:>9} {'kept precision':>15} {'relevant dropped':>17} {'queries emptied':>16}"
+            )
+            for row in rows:
+                self.stdout.write(
+                    f"  {row[key]:>9.3f} {pct(row['kept_precision']):>15} "
+                    f"{pct(row['relevant_dropped_share']):>17} {pct(row['queries_emptied_share']):>16}"
+                )
+
+        base = report["baseline"]
+        self.stdout.write(
+            f"  baseline (nothing dropped): precision {pct(base['kept_precision']).strip()}"
+        )
+        self.stdout.write("\n  Absolute: keep a movie iff rerank_score >= min_score")
+        table("min_score", "min_score", report["absolute"])
+        self.stdout.write(
+            "\n  Relative: keep a movie iff it scores within `margin` of its query's best. "
+            "A margin never empties a query (the best row is always kept)."
+        )
+        table("margin", "margin", report["relative"])
+        self.stdout.write(
+            "\nPick by hand (a gate that keeps precision high while dropping few relevant movies). "
+            "If the relative variant wins, production needs a new parameter in "
+            "core.pipeline.apply_relevance_gate; otherwise set reranking.min_score in params.yaml "
+            "and judge it on the test split. This command never writes params.yaml."
         )
 
     def _write_gate_report(self, report: dict) -> None:

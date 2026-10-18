@@ -198,6 +198,15 @@ GATE_REPORT_THRESHOLDS = (
 )
 
 
+# Candidate margins for the label report's relative variant: keep a movie iff
+# it scores within this much of its query's best. Same [0, 1] sigmoid scale and
+# the same skew toward 0 as GATE_REPORT_THRESHOLDS, so the grid is fine at the
+# small end (where a cross-encoder's confident top results sit close together)
+# and stops at 0.7, past which little is dropped. A report grid like the one
+# above, not a tuning knob, so it is not in params.yaml.
+GATE_REPORT_MARGINS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7)
+
+
 def _distribution(values: list[float]) -> dict:
     keys = ("min", "q1", "median", "q3", "max")
     if not values:
@@ -260,6 +269,60 @@ def gate_report(queries: list[dict], thresholds=GATE_REPORT_THRESHOLDS) -> dict:
         "hits": _distribution(hit_scores),
         "non_hits": _distribution(non_hit_scores),
         "thresholds": rows,
+    }
+
+
+def label_report(
+    rows: list[dict], absolute_thresholds=GATE_REPORT_THRESHOLDS, relative_margins=GATE_REPORT_MARGINS,
+) -> dict:
+    """What candidate gates would do, judged by hand-assigned relevance labels.
+
+    `rows` carry `query_id`, `rerank_score` (float) and `label` (1, 0, or None
+    for a row the human skipped). Unlabelled rows are dropped and counted; a
+    query with no labelled row is ignored. Unlike `gate_report`, relevance is
+    the human's label, not membership in the incomplete golden lists.
+
+    Per candidate: `kept_precision` (relevant kept / kept), `relevant_dropped_share`
+    (relevant dropped / all relevant) and `queries_emptied_share` (queries with
+    nothing kept / queries); each is None when its denominator is zero.
+    The absolute variant keeps a row iff `rerank_score >= min_score`; the
+    relative one iff it is within `margin` of its query's best score, so it
+    always keeps each query's top row and never empties a query.
+    """
+    labelled = [r for r in rows if r["label"] is not None]
+    by_query: dict = {}
+    for r in labelled:
+        by_query.setdefault(r["query_id"], []).append(r)
+
+    def evaluate(keep) -> dict:
+        kept = relevant_kept = emptied = 0
+        for group in by_query.values():
+            best = max(r["rerank_score"] for r in group)
+            kept_here = [r for r in group if keep(r["rerank_score"], best)]
+            kept += len(kept_here)
+            relevant_kept += sum(r["label"] for r in kept_here)
+            emptied += not kept_here
+        return {
+            "kept_precision": _share(relevant_kept, kept),
+            "relevant_dropped_share": _share(relevant - relevant_kept, relevant),
+            "queries_emptied_share": _share(emptied, len(by_query)),
+        }
+
+    relevant = sum(r["label"] for r in labelled)
+    return {
+        "queries": len(by_query),
+        "labelled_rows": len(labelled),
+        "relevant_rows": relevant,
+        "unlabelled_rows": len(rows) - len(labelled),
+        "baseline": evaluate(lambda score, best: True),
+        "absolute": [
+            {"min_score": t, **evaluate(lambda score, best, t=t: score >= t)}
+            for t in absolute_thresholds
+        ],
+        "relative": [
+            {"margin": m, **evaluate(lambda score, best, m=m: best - score <= m)}
+            for m in relative_margins
+        ],
     }
 
 

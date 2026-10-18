@@ -10,7 +10,10 @@ from core.evaluation import (
     aggregate_metrics,
     evaluate_query,
     gate_report,
+    GATE_REPORT_MARGINS,
+    GATE_REPORT_THRESHOLDS,
     label_export_rows,
+    label_report,
     judge_ndcg,
     llm_relevance_score,
     ndcg_at_k,
@@ -322,3 +325,84 @@ class TestLabelExportRows:
         q = self._queries()
         del q[0]["recommended"][0]["overview"]
         assert label_export_rows(q)[0]["overview"] == ""
+
+
+def _lr(query_id, score, label, **extra):
+    return {"query_id": query_id, "rerank_score": score, "label": label, **extra}
+
+
+class TestLabelReport:
+    # q1: 0.9 rel, 0.5 rel, 0.2 not;  q2: 0.4 not, 0.1 not;  q3: 0.8 rel
+    ROWS = [
+        _lr("q1", 0.9, 1), _lr("q1", 0.5, 1), _lr("q1", 0.2, 0),
+        _lr("q2", 0.4, 0), _lr("q2", 0.1, 0),
+        _lr("q3", 0.8, 1),
+    ]
+
+    def test_counts_and_baseline(self):
+        report = label_report(self.ROWS, [0.3], [0.1])
+        assert (report["queries"], report["labelled_rows"], report["relevant_rows"]) == (3, 6, 3)
+        assert report["baseline"]["kept_precision"] == 3 / 6
+        assert report["baseline"]["relevant_dropped_share"] == 0.0
+        assert report["baseline"]["queries_emptied_share"] == 0.0
+
+    def test_absolute_variant(self):
+        # t=0.45 keeps 0.9, 0.5, 0.8 -> all relevant; q2 emptied; q1 loses nothing relevant
+        row = label_report(self.ROWS, [0.45], [])["absolute"][0]
+        assert row["min_score"] == 0.45
+        assert row["kept_precision"] == 1.0
+        assert row["relevant_dropped_share"] == 0.0
+        assert row["queries_emptied_share"] == 1 / 3
+
+    def test_absolute_drops_relevant(self):
+        row = label_report(self.ROWS, [0.85], [])["absolute"][0]
+        # keeps only 0.9 -> precision 1, dropped 2 of 3 relevant, q2 and q3 emptied
+        assert row["kept_precision"] == 1.0
+        assert row["relevant_dropped_share"] == 2 / 3
+        assert row["queries_emptied_share"] == 2 / 3
+
+    def test_threshold_is_inclusive(self):
+        row = label_report(self.ROWS, [0.5], [])["absolute"][0]
+        assert row["relevant_dropped_share"] == 0.0
+
+    def test_relative_variant(self):
+        # m=0.1: q1 keeps 0.9 only (0.5 is 0.4 below); q2 keeps 0.4 (0.1 is 0.3 below); q3 keeps 0.8
+        row = label_report(self.ROWS, [], [0.1])["relative"][0]
+        assert row["margin"] == 0.1
+        assert row["kept_precision"] == 2 / 3
+        assert row["relevant_dropped_share"] == 1 / 3
+        assert row["queries_emptied_share"] == 0.0
+
+    def test_relative_margin_is_inclusive_and_never_empties(self):
+        rows = [_lr("a", 0.5, 0), _lr("a", 0.25, 1)]
+        row = label_report(rows, [], [0.25])["relative"][0]
+        assert row["relevant_dropped_share"] == 0.0
+        assert row["queries_emptied_share"] == 0.0
+
+    def test_none_cases(self):
+        rows = [_lr("a", 0.2, 0), _lr("a", 0.1, 0)]
+        row = label_report(rows, [0.9], [])["absolute"][0]
+        assert row["kept_precision"] is None
+        assert row["relevant_dropped_share"] is None
+        assert row["queries_emptied_share"] == 1.0
+
+    def test_unlabelled_rows_skipped_and_counted(self):
+        rows = [*self.ROWS, _lr("q4", 0.9, None), _lr("q4", 0.8, None), _lr("q1", 0.7, None)]
+        report = label_report(rows, [], [])
+        assert report["unlabelled_rows"] == 3
+        assert report["queries"] == 3  # q4 is all unlabelled, ignored
+        assert report["labelled_rows"] == 6
+
+    def test_no_labelled_rows(self):
+        report = label_report([], [0.5], [0.1])
+        assert report["queries"] == 0
+        assert report["absolute"][0]["queries_emptied_share"] is None
+
+    def test_defaults_use_the_report_grids(self):
+        report = label_report(self.ROWS)
+        assert [r["min_score"] for r in report["absolute"]] == list(GATE_REPORT_THRESHOLDS)
+        assert [r["margin"] for r in report["relative"]] == list(GATE_REPORT_MARGINS)
+
+    def test_margin_grid_is_sorted_and_inside_the_sigmoid_range(self):
+        assert list(GATE_REPORT_MARGINS) == sorted(GATE_REPORT_MARGINS)
+        assert all(0 < m < 1 for m in GATE_REPORT_MARGINS)
