@@ -75,6 +75,20 @@ The model is loaded lazily on first call and cached as a module-level singleton.
 | `encode_query(query)` | `str` | `list[float]` (1024) | Single query at request time |
 | `cosine_similarity(a, b)` | two vectors | `float [-1, 1]` | Similarity between any two vectors |
 
+### `entity_resolution.py` -- Intent Values onto Catalog Values
+
+`EntityResolver(field, catalog_values, config).resolve(raw)` maps parsed
+intent values onto exact catalog values: exact (casefold, collapsed
+whitespace) -> synonyms -> embedding nearest value (threshold + margin over
+the runner-up) -> drop with an INFO log. `ollama_client.RESOLVERS` holds one
+per catalog (`genres` for genres/negations from `CATALOG_GENRES`; `countries`
+and `languages` from distinct `Movie.country` / `Movie.original_language`,
+loaded on first use and cached per process; `languages` has no embedding
+fallback). Config: `params.yaml: intent.resolution.<field>`. `resolve_each`
+and `nearest` expose the layer and top-2 scores for
+`manage.py entity_resolution_report`. ORM-backed, so the async path calls it
+inside `sync_to_async`.
+
 ### `ollama_client.py` -- LLM Integration
 
 Calls the Ollama container's HTTP API (`/api/chat`) for classification+intent

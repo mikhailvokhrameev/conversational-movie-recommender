@@ -106,11 +106,21 @@ Ollama build that ignores the flag degrades to slower rather than broken.
 2. **Explanation generation**: writes explanations of why each recommended
    movie matches the query (RAG pattern).
 
-**Genre normalization**: The LLM often returns genre names in the wrong form
-(e.g., "sci-fi" instead of "Science Fiction"). An embedding-based normalizer
-maps LLM output to exact catalog genre names (TMDB's 19-genre taxonomy) by
-cosine similarity. Threshold is `intent.genre_match_threshold` in `params.yaml`
-(default 0.5).
+**Entity resolution** (`core/entity_resolution.py`): genres, negations,
+country inclusions/exclusions and original languages are compared with the
+catalog as exact strings, and the LLM often names them differently ("sci-fi"
+for "Science Fiction", "USA" or "Korea" where the catalog says "United States
+of America" or "South Korea"). A near-miss silently loses a filter or empties
+the result. Each value goes through: exact match (casefold, collapsed
+whitespace) -> short synonyms (`intent.resolution.<field>.synonyms`, targets
+checked against the catalog on first use) -> embedding nearest catalog value,
+accepted only if cosine >= `match_threshold` and top1 - top2 >= `match_margin`
+(genres and countries only; ISO language codes take exact and synonyms only)
+-> otherwise dropped with an INFO log. Genre values come from `CATALOG_GENRES`,
+countries and languages from the DB (distinct values, cached per process). The
+thresholds (0.5 / 0.05) are uncalibrated; `manage.py entity_resolution_report`
+prints the probes in `data/entity_probes.json` with their resolution and
+top-2 scores so they can be set from measurements.
 
 **Observability**: each Ollama call logs token counts, Ollama's own prompt/eval
 timings and (streamed calls) the client-side time to first token, and the digest of

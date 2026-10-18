@@ -403,7 +403,9 @@ these can be changed -- no environment variable overrides them.
 | `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |
 | `evaluation.judge_description_chars` | `300` | Description chars shown to the `evaluate_scoring --llm-judge` judge. Minimum 1 |
 | `evaluation.judge_timeout_seconds` | `30` | Per-call judge timeout; a timeout counts as a judge failure, never a substitute score |
-| `intent.genre_match_threshold` | `0.5` | Min cosine similarity for genre normalization |
+| `intent.resolution.<field>.synonyms` | see file | `genres` / `countries` / `languages`: names the catalog spells differently, mapped to a catalog value (missing targets warn and are ignored) |
+| `intent.resolution.<field>.match_threshold` | `0.5` | `genres`, `countries`: min top-1 cosine for the embedding fallback, in (0, 1]. Uncalibrated (`entity_resolution_report`) |
+| `intent.resolution.<field>.match_margin` | `0.05` | `genres`, `countries`: min top1 - top2 cosine gap, in [0, 1). Uncalibrated. The removed `intent.genre_match_threshold` fails settings |
 
 Environment variables are reserved for secrets and deployment wiring
 (`SECRET_KEY`, `DB_PASSWORD`, `DEBUG`, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`,
