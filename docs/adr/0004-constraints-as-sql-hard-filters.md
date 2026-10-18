@@ -22,8 +22,8 @@ on the catalog before any ranking:
 
 A movie with an unknown rating passes `min_vote_average` (the catalog keeps only
 movies with `catalog.min_vote_count` votes, so rating is always known in practice).
-`original_languages` has no such exception either, since the language is always known
-for an imported row.
+`original_languages` needs no unknown-value exception, since the language is always
+known for an imported row.
 
 > **Superseded in part (user decision 2026-10-17).** The original rule let a movie with
 > an unknown release date or runtime pass the year and runtime filters ("unknown means
@@ -31,9 +31,10 @@ for an imported row.
 > an unknown value now does **not** pass: "from 2026" returned a film with an empty
 > release date. TMDB writes `runtime 0` for unknown, so the importer stores it as NULL
 > and migration 0009 nulls existing zeros, which keeps them from satisfying "under 20
-> minutes". Popularity is the deliberate opposite: TMDB's
-metric is unbounded and non-linear, so no threshold could be picked reliably and it
-stays a scoring signal ([0003](0003-weighted-scoring-rerank-blend-mmr.md)).
+> minutes".
+
+Popularity is the deliberate opposite: TMDB's metric is unbounded and non-linear, so no
+threshold could be picked reliably and it stays a scoring signal ([0003](0003-weighted-scoring-rerank-blend-mmr.md)).
 
 ## Consequences
 
