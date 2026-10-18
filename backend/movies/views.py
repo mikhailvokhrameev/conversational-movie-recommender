@@ -95,7 +95,11 @@ def _agreed_drops(constraints: list[str], unchecked: list[str], history: list[di
     """Conditions this search runs without because the user agreed to drop them:
     the intent's constraints that are no longer `unchecked`, plus what the
     assistant's directly preceding turn offered to drop (a bare "yes" leaves the
-    intent without them). The explanation must say these were not checked."""
+    intent without them). The explanation must say these were not checked.
+
+    Known limitation: the server has no consent signal, so an offer the user
+    ignored (an unrelated new search next) is still reported. The fix belongs in
+    the classifier (see TODOS.md)."""
     dropped = [c for c in constraints if c not in unchecked]
     if history and history[-1].get("role") == "assistant":
         dropped += (history[-1].get("pending_relaxation") or {}).get("dropped") or []

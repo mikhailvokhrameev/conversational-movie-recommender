@@ -916,6 +916,18 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert seen == [["silent"]]
 
     @pytest.mark.asyncio
+    async def test_ignored_offer_still_reports_drops_known_leak(self):
+        # Documents a known leak, not desired behaviour: the user ignored the
+        # offer and searched for something else, yet the dropped condition is
+        # reported as unchecked. The server has no consent signal (TODOS.md,
+        # "ignored relaxation offer"); flip this when the classifier supplies one.
+        seen = []
+        history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
+        intent = MessageIntent(category="new_search", semantic_query="space operas")
+        await self._run(intent, history=history, explain=self._recording_explain(seen))
+        assert seen == [["silent"]]
+
+    @pytest.mark.asyncio
     async def test_a_plain_search_passes_no_unverified_conditions(self):
         seen = []
         intent = MessageIntent(category="new_search", semantic_query="documentaries")
