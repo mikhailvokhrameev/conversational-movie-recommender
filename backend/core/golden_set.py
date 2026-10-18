@@ -13,6 +13,20 @@ here at eval time, and anything that does not resolve is returned to the
 caller to report -- an unresolved reference is a labelling or catalog gap that
 must stay visible, not a smaller denominator nobody notices.
 
+`expected` says what a correct answer looks like: "results" (the default) is
+a ranked list scored against `relevant`; "empty" is a request the catalog
+cannot serve, answered correctly by no recommendations (what the relevance
+gate is for); "ask" is a request with a condition the catalog cannot check,
+answered correctly by a question (ADR 0011: a non-empty
+`unsupported_constraints`). Neither of the last two has a `relevant` list.
+
+Prior turns come as `context` (earlier user messages only) or `history`
+(`{"role": "user"|"assistant", "content": str}` turns, so a follow-up to an
+assistant reply can be written down); `prior_turns` turns either into the
+messages replayed to the classify+parse call. Only the text is replayed: the
+session state production keeps beside it (`pending_relaxation`, the movies a
+refinement excludes) is not reproduced.
+
 Kept free of command-line concerns so other evaluations (e.g. calibrating a
 relevance threshold) can reuse the loader and resolver.
 """
@@ -30,6 +44,10 @@ logger = logging.getLogger(__name__)
 
 SPLITS = ("dev", "test")
 GRADES = (1, 2)
+# What a correct answer to an entry is: a ranked list, nothing, or a question.
+EXPECTED = ("results", "empty", "ask")
+DEFAULT_EXPECTED = "results"
+HISTORY_ROLES = ("user", "assistant")
 DEFAULT_GRADE = 1
 # Categories an oracle-mode entry may claim for its final message: the two the
 # chat view routes through the retrieval pipeline.
@@ -86,6 +104,18 @@ def _reference_problems(ref) -> list[str]:
     return problems
 
 
+def _history_problems(history) -> list[str]:
+    if not isinstance(history, list):
+        return ["history must be a list of {role, content} turns"]
+    for turn in history:
+        if not (
+            isinstance(turn, dict) and turn.get("role") in HISTORY_ROLES
+            and isinstance(turn.get("content"), str) and turn["content"].strip()
+        ):
+            return [f"history turn {turn!r} needs a role in {HISTORY_ROLES} and non-empty content"]
+    return []
+
+
 def _entry_problems(entry) -> list[str]:
     if not isinstance(entry, dict):
         return [f"entry {entry!r} is not an object"]
@@ -96,8 +126,16 @@ def _entry_problems(entry) -> list[str]:
         problems.append("missing a query")
     if entry.get("split") not in SPLITS:
         problems.append(f"split must be one of {SPLITS} (got {entry.get('split')!r})")
+    expected = entry.get("expected", DEFAULT_EXPECTED)
     relevant = entry.get("relevant")
-    if not isinstance(relevant, list) or not relevant:
+    if expected not in EXPECTED:
+        problems.append(f"expected must be one of {EXPECTED} (got {expected!r})")
+    elif expected != "results":
+        if relevant not in (None, []):
+            problems.append(f'expected "{expected}" takes no relevant references')
+        if expected == "empty" and "oracle_intent" not in entry:
+            problems.append('expected "empty" needs an oracle_intent (may be {})')
+    elif not isinstance(relevant, list) or not relevant:
         problems.append("needs at least one relevant reference")
     else:
         for ref in relevant:
@@ -108,12 +146,16 @@ def _entry_problems(entry) -> list[str]:
         problems.append("oracle_intent must be an object")
     if "context" in entry and not _is_str_list(entry["context"]):
         problems.append("context must be a list of prior user messages")
+    if "history" in entry:
+        problems.extend(_history_problems(entry["history"]))
+        if "context" in entry:
+            problems.append("give prior turns as context or history, not both")
     standalone = entry.get("oracle_standalone_query")
     if "oracle_standalone_query" in entry:
         if not (isinstance(standalone, str) and standalone.strip()):
             problems.append("oracle_standalone_query must be a non-empty string")
-    elif entry.get("context"):
-        problems.append("oracle_standalone_query is required when context is present")
+    elif entry.get("context") or entry.get("history"):
+        problems.append("oracle_standalone_query is required when context or history is present")
     if "category" in entry and entry["category"] not in SEARCH_CATEGORIES:
         problems.append(f"category must be one of {SEARCH_CATEGORIES}")
     return problems
@@ -132,6 +174,14 @@ def validate_entries(entries: list) -> None:
             seen_ids.add(entry["id"])
     if problems:
         raise GoldenSetError("invalid golden set:\n  " + "\n  ".join(problems))
+
+
+def prior_turns(entry: dict) -> list[dict]:
+    """The turns before the entry's query, as chat messages: `history` as
+    written, or each `context` message as a user turn."""
+    if "history" in entry:
+        return [dict(turn) for turn in entry["history"]]
+    return [{"role": "user", "content": message} for message in entry.get("context", [])]
 
 
 def select_split(entries: list[dict], split: str) -> list[dict]:

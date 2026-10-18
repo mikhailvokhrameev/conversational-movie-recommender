@@ -68,6 +68,7 @@ from core.evaluation import (
 from core.golden_set import (
     default_golden_set_path,
     load_golden_set,
+    prior_turns,
     reference_label,
     resolve_references,
     select_split,
@@ -372,13 +373,11 @@ class Command(BaseCommand):
 
     def _prepare(self, entry: dict, intent_mode: str) -> PreparedQuery:
         query = entry["query"]
-        context = entry.get("context", [])
         if intent_mode == "e2e":
             # Mirrors ChatView: the combined classify+parse call with the prior
-            # turns as history, then embed its rewritten semantic_query. The
-            # golden set holds user messages only, so history is user turns.
-            history = [{"role": "user", "content": message} for message in context]
-            message_intent = asyncio.run(aclassify_and_parse(query, history))
+            # turns as history, then embed its rewritten semantic_query. Only
+            # the text is replayed, not the session state stored beside it.
+            message_intent = asyncio.run(aclassify_and_parse(query, prior_turns(entry)))
             possible_fallback = self._is_fallback_shape(message_intent, query)
             predicted = message_intent.category
             category = predicted
@@ -448,7 +447,7 @@ class Command(BaseCommand):
     def _judge_query(entry: dict) -> str:
         # A refinement like "something funnier" means nothing on its own; the
         # judge sees the conversation the system saw.
-        return " -> ".join([*entry.get("context", []), entry["query"]])
+        return " -> ".join([*(turn["content"] for turn in prior_turns(entry)), entry["query"]])
 
     def _score_query(
         self, p: PreparedQuery, k: int, weights: dict, use_llm: bool, apply_gate: bool = True,
@@ -516,6 +515,8 @@ class Command(BaseCommand):
             "unscorable": unscorable,
             "metrics": metrics,
         }
+        if "history" in entry:
+            result["history"] = prior_turns(entry)
         if p.predicted_category is not None:
             result["predicted_category"] = p.predicted_category
             result["misclassified"] = p.misclassified

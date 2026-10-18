@@ -10,6 +10,7 @@ from core.golden_set import (
     GoldenSetError,
     default_golden_set_path,
     load_golden_set,
+    prior_turns,
     reference_label,
     resolve_references,
     select_split,
@@ -117,6 +118,70 @@ class TestValidation:
         path.write_text(json.dumps([_entry()]))
         with pytest.raises(GoldenSetError, match="queries"):
             load_golden_set(path)
+
+
+HISTORY = [
+    {"role": "user", "content": "a heist movie"},
+    {"role": "assistant", "content": "Here are some heist movies: Heat, Inside Man."},
+]
+
+
+def _bare(**overrides):
+    """An entry with no relevant list, for expected empty/ask."""
+    entry = {"id": "n1", "query": "a film about X", "split": "dev"}
+    entry.update(overrides)
+    return entry
+
+
+class TestExpectedAndHistory:
+    def test_valid_empty_and_ask_entries_pass(self):
+        validate_entries([
+            _bare(expected="empty", oracle_intent={}),
+            _bare(id="n2", expected="empty", oracle_intent={"genres": ["Drama"]}, relevant=[]),
+            _bare(id="a1", expected="ask"),
+            _bare(id="a2", expected="ask", history=HISTORY, oracle_standalone_query="x"),
+        ])
+
+    def test_explicit_results_is_the_default(self):
+        validate_entries([_entry(expected="results")])
+
+    @pytest.mark.parametrize("entry, problem", [
+        (_entry(expected="nothing"), "expected must be one of"),
+        (_bare(expected="empty"), "oracle_intent"),
+        (_bare(expected="empty", oracle_intent={}, relevant=[{"title": "Heat", "year": 1995}]), "relevant"),
+        (_bare(expected="ask", relevant=[{"title": "Heat", "year": 1995}]), "relevant"),
+        (_bare(expected="ask", relevant="none"), "relevant"),
+        (_bare(expected="results"), "relevant"),
+        (_entry(history="a heist movie", oracle_standalone_query="x"), "history"),
+        (_entry(history=[{"role": "system", "content": "x"}], oracle_standalone_query="x"), "history"),
+        (_entry(history=[{"role": "user", "content": " "}], oracle_standalone_query="x"), "history"),
+        (_entry(history=[{"role": "user"}], oracle_standalone_query="x"), "history"),
+        (_entry(history=["a heist movie"], oracle_standalone_query="x"), "history"),
+        (_entry(history=HISTORY, context=["a heist movie"], oracle_standalone_query="x"), "both"),
+        (_entry(history=HISTORY), "oracle_standalone_query"),
+    ])
+    def test_rejects(self, entry, problem):
+        with pytest.raises(GoldenSetError, match=problem):
+            validate_entries([entry])
+
+    def test_empty_history_needs_no_standalone(self):
+        validate_entries([_entry(history=[])])
+
+
+class TestPriorTurns:
+    def test_no_prior_turns(self):
+        assert prior_turns(_entry()) == []
+
+    def test_context_becomes_user_turns(self):
+        assert prior_turns(_entry(context=["a", "b"])) == [
+            {"role": "user", "content": "a"}, {"role": "user", "content": "b"},
+        ]
+
+    def test_history_is_returned_as_is(self):
+        turns = prior_turns(_entry(history=HISTORY))
+        assert turns == HISTORY
+        turns.append({"role": "user", "content": "x"})
+        assert len(HISTORY) == 2
 
 
 class TestSelectSplit:

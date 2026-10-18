@@ -128,6 +128,18 @@ class TestE2eIntent:
             "query q1", [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}],
         )
 
+    def test_history_is_replayed_with_assistant_turns_and_recorded(self, tmp_path):
+        history = [{"role": "user", "content": "a heist movie"}, {"role": "assistant", "content": "Heat."}]
+        run = _Run(tmp_path, [_entry(history=history, oracle_standalone_query="x")])
+        record = run()
+        run.classify.assert_awaited_once_with("query q1", history)
+        assert record["queries"][0]["history"] == history
+        assert record["queries"][0]["context"] == []
+
+    def test_entry_without_history_records_none(self, tmp_path):
+        record = _Run(tmp_path, [_entry()])()
+        assert "history" not in record["queries"][0]
+
     @pytest.mark.parametrize("category", ["follow_up", "general_chat", "clarify"])
     def test_non_search_category_still_searches_and_counts_misclassified(self, tmp_path, category):
         run = _Run(tmp_path, [_entry()], intent=MessageIntent(category=category, semantic_query="x"))
@@ -291,6 +303,12 @@ class TestJudge:
         assert record["queries"][0]["judge_scores"] == [5, None]
         assert record["aggregate"]["llm_relevance"] == 5.0
         assert "judge_ndcg" not in record["aggregate"]
+
+    def test_judge_sees_history_turns(self, tmp_path):
+        history = [{"role": "user", "content": "a heist movie"}, {"role": "assistant", "content": "Heat."}]
+        run = _Run(tmp_path, [_entry(history=history, oracle_standalone_query="x")], judge=[3, 3])
+        run("--llm-judge", "--k", "2")
+        assert run.judge.call_args.args[0] == "a heist movie -> Heat. -> query q1"
 
     def test_all_lowest_scores_give_zero_judge_ndcg(self, tmp_path):
         run = _Run(tmp_path, [_entry()], judge=[1, 1])
