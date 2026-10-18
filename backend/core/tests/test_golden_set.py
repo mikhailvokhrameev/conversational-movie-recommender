@@ -67,6 +67,11 @@ class TestShippedGoldenSet:
             for ref in entry["relevant"]:
                 assert "tmdb_id" not in ref, (entry["id"], ref)
 
+    def test_every_context_entry_has_a_standalone_rewrite(self, entries):
+        for entry in entries:
+            if entry.get("context"):
+                assert entry["oracle_standalone_query"].strip(), entry["id"]
+
     def test_note_flags_the_labels_as_unreviewed_drafts(self):
         note = json.loads(GOLDEN_SET_PATH.read_text())["_note"].lower()
         assert "draft" in note and "review" in note
@@ -87,10 +92,21 @@ class TestValidation:
         ({"category": "follow_up"}, "category"),
         ({"oracle_intent": ["Comedy"]}, "oracle_intent"),
         ({"negated_genres": "Horror"}, "negated_genres"),
+        ({"context": ["I want a sci-fi movie"]}, "oracle_standalone_query"),
+        ({"oracle_standalone_query": ""}, "oracle_standalone_query"),
+        ({"oracle_standalone_query": "  "}, "oracle_standalone_query"),
+        ({"oracle_standalone_query": ["a comedy"]}, "oracle_standalone_query"),
+        ({"context": ["I want a sci-fi movie"], "oracle_standalone_query": 5}, "oracle_standalone_query"),
     ])
     def test_rejects_malformed_entry(self, overrides, problem):
         with pytest.raises(GoldenSetError, match=problem):
             validate_entries([_entry(**overrides)])
+
+    def test_standalone_query_optional_without_context(self):
+        validate_entries([_entry(), _entry(id="q2", oracle_standalone_query="a comedy")])
+
+    def test_standalone_query_accepted_with_context(self):
+        validate_entries([_entry(context=["a sci-fi movie"], oracle_standalone_query="a funny sci-fi movie")])
 
     def test_rejects_duplicate_ids(self):
         with pytest.raises(GoldenSetError, match="duplicate id"):

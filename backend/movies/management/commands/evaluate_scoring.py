@@ -339,8 +339,12 @@ class Command(BaseCommand):
             predicted = None
             possible_fallback = None
             category = entry.get("category", "new_search")
-            query_embedding = encode_query(query)
-            query_text = query
+            # Follow-ups are fragments ("something funnier"); production ranks
+            # on the rewritten standalone_query, so oracle ranks on its
+            # hand-written equivalent. No labelled semantic_query exists, so
+            # the embedder gets the same text.
+            query_text = entry.get("oracle_standalone_query", query)
+            query_embedding = encode_query(query_text)
             semantic_query = None
             unsupported = None
             intent = dict(entry.get("oracle_intent", {}))

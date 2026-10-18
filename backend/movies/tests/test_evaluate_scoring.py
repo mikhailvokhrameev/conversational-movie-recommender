@@ -122,7 +122,7 @@ class TestE2eIntent:
         assert query["query_text"] == "rewritten standalone query"
 
     def test_context_becomes_user_history(self, tmp_path):
-        run = _Run(tmp_path, [_entry(context=["first", "second"])])
+        run = _Run(tmp_path, [_entry(context=["first", "second"], oracle_standalone_query="x")])
         run()
         run.classify.assert_awaited_once_with(
             "query q1", [{"role": "user", "content": "first"}, {"role": "user", "content": "second"}],
@@ -217,6 +217,16 @@ class TestOracleIntent:
         assert run.pipeline.call_args.args[1] == oracle
         assert record["counters"]["misclassified"] == 0
 
+    def test_context_entry_ranks_and_embeds_on_the_standalone_query(self, tmp_path):
+        entry = _entry(context=["a sci-fi movie"], oracle_standalone_query="a funny science fiction movie")
+        run = _Run(tmp_path, [entry])
+        record = run("--intent", "oracle")
+
+        run.encode.assert_called_once_with("a funny science fiction movie")
+        assert run.pipeline.call_args.args[0] == _vec("a funny science fiction movie")
+        assert run.pipeline.call_args.kwargs["query_text"] == "a funny science fiction movie"
+        assert record["queries"][0]["query_text"] == "a funny science fiction movie"
+
     def test_missing_oracle_intent_is_empty(self, tmp_path):
         run = _Run(tmp_path, [_entry()])
         run("--intent", "oracle")
@@ -288,7 +298,7 @@ class TestJudge:
         assert record["aggregate"]["judge_ndcg"] == 0.0
 
     def test_multi_turn_judge_sees_the_conversation(self, tmp_path):
-        run = _Run(tmp_path, [_entry(context=["a sci-fi movie"])], judge=[3, 3])
+        run = _Run(tmp_path, [_entry(context=["a sci-fi movie"], oracle_standalone_query="x")], judge=[3, 3])
         run("--llm-judge", "--k", "2")
         assert "a sci-fi movie" in run.judge.call_args.args[0]
         assert "query q1" in run.judge.call_args.args[0]

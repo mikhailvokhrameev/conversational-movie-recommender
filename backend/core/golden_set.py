@@ -108,6 +108,12 @@ def _entry_problems(entry) -> list[str]:
         problems.append("oracle_intent must be an object")
     if "context" in entry and not _is_str_list(entry["context"]):
         problems.append("context must be a list of prior user messages")
+    standalone = entry.get("oracle_standalone_query")
+    if "oracle_standalone_query" in entry:
+        if not (isinstance(standalone, str) and standalone.strip()):
+            problems.append("oracle_standalone_query must be a non-empty string")
+    elif entry.get("context"):
+        problems.append("oracle_standalone_query is required when context is present")
     if "category" in entry and entry["category"] not in SEARCH_CATEGORIES:
         problems.append(f"category must be one of {SEARCH_CATEGORIES}")
     return problems
