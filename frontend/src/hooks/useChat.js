@@ -12,8 +12,11 @@ export function useChat() {
   // The card in view in the carousel the user last looked at; the server
   // ignores it unless it belongs to the latest shown list.
   const selectedRef = useRef({ messageId: null, tmdbId: null })
+  // Message id of the latest shown list; only its carousel may set the selection.
+  const latestListRef = useRef(null)
 
   const selectMovie = useCallback((messageId, movie) => {
+    if (messageId !== latestListRef.current) return
     selectedRef.current = { messageId, tmdbId: movie?.tmdb_id ?? null }
   }, [])
 
@@ -76,6 +79,10 @@ export function useChat() {
             eventType = line.slice(7).trim()
           } else if (line.startsWith('data: ') && eventType) {
             const data = JSON.parse(line.slice(6))
+            if (eventType === 'movies' && data.movies?.length > 0) {
+              latestListRef.current = assistantMessage.id
+              selectedRef.current = { messageId: assistantMessage.id, tmdbId: null }
+            }
             handleSSEEvent(eventType, data, setMessages, setSessionId, sessionTokenRef)
             eventType = null
           }
@@ -104,6 +111,7 @@ export function useChat() {
     setSessionId(null)
     sessionTokenRef.current = null
     selectedRef.current = { messageId: null, tmdbId: null }
+    latestListRef.current = null
     setIsStreaming(false)
   }, [])
 
