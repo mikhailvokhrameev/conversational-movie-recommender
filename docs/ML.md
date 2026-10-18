@@ -427,7 +427,9 @@ pass it as `query_text` to `generate_candidates` (lexical channel) and
 `rerank_candidates`; an empty value falls back to the raw message. The dense query
 embedding still comes from `semantic_query`. Conversational stopwords
 (`retrieval.lexical.stopwords`) are dropped from the lexical terms. `--intent oracle`
-has no `standalone_query` and ranks on the raw golden query. See
+has no parse, so a golden entry with a `context` carries a hand-written
+`oracle_standalone_query` (what a correct parse would put in `standalone_query`);
+oracle embeds and ranks on that, and on the raw query for single-turn entries. See
 [ADR 0010](adr/0010-drop-session-vector-contextual-query-text.md), which also records
 why the session preference vector was removed (ablation: mean nDCG@5 difference
 -0.0143, 95% CI [-0.0310, +0.0005], helped 1 / neutral 3 / hurt 14 of 18 multi-turn
@@ -461,8 +463,10 @@ It is built so that a number it prints measures what ships:
 `{"title": str, "year": int}`, optionally with `grade` (1 relevant, 2 highly
 relevant; default 1). Optional fields: `negated_genres` (for the
 negation-violation check), `oracle_intent` (the intent `--intent oracle` uses),
-`context` (prior user messages, for multi-turn entries) and `category`
-(`new_search`/`refinement`, the final message's category in oracle mode).
+`context` (prior user messages, for multi-turn entries), `oracle_standalone_query`
+(the final message rewritten to stand alone given its `context`; required when
+`context` is non-empty) and `category` (`new_search`/`refinement`, the final
+message's category in oracle mode).
 
 **The labels are a draft.** They were written from general film knowledge
 without catalog access, as `{title, year}` references, and have not been
@@ -488,7 +492,7 @@ you then report on overstates the result.
 | Mode | Intent | Query embedding | Use it for |
 |------|--------|-----------------|------------|
 | `e2e` (default) | `aclassify_and_parse(message, history)`, as `ChatView` calls it | `encode_query(intent.semantic_query)` | What users get |
-| `oracle` | The entry's `oracle_intent` (`{}` if absent) | `encode_query(query)` | Retrieval in isolation from parsing |
+| `oracle` | The entry's `oracle_intent` (`{}` if absent) | `encode_query(oracle_standalone_query or query)`; the lexical channel and reranker get the same text | Retrieval in isolation from parsing |
 
 In `e2e` the prior `context` messages are passed as user-role history entries
 (the shape `ChatSession.history` uses), and the predicted category is

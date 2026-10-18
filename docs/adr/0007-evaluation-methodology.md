@@ -22,7 +22,8 @@ failed judge call was silently scored 3.
   listed, and a query with none resolved is reported as unscorable, not zero.
 - **Two intent modes.** `e2e` (default) parses with the production call
   `aclassify_and_parse`, so parsing is evaluated too. `oracle` uses each entry's labelled
-  intent, isolating retrieval. The gap between them is the cost of parsing errors.
+  intent and, for multi-turn entries, its hand-written standalone query (so follow-up
+  fragments are not ranked as-is), isolating retrieval. The gap between them is the cost of parsing errors.
 - **The production path.** Retrieval is `core.pipeline.generate_and_score`, the same
   function the chat view runs. Multi-turn entries are parsed with their prior
   messages as history, as production does.

@@ -42,7 +42,9 @@ on the dev split on the GPU box, then judged on the test split. The command neve
   inside [0, 1]. A threshold of 0.01 drops no hits and 14% of non-hits; 0.02 empties
   7.4% of queries. Six hits are too few to choose a value, so the gate stays off
   (`min_score: null`) and this record stays Proposed until the golden labels are
-  reviewed and the run is repeated.
+  reviewed and the run is repeated. That run ranked the multi-turn entries on their raw
+  follow-up fragments; oracle now ranks them on `oracle_standalone_query`, so repeat it
+  before choosing a value.
 - This record moves to Accepted once a value is set and checked on test.
 
 Details: [ML.md, "Nothing suitable" gate](../ML.md#cross-encoder-reranking),
