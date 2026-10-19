@@ -37,7 +37,7 @@ failed judge call was silently scored 3.
   aggregates and the sweep. Oracle mode skips `ask` entries (no parse) and counts them.
   Prior turns can be written as `history` with assistant replies; only their text is
   replayed, not the session state production keeps beside them.
-- **Dev/test split.** `--sweep` and `--gate-report` read only `dev` and refuse
+- **Dev/test split.** `--sweep`, `--gate-report` and `--label-export` read only `dev` and refuse
   `test`/`all`; the default eval reports `test`.
 - **The LLM judge is a secondary signal.** `--llm-judge` is reported beside the
   golden-set metrics, never used to rank configurations, and failures are counted
@@ -50,7 +50,8 @@ failed judge call was silently scored 3.
 
 - The labels are a **draft** written from film knowledge without catalog access; they
   need human review before any number means much (see `TODOS.md`, "Evaluation").
-  ~30 queries is thin, and lists are samples, so precision is a lower bound.
+  52 queries (32 dev, 20 test; 44 of them answerable) is thin, and lists are samples,
+  so precision is a lower bound.
 - No evaluation has been run on the current system; `ML.md` "Evaluation Results" says
   so rather than carrying old numbers.
 - The golden set prices both sides of a relevance gate: its cost on answerable queries
