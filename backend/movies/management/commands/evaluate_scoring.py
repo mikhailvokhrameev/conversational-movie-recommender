@@ -168,7 +168,8 @@ class PreparedQuery:
     intent: dict
     query_embedding: list[float]
     # What the lexical channel and the reranker see: the context-aware
-    # standalone_query in e2e, the raw golden query in oracle.
+    # standalone_query in e2e; in oracle, the entry's oracle_standalone_query
+    # when it has one, else the raw golden query.
     query_text: str
     # e2e only (None in oracle): the rewritten query that was embedded.
     semantic_query: str | None
