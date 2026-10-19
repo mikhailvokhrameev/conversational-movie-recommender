@@ -104,11 +104,13 @@ llm:
   # read it from a cold call (first request after a model load).
   #
   # Facts block: the latest recommendation set is replayed to the model as
-  # facts (session.history_movie_description_chars): 5 movies x (200 chars ~50
-  # + ~15 title/year/genres/runtime) ~0.33k, minus the ~0.03k titles-only line
-  # it replaces, so ~+0.3k. Older sets stay titles-only precisely to keep this
-  # to ONE block; do not replay facts for every past set without re-checking
-  # this budget.
+  # facts (session.history_movie_description_chars): up to diversification.max_n
+  # = 10 movies x (200 chars ~50 + ~15 title/year/genres/runtime) ~0.65k at the
+  # cap (~0.33k for the default 5), minus the titles-only line it replaces
+  # (~0.03k per 5 titles), so ~+0.6k at the cap (~+0.3k for 5) -- inside the
+  # ~1.3k headroom above, but most of it. Older sets stay titles-only precisely
+  # to keep this to ONE block; do not replay facts for every past set without
+  # re-checking this budget.
   #
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
