@@ -29,7 +29,11 @@ test split. Procedure: export with `evaluate_scoring --intent oracle --k 10
 --label-export labels.csv`, mark each row's `label` 1/0 by hand (the golden lists are
 incomplete, so `--gate-report`'s "hit" undercounts relevance), run `evaluate_scoring
 --label-report labels.csv` for the absolute and relative curves, pick, then confirm on
-test. `--gate-report` remains as the golden-hit view; next to the cost columns it
+test. The label report splits emptied queries the same way as `--gate-report`: a query
+with a relevant label that empties is a cost, a query labelled all 0 that empties is the
+benefit; an absolute threshold empties a query when its pool's best score
+(`pool_max_rerank_score`) is below it, while kept precision and relevant dropped are
+measured over the exported top-k, a sample of what the gate filters. `--gate-report` remains as the golden-hit view; next to the cost columns it
 prints the benefit, `unanswerable_emptied_share` (the share of the golden set's
 `expected: "empty"` queries a threshold would correctly empty), and the label export
 includes those queries' rows as negatives to mark 0. The command never writes

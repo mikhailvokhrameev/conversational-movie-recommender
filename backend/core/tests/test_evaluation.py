@@ -409,6 +409,9 @@ class TestLabelReport:
         assert report["baseline"]["kept_precision"] == 3 / 6
         assert report["baseline"]["relevant_dropped_share"] == 0.0
         assert report["baseline"]["queries_emptied_share"] == 0.0
+        assert report["baseline"]["unanswerable_emptied_share"] == 0.0
+        # q1 and q3 hold a relevant label (answerable); q2 is all 0 (unanswerable).
+        assert (report["answerable_queries"], report["unanswerable_queries"]) == (2, 1)
 
     def test_absolute_variant(self):
         # t=0.45 keeps 0.9, 0.5, 0.8 -> all relevant; q2 emptied; q1 loses nothing relevant
@@ -416,14 +419,17 @@ class TestLabelReport:
         assert row["min_score"] == 0.45
         assert row["kept_precision"] == 1.0
         assert row["relevant_dropped_share"] == 0.0
-        assert row["queries_emptied_share"] == 1 / 3
+        # q2 (no relevant label) emptied: a benefit, not a cost
+        assert row["queries_emptied_share"] == 0.0
+        assert row["unanswerable_emptied_share"] == 1.0
 
     def test_absolute_drops_relevant(self):
         row = label_report(self.ROWS, [0.85], [])["absolute"][0]
         # keeps only 0.9 -> precision 1, dropped 2 of 3 relevant, q2 and q3 emptied
         assert row["kept_precision"] == 1.0
         assert row["relevant_dropped_share"] == 2 / 3
-        assert row["queries_emptied_share"] == 2 / 3
+        assert row["queries_emptied_share"] == 1 / 2  # q3 of {q1, q3}
+        assert row["unanswerable_emptied_share"] == 1.0  # q2
 
     def test_threshold_is_inclusive(self):
         row = label_report(self.ROWS, [0.5], [])["absolute"][0]
@@ -436,6 +442,7 @@ class TestLabelReport:
         assert row["kept_precision"] == 2 / 3
         assert row["relevant_dropped_share"] == 1 / 3
         assert row["queries_emptied_share"] == 0.0
+        assert row["unanswerable_emptied_share"] == 0.0
 
     def test_relative_margin_is_inclusive_and_never_empties(self):
         rows = [_lr("a", 0.5, 0), _lr("a", 0.25, 1)]
@@ -448,7 +455,9 @@ class TestLabelReport:
         row = label_report(rows, [0.9], [])["absolute"][0]
         assert row["kept_precision"] is None
         assert row["relevant_dropped_share"] is None
-        assert row["queries_emptied_share"] == 1.0
+        # all-0 query: no answerable query to cost, one unanswerable emptied
+        assert row["queries_emptied_share"] is None
+        assert row["unanswerable_emptied_share"] == 1.0
 
     def test_unlabelled_rows_skipped_and_counted(self):
         rows = [*self.ROWS, _lr("q4", 0.9, None), _lr("q4", 0.8, None), _lr("q1", 0.7, None)]
@@ -461,6 +470,16 @@ class TestLabelReport:
         report = label_report([], [0.5], [0.1])
         assert report["queries"] == 0
         assert report["absolute"][0]["queries_emptied_share"] is None
+        assert report["absolute"][0]["unanswerable_emptied_share"] is None
+
+    def test_relative_best_is_over_all_rows_labelled_or_not(self):
+        # The unlabelled 0.9 is still the query's best: partial labelling must
+        # not move the margin's reference. 0.5 is 0.4 below it, so m=0.2 drops it.
+        rows = [_lr("a", 0.9, None), _lr("a", 0.5, 1)]
+        row = label_report(rows, [], [0.2])["relative"][0]
+        assert row["relevant_dropped_share"] == 1.0
+        assert row["kept_precision"] is None
+        assert row["queries_emptied_share"] == 0.0
 
     def test_absolute_emptiness_uses_the_pool_max(self):
         # The exported top-k tops out at 0.6, but the pool held a 0.95 the gate

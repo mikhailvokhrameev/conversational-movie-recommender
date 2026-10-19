@@ -301,11 +301,17 @@ def label_report(
     label, not membership in the incomplete golden lists.
 
     Per candidate: `kept_precision` (relevant kept / kept), `relevant_dropped_share`
-    (relevant dropped / all relevant) and `queries_emptied_share` (queries with
-    nothing kept / queries); each is None when its denominator is zero.
-    The absolute variant keeps a row iff `rerank_score >= min_score`; the
-    relative one iff it is within `margin` of its query's best score, so it
-    always keeps each query's top row and never empties a query.
+    (relevant dropped / all relevant), and -- split by labels, like
+    `gate_report`'s cost and benefit -- `queries_emptied_share` (emptied /
+    queries with at least one relevant label: the cost) and
+    `unanswerable_emptied_share` (emptied / queries whose labels are all 0,
+    which includes `expected: "empty"` rows and answerable queries the
+    retriever did not serve: the benefit). Each is None when its denominator
+    is zero. The absolute variant keeps a row iff `rerank_score >= min_score`;
+    the relative one iff it is within `margin` of its query's best score, so it
+    always keeps each query's top row and never empties a query. The best is
+    taken over all of the query's scored rows, labelled or not, so labelling
+    only part of a query does not move its margins.
 
     Production gates the whole reranked pool before MMR and refills the top-n
     from what survives, so an absolute threshold empties a query exactly when
@@ -334,18 +340,28 @@ def label_report(
 
     ceilings = {qid: ceiling(qid) for qid in by_query}
 
+    answerable = {qid for qid, group in by_query.items() if any(r["label"] for r in group)}
+    best_scores = {
+        qid: max(r["rerank_score"] for r in all_by_query[qid] if r["rerank_score"] is not None)
+        for qid in by_query
+    }
+
     def evaluate(keep, empties) -> dict:
-        kept = relevant_kept = emptied = 0
+        kept = relevant_kept = emptied = unanswerable_emptied = 0
         for qid, group in by_query.items():
-            best = max(r["rerank_score"] for r in group)
-            kept_here = [r for r in group if keep(r["rerank_score"], best)]
+            kept_here = [r for r in group if keep(r["rerank_score"], best_scores[qid])]
             kept += len(kept_here)
             relevant_kept += sum(r["label"] for r in kept_here)
-            emptied += empties(ceilings[qid][0])
+            if empties(ceilings[qid][0]):
+                if qid in answerable:
+                    emptied += 1
+                else:
+                    unanswerable_emptied += 1
         return {
             "kept_precision": _share(relevant_kept, kept),
             "relevant_dropped_share": _share(relevant - relevant_kept, relevant),
-            "queries_emptied_share": _share(emptied, len(by_query)),
+            "queries_emptied_share": _share(emptied, len(answerable)),
+            "unanswerable_emptied_share": _share(unanswerable_emptied, len(by_query) - len(answerable)),
         }
 
     def never(_ceiling):
@@ -354,6 +370,8 @@ def label_report(
     relevant = sum(r["label"] for r in labelled)
     return {
         "queries": len(by_query),
+        "answerable_queries": len(answerable),
+        "unanswerable_queries": len(by_query) - len(answerable),
         "labelled_rows": len(labelled),
         "relevant_rows": relevant,
         "unlabelled_rows": len(rows) - len(labelled),

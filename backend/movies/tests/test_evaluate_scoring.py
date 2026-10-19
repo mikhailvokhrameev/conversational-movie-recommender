@@ -517,7 +517,9 @@ class TestLabelReport:
         call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
         text = out.getvalue()
         assert "1 rows unlabelled, skipped" in text
+        assert "1 answerable (a relevant label), 0 unanswerable (all labelled 0)" in text
         assert "min_score" in text and "margin" in text
+        assert "unanswerable emptied" in text
         assert "never empties" in text
 
     def test_pool_max_column_drives_absolute_emptiness(self, tmp_path):

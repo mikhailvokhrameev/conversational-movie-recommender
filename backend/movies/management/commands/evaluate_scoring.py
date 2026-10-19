@@ -734,6 +734,10 @@ class Command(BaseCommand):
             f"  {report['queries']} queries, {report['labelled_rows']} labelled rows "
             f"({report['relevant_rows']} relevant); {report['unlabelled_rows']} rows unlabelled, skipped"
         )
+        self.stdout.write(
+            f"  {report['answerable_queries']} answerable (a relevant label), "
+            f"{report['unanswerable_queries']} unanswerable (all labelled 0)"
+        )
         if not report["labelled_rows"]:
             self.stdout.write(self.style.WARNING("No labelled rows -- label the CSV's `label` column first."))
             return
@@ -743,12 +747,14 @@ class Command(BaseCommand):
 
         def table(title, key, rows):
             self.stdout.write(
-                f"\n  {title:>9} {'kept precision':>15} {'relevant dropped':>17} {'queries emptied':>16}"
+                f"\n  {title:>9} {'kept precision':>15} {'relevant dropped':>17} {'queries emptied':>16} "
+                f"{'unanswerable emptied':>21}"
             )
             for row in rows:
                 self.stdout.write(
                     f"  {row[key]:>9.3f} {pct(row['kept_precision']):>15} "
-                    f"{pct(row['relevant_dropped_share']):>17} {pct(row['queries_emptied_share']):>16}"
+                    f"{pct(row['relevant_dropped_share']):>17} {pct(row['queries_emptied_share']):>16} "
+                    f"{pct(row['unanswerable_emptied_share']):>21}"
                 )
 
         base = report["baseline"]
@@ -771,10 +777,15 @@ class Command(BaseCommand):
         )
         table("min_score", "min_score", report["absolute"])
         self.stdout.write(
-            "\n  Relative: keep a movie iff it scores within `margin` of its query's best. "
-            "A margin never empties a query (the best row is always kept)."
+            "\n  Relative: keep a movie iff it scores within `margin` of its query's best "
+            "(over all its rows, labelled or not). A margin never empties a query (the best "
+            "row is always kept)."
         )
         table("margin", "margin", report["relative"])
+        self.stdout.write(
+            "\n  `queries emptied` is over answerable queries (a cost); `unanswerable emptied` is "
+            "the share of all-0 queries a gate would correctly empty (the benefit)."
+        )
         self.stdout.write(
             "\nPick by hand (a gate that keeps precision high while dropping few relevant movies). "
             "If the relative variant wins, production needs a new parameter in "

@@ -375,9 +375,14 @@ turn's "yes" searches even if the classifier lists them again.
   `pool_max_rerank_score`) is not a finite number in [0, 1].
   `evaluate_scoring --label-report labels.csv` needs no database or
   model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
-  relative margins below each query's best score (`GATE_REPORT_MARGINS`), the kept
-  precision, the share of relevant movies dropped and the share of queries
-  emptied (a margin never empties a query). Production gates the whole reranked
+  relative margins below each query's best score (`GATE_REPORT_MARGINS`; the best
+  is over all the query's rows, labelled or not, so partial labelling does not
+  move a margin), the kept precision, the share of relevant movies dropped, and
+  the emptied queries split by labels as `--gate-report` splits them: `queries
+  emptied` over queries with at least one relevant label (the cost) and
+  `unanswerable emptied` over queries labelled all 0 -- `expected: "empty"`
+  queries and answerable ones the retriever did not serve -- (the benefit). A
+  margin never empties a query. Production gates the whole reranked
   pool before MMR and refills the top-n from what survives, so an absolute
   threshold empties a query exactly when its `pool_max_rerank_score` is below it;
   a CSV without that column (an older export) falls back to the best exported
