@@ -8,10 +8,12 @@ Usage:
   python manage.py evaluate_scoring --sweep                # weight grid search, dev split only
   python manage.py evaluate_scoring --weights 0.6,0.4      # custom semantic,metadata weights
   python manage.py evaluate_scoring --gate-report          # calibrate reranking.min_score, dev split only
-  python manage.py evaluate_scoring --intent oracle --k 10 --label-export labels.csv
+  python manage.py evaluate_scoring --intent oracle --k 10 --label-export eval_runs/labels.csv
                                                            # CSV of reranked dev results to hand-label
-  python manage.py evaluate_scoring --label-report labels.csv
-                                                           # threshold curves from the labelled CSV (no DB needed)
+                                                           # (eval_runs/ is the container's writable mount)
+  python manage.py evaluate_scoring --label-report ../eval_runs/labels.csv
+                                                           # threshold curves from the labelled CSV (no DB
+                                                           # needed; on the host, from backend/)
   python manage.py evaluate_scoring --output run.json      # run record path
 
 What makes this an honest measurement:
@@ -240,7 +242,8 @@ class Command(BaseCommand):
             default=None,
             metavar="PATH",
             help="Write the gate-off dev results (--k rows per query, with rerank_score) to a "
-                 "CSV for hand-labelling relevant 1/0 (dev split only; use --k 10)",
+                 "CSV for hand-labelling relevant 1/0 (dev split only; use --k 10). Under Docker "
+                 "write it into eval_runs/, the only writable mount the host sees",
         )
         parser.add_argument(
             "--label-report",

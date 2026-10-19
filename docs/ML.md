@@ -361,7 +361,8 @@ turn's "yes" searches even if the classifier lists them again.
 - *Calibrating from hand labels (preferred).* Golden lists are incomplete, so
   "hit" undercounts relevance. Export the ungated dev results, label them, and
   read the curves back: `evaluate_scoring --intent oracle --k 10 --label-export
-  labels.csv` (dev only; one row per query and returned movie with `query`,
+  eval_runs/labels.csv` (dev only; under Docker `eval_runs/` is the one writable
+  mount, `./eval_runs` on the host; one row per query and returned movie with `query`,
   `context` (role-prefixed for a `history` entry), `ranked_query` -- the text the
   reranker saw, the standalone rewrite for oracle follow-ups --, `expected`,
   `overview`, `rerank_score`, `pool_max_rerank_score` -- the best score in the
@@ -373,7 +374,8 @@ turn's "yes" searches even if the classifier lists them again.
   without the `expected` column (it ignores it) and with a spreadsheet's BOM, and
   refuses a labelled row whose `rerank_score` (or any row's non-blank
   `pool_max_rerank_score`) is not a finite number in [0, 1].
-  `evaluate_scoring --label-report labels.csv` needs no database or
+  `evaluate_scoring --label-report ../eval_runs/labels.csv` (run on the host from
+  `backend/`) needs no database or
   model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
   relative margins below each query's best score (`GATE_REPORT_MARGINS`; the best
   is over all the query's rows, labelled or not, so partial labelling does not
@@ -680,8 +682,9 @@ docker compose exec backend python manage.py evaluate_scoring --sweep --llm-judg
 docker compose exec backend python manage.py evaluate_scoring --intent oracle --gate-report
 
 # Export dev results for hand-labelling, then report thresholds from the labelled CSV
-docker compose exec backend python manage.py evaluate_scoring --intent oracle --k 10 --label-export labels.csv
-python manage.py evaluate_scoring --label-report labels.csv   # no DB/Ollama needed
+# eval_runs/ is the container's one writable bind mount (./eval_runs on the host)
+docker compose exec backend python manage.py evaluate_scoring --intent oracle --k 10 --label-export eval_runs/labels.csv
+cd backend && python manage.py evaluate_scoring --label-report ../eval_runs/labels.csv   # no DB/Ollama needed
 
 # Custom weights, explicit run-record path
 docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2 --output eval_runs/custom.json

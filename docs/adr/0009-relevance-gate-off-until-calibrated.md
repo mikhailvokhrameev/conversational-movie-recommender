@@ -26,9 +26,10 @@ a sigmoid output) or be null; settings refuse anything else.
 
 The value is to be chosen by hand on the dev split on the GPU box, then judged on the
 test split. Procedure: export with `evaluate_scoring --intent oracle --k 10
---label-export labels.csv`, mark each row's `label` 1/0 by hand (the golden lists are
+--label-export eval_runs/labels.csv` (the container's writable mount, `./eval_runs` on the
+host), mark each row's `label` 1/0 by hand (the golden lists are
 incomplete, so `--gate-report`'s "hit" undercounts relevance), run `evaluate_scoring
---label-report labels.csv` for the absolute and relative curves, pick, then confirm on
+--label-report ../eval_runs/labels.csv` on the host from `backend/` for the absolute and relative curves, pick, then confirm on
 test. The label report splits emptied queries the same way as `--gate-report`: a query
 with a relevant label that empties is a cost, a query labelled all 0 that empties is the
 benefit; an absolute threshold empties a query when its pool's best score
