@@ -292,10 +292,13 @@ def label_report(
 ) -> dict:
     """What candidate gates would do, judged by hand-assigned relevance labels.
 
-    `rows` carry `query_id`, `rerank_score` (float) and `label` (1, 0, or None
-    for a row the human skipped). Unlabelled rows are dropped and counted; a
-    query with no labelled row is ignored. Unlike `gate_report`, relevance is
-    the human's label, not membership in the incomplete golden lists.
+    `rows` carry `query_id`, `rerank_score` (float, or None when the reranker
+    did not score the row), `label` (1, 0, or None for a row the human
+    skipped) and optionally `pool_max_rerank_score` (the best score in the
+    query's whole reranked pool, repeated on each of its rows). Unlabelled rows
+    are counted and left out of the precision figures; a query with no
+    labelled row is ignored. Unlike `gate_report`, relevance is the human's
+    label, not membership in the incomplete golden lists.
 
     Per candidate: `kept_precision` (relevant kept / kept), `relevant_dropped_share`
     (relevant dropped / all relevant) and `queries_emptied_share` (queries with
@@ -303,25 +306,50 @@ def label_report(
     The absolute variant keeps a row iff `rerank_score >= min_score`; the
     relative one iff it is within `margin` of its query's best score, so it
     always keeps each query's top row and never empties a query.
+
+    Production gates the whole reranked pool before MMR and refills the top-n
+    from what survives, so an absolute threshold empties a query exactly when
+    its `pool_max_rerank_score` is below it. Rows without that value (an
+    export from before the column existed) fall back to the best exported row,
+    which can only over-count emptied queries; `queries_without_pool_max`
+    counts them. Kept precision and relevant dropped are measured over the
+    exported top-k only -- a sample of what the gate filters, not the pool.
     """
     labelled = [r for r in rows if r["label"] is not None]
-    by_query: dict = {}
-    for r in labelled:
-        by_query.setdefault(r["query_id"], []).append(r)
+    all_by_query: dict = {}
+    for r in rows:
+        all_by_query.setdefault(r["query_id"], []).append(r)
+    by_query = {
+        qid: [r for r in group if r["label"] is not None]
+        for qid, group in all_by_query.items()
+        if any(r["label"] is not None for r in group)
+    }
 
-    def evaluate(keep) -> dict:
+    def ceiling(qid):
+        group = all_by_query[qid]
+        pool = next((r["pool_max_rerank_score"] for r in group if r.get("pool_max_rerank_score") is not None), None)
+        if pool is not None:
+            return pool, False
+        return max(r["rerank_score"] for r in group if r["rerank_score"] is not None), True
+
+    ceilings = {qid: ceiling(qid) for qid in by_query}
+
+    def evaluate(keep, empties) -> dict:
         kept = relevant_kept = emptied = 0
-        for group in by_query.values():
+        for qid, group in by_query.items():
             best = max(r["rerank_score"] for r in group)
             kept_here = [r for r in group if keep(r["rerank_score"], best)]
             kept += len(kept_here)
             relevant_kept += sum(r["label"] for r in kept_here)
-            emptied += not kept_here
+            emptied += empties(ceilings[qid][0])
         return {
             "kept_precision": _share(relevant_kept, kept),
             "relevant_dropped_share": _share(relevant - relevant_kept, relevant),
             "queries_emptied_share": _share(emptied, len(by_query)),
         }
+
+    def never(_ceiling):
+        return False
 
     relevant = sum(r["label"] for r in labelled)
     return {
@@ -329,13 +357,14 @@ def label_report(
         "labelled_rows": len(labelled),
         "relevant_rows": relevant,
         "unlabelled_rows": len(rows) - len(labelled),
-        "baseline": evaluate(lambda score, best: True),
+        "queries_without_pool_max": sum(1 for _, fallback in ceilings.values() if fallback),
+        "baseline": evaluate(lambda score, best: True, never),
         "absolute": [
-            {"min_score": t, **evaluate(lambda score, best, t=t: score >= t)}
+            {"min_score": t, **evaluate(lambda score, best, t=t: score >= t, lambda c, t=t: c < t)}
             for t in absolute_thresholds
         ],
         "relative": [
-            {"margin": m, **evaluate(lambda score, best, m=m: best - score <= m)}
+            {"margin": m, **evaluate(lambda score, best, m=m: best - score <= m, never)}
             for m in relative_margins
         ],
     }
@@ -343,7 +372,7 @@ def label_report(
 
 LABEL_EXPORT_COLUMNS = (
     "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
-    "year", "overview", "rerank_score", "golden_hit", "label",
+    "year", "overview", "rerank_score", "pool_max_rerank_score", "golden_hit", "label",
 )
 
 
@@ -371,6 +400,7 @@ def label_export_rows(queries: list[dict]) -> list[dict]:
             context = " | ".join(f"{turn['role']}: {turn['content']}" for turn in q["history"])
         else:
             context = " | ".join(q.get("context", []))
+        pool_max = q.get("pool_max_rerank_score")
         for rank, movie in enumerate(q["recommended"], start=1):
             score = movie.get("rerank_score")
             rows.append({
@@ -385,6 +415,7 @@ def label_export_rows(queries: list[dict]) -> list[dict]:
                 "year": (movie.get("release_date") or "")[:4],
                 "overview": movie.get("overview") or "",
                 "rerank_score": "" if score is None else repr(float(score)),
+                "pool_max_rerank_score": "" if pool_max is None else repr(float(pool_max)),
                 "golden_hit": int(bool(movie["hit"])),
                 "label": "",
             })

@@ -427,7 +427,7 @@ class TestLabelExport:
 
     HEADER = [
         "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
-        "year", "overview", "rerank_score", "golden_hit", "label",
+        "year", "overview", "rerank_score", "pool_max_rerank_score", "golden_hit", "label",
     ]
 
     def _entries(self):
@@ -458,6 +458,8 @@ class TestLabelExport:
         assert rows[0]["context"] == "earlier" and rows[0]["ranked_query"] == "standalone d1"
         assert rows[0]["query"] == "query d1" and rows[0]["overview"] == "d"
         assert rows[0]["year"] == "2000" and rows[0]["label"] == ""
+        # Best of the whole pool (the patched pipeline's pool is the same two movies).
+        assert [r["pool_max_rerank_score"] for r in rows] == ["0.9", "0.9"]
         assert str(csv_path) in run.stdout
 
     def test_expected_empty_entries_are_exported_ask_entries_skipped(self, tmp_path):
@@ -517,6 +519,32 @@ class TestLabelReport:
         assert "1 rows unlabelled, skipped" in text
         assert "min_score" in text and "margin" in text
         assert "never empties" in text
+
+    def test_pool_max_column_drives_absolute_emptiness(self, tmp_path):
+        path = tmp_path / "labelled.csv"
+        path.write_text(
+            "query_id,rerank_score,pool_max_rerank_score,label\n"
+            "a,0.6,0.95,1\n"
+            "a,0.3,0.95,0\n",
+            encoding="utf-8",
+        )
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        text = out.getvalue()
+        assert "no pool_max_rerank_score" not in text  # no fallback note
+        assert "exported top-k" in text
+
+    def test_csv_without_pool_max_notes_the_fallback(self, tmp_path):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1)])
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        assert "1 queries have no pool_max_rerank_score" in out.getvalue()
+
+    def test_bad_pool_max_names_the_line(self, tmp_path):
+        path = tmp_path / "labelled.csv"
+        path.write_text("query_id,rerank_score,pool_max_rerank_score,label\na,0.6,high,1\n", encoding="utf-8")
+        with pytest.raises(CommandError, match="line 2"):
+            call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
 
     def test_bad_label_names_the_line(self, tmp_path):
         path = self._csv(tmp_path, [self._line("a", 0.9, 1), self._line("a", 0.2, "yes")])

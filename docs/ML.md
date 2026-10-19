@@ -364,17 +364,25 @@ turn's "yes" searches even if the classifier lists them again.
   labels.csv` (dev only; one row per query and returned movie with `query`,
   `context` (role-prefixed for a `history` entry), `ranked_query` -- the text the
   reranker saw, the standalone rewrite for oracle follow-ups --, `expected`,
-  `overview`, `rerank_score`, `golden_hit`, and an empty `label`). `expected:
+  `overview`, `rerank_score`, `pool_max_rerank_score` -- the best score in the
+  query's whole reranked pool, repeated per row --, `golden_hit`, and an empty
+  `label`). `expected:
   "empty"` queries are exported too -- their rows are the negatives you mark 0 --
   and `expected: "ask"` queries are not. Mark `label` 1 (relevant to
   `ranked_query`) or 0; blank rows are skipped. The reader accepts a CSV with or
   without the `expected` column (it ignores it) and with a spreadsheet's BOM, and
-  refuses a labelled row whose `rerank_score` is not a finite number in [0, 1].
+  refuses a labelled row whose `rerank_score` (or any row's non-blank
+  `pool_max_rerank_score`) is not a finite number in [0, 1].
   `evaluate_scoring --label-report labels.csv` needs no database or
   model and prints, for absolute thresholds (`GATE_REPORT_THRESHOLDS`) and for
   relative margins below each query's best score (`GATE_REPORT_MARGINS`), the kept
   precision, the share of relevant movies dropped and the share of queries
-  emptied (a margin never empties a query). The relative variant would need a new
+  emptied (a margin never empties a query). Production gates the whole reranked
+  pool before MMR and refills the top-n from what survives, so an absolute
+  threshold empties a query exactly when its `pool_max_rerank_score` is below it;
+  a CSV without that column (an older export) falls back to the best exported
+  row, with a printed note. Kept precision and relevant dropped are measured over
+  the exported top-k only -- a sample of what the gate filters, not the pool. The relative variant would need a new
   parameter in `core.pipeline.apply_relevance_gate`; neither report writes
   `params.yaml`.
 - *Calibrating from golden hits.* On the GPU machine, with the catalog imported and golden labels

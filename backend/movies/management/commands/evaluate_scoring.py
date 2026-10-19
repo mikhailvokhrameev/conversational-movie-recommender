@@ -687,6 +687,24 @@ class Command(BaseCommand):
             f = open(path, newline="", encoding="utf-8-sig")
         except OSError as e:
             raise CommandError(f"cannot read --label-report file {path}: {e}")
+
+        def score(row, column, line, required):
+            raw = (row.get(column) or "").strip()
+            if raw == "" and not required:
+                return None
+            try:
+                value = float(raw)
+            except ValueError:
+                raise CommandError(
+                    f"{path} line {line}: a labelled row needs a numeric {column}, got {row[column]!r}"
+                    if required else f"{path} line {line}: {column} must be numeric, got {row[column]!r}"
+                )
+            if not (math.isfinite(value) and 0.0 <= value <= 1.0):
+                raise CommandError(
+                    f"{path} line {line}: {column} must be a sigmoid score in [0, 1], got {row[column]!r}"
+                )
+            return value
+
         rows = []
         with f:
             reader = csv.DictReader(f)
@@ -696,24 +714,17 @@ class Command(BaseCommand):
             for row in reader:
                 line = reader.line_num
                 label = (row["label"] or "").strip()
-                if label == "":
-                    rows.append({"query_id": row["query_id"], "rerank_score": None, "label": None})
-                    continue
-                if label not in ("0", "1"):
+                if label not in ("", "0", "1"):
                     raise CommandError(f"{path} line {line}: label must be 1 or 0, got {label!r}")
-                try:
-                    score = float((row["rerank_score"] or "").strip())
-                except ValueError:
-                    raise CommandError(
-                        f"{path} line {line}: a labelled row needs a numeric rerank_score, "
-                        f"got {row['rerank_score']!r}"
-                    )
-                if not (math.isfinite(score) and 0.0 <= score <= 1.0):
-                    raise CommandError(
-                        f"{path} line {line}: rerank_score must be a sigmoid score in [0, 1], "
-                        f"got {row['rerank_score']!r}"
-                    )
-                rows.append({"query_id": row["query_id"], "rerank_score": score, "label": int(label)})
+                rows.append({
+                    "query_id": row["query_id"],
+                    # Unlabelled rows keep their score: it still bounds the
+                    # query's best (the relative margin's reference).
+                    "rerank_score": score(row, "rerank_score", line, required=label != ""),
+                    "label": int(label) if label else None,
+                    # Absent in exports from before the column existed.
+                    "pool_max_rerank_score": score(row, "pool_max_rerank_score", line, required=False),
+                })
         return rows
 
     def _write_label_report(self, report: dict) -> None:
@@ -744,7 +755,20 @@ class Command(BaseCommand):
         self.stdout.write(
             f"  baseline (nothing dropped): precision {pct(base['kept_precision']).strip()}"
         )
-        self.stdout.write("\n  Absolute: keep a movie iff rerank_score >= min_score")
+        self.stdout.write(
+            "  Kept precision and relevant dropped are over the exported top-k rows -- a sample "
+            "of what the gate filters, which in production runs on the whole reranked pool."
+        )
+        if report["queries_without_pool_max"]:
+            self.stdout.write(self.style.WARNING(
+                f"  {report['queries_without_pool_max']} queries have no pool_max_rerank_score "
+                "(an older export): their absolute `queries emptied` uses the best exported row "
+                "instead, which can over-count. Re-export to price it on the pool."
+            ))
+        self.stdout.write(
+            "\n  Absolute: keep a movie iff rerank_score >= min_score; a query empties iff its "
+            "pool's best score is below min_score"
+        )
         table("min_score", "min_score", report["absolute"])
         self.stdout.write(
             "\n  Relative: keep a movie iff it scores within `margin` of its query's best. "

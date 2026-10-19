@@ -324,7 +324,7 @@ class TestLabelExportRows:
         rows = label_export_rows(self._queries())
         assert list(rows[0]) == [
             "query_id", "query", "context", "ranked_query", "expected", "rank", "tmdb_id", "title",
-            "year", "overview", "rerank_score", "golden_hit", "label",
+            "year", "overview", "rerank_score", "pool_max_rerank_score", "golden_hit", "label",
         ]
         assert [(r["query_id"], r["rank"], r["tmdb_id"]) for r in rows] == [("d1", 1, 5), ("d1", 2, 7), ("d2", 1, 9)]
 
@@ -378,6 +378,12 @@ class TestLabelExportRows:
             "recommended": [_rec(5, 0.5)],
         }
         assert label_export_rows([query])[0]["context"] == "user: a heist film | assistant: Heat."
+
+    def test_pool_max_is_repeated_per_row_full_precision_or_blank(self):
+        queries = self._queries()
+        queries[0]["pool_max_rerank_score"] = 0.95123456789
+        rows = label_export_rows(queries)
+        assert [r["pool_max_rerank_score"] for r in rows] == [repr(0.95123456789)] * 2 + [""]
 
     def test_missing_overview_is_blank(self):
         q = self._queries()
@@ -455,6 +461,24 @@ class TestLabelReport:
         report = label_report([], [0.5], [0.1])
         assert report["queries"] == 0
         assert report["absolute"][0]["queries_emptied_share"] is None
+
+    def test_absolute_emptiness_uses_the_pool_max(self):
+        # The exported top-k tops out at 0.6, but the pool held a 0.95 the gate
+        # would keep (and MMR would refill around), so t=0.9 does not empty it.
+        rows = [_lr("a", 0.6, 1, pool_max_rerank_score=0.95), _lr("a", 0.3, 0, pool_max_rerank_score=0.95)]
+        report = label_report(rows, [0.9, 0.96], [])
+        assert [r["queries_emptied_share"] for r in report["absolute"]] == [0.0, 1.0]
+        assert report["queries_without_pool_max"] == 0
+        # Kept precision / relevant dropped are still over the exported rows.
+        assert report["absolute"][0]["relevant_dropped_share"] == 1.0
+
+    def test_absolute_emptiness_falls_back_to_the_top_k_max(self):
+        # No pool column (an older export): the best exported row, labelled or
+        # not, stands in for the pool max, and the fallback is counted.
+        rows = [_lr("a", 0.6, None), _lr("a", 0.3, 1)]
+        report = label_report(rows, [0.5, 0.7], [])
+        assert [r["queries_emptied_share"] for r in report["absolute"]] == [0.0, 1.0]
+        assert report["queries_without_pool_max"] == 1
 
     def test_defaults_use_the_report_grids(self):
         report = label_report(self.ROWS)
