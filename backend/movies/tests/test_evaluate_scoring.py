@@ -548,6 +548,21 @@ class TestLabelReport:
         with pytest.raises(CommandError, match="line 2"):
             call_command("evaluate_scoring", "--label-report", str(path), stdout=StringIO())
 
+    def test_says_run_options_are_ignored(self, tmp_path):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1)])
+        out = StringIO()
+        call_command(
+            "evaluate_scoring", "--label-report", str(path), "--split", "test", "--intent", "oracle",
+            "--k", "0", stdout=out,
+        )
+        assert "--split, --intent, --k are ignored" in out.getvalue()
+
+    def test_defaults_print_no_ignored_note(self, tmp_path):
+        path = self._csv(tmp_path, [self._line("a", 0.9, 1)])
+        out = StringIO()
+        call_command("evaluate_scoring", "--label-report", str(path), stdout=out)
+        assert "ignored" not in out.getvalue()
+
     def test_bad_label_names_the_line(self, tmp_path):
         path = self._csv(tmp_path, [self._line("a", 0.9, 1), self._line("a", 0.2, "yes")])
         with pytest.raises(CommandError, match="line 3"):

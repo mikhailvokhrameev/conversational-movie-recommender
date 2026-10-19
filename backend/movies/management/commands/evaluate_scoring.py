@@ -94,6 +94,7 @@ ACCURACY_KEYS = ("precision_at_k", "recall_at_k", "ndcg_at_k")
 # metrics) but counted as misclassified -- in production it would have
 # returned no recommendations at all.
 NON_SEARCH_CATEGORIES = ("follow_up", "general_chat", "clarify")
+DEFAULT_K = 5
 OWN_OPTIONS = (
     "golden_set", "split", "intent", "k", "sweep", "gate_report", "label_export", "label_report", "weights",
     "llm_judge", "output",
@@ -217,8 +218,8 @@ class Command(BaseCommand):
         parser.add_argument(
             "--k",
             type=int,
-            default=5,
-            help="Number of recommendations to evaluate (default: 5)",
+            default=DEFAULT_K,
+            help=f"Number of recommendations to evaluate (default: {DEFAULT_K})",
         )
         parser.add_argument(
             "--sweep",
@@ -273,9 +274,6 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
-        k = options["k"]
-        if k < 1:
-            raise CommandError("--k must be at least 1")
         sweep = options["sweep"]
         report_gate = options["gate_report"]
         label_export = options["label_export"]
@@ -286,8 +284,24 @@ class Command(BaseCommand):
             )
         if label_report_path is not None:
             # Before anything that needs the database, Ollama or the golden set.
+            ignored = [
+                flag for flag, given in (
+                    ("--split", options["split"] is not None),
+                    ("--intent", options["intent"] != "e2e"),
+                    ("--k", options["k"] != DEFAULT_K),
+                ) if given
+            ]
+            if ignored:
+                self.stdout.write(
+                    f"{', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} ignored by "
+                    "--label-report: the CSV already holds "
+                    "the run they described."
+                )
             self._write_label_report(label_report(self._read_labelled_csv(Path(label_report_path))))
             return
+        k = options["k"]
+        if k < 1:
+            raise CommandError("--k must be at least 1")
         dev_only = sweep or report_gate or label_export is not None
         split = options["split"] or ("dev" if dev_only else "test")
         if sweep and split != "dev":
