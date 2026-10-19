@@ -74,6 +74,7 @@ from core.evaluation import (
 )
 from core.golden_set import (
     DEFAULT_EXPECTED,
+    SEARCH_CATEGORIES,
     default_golden_set_path,
     load_golden_set,
     prior_turns,
@@ -527,8 +528,10 @@ class Command(BaseCommand):
         if p.expected == "empty":
             outcome_correct = not top
         elif p.expected == "ask":
-            # What makes ChatView ask instead of searching (ADR 0011).
-            outcome_correct = bool(p.unsupported_constraints)
+            # What makes ChatView ask instead of searching (ADR 0011): only a
+            # search-like turn reaches the question; a conversational one is
+            # answered without it.
+            outcome_correct = p.category in SEARCH_CATEGORIES and bool(p.unsupported_constraints)
         else:
             outcome_correct = None
 
@@ -600,10 +603,15 @@ class Command(BaseCommand):
             "unresolved_refs": sum(len(p.unresolved) for p in prepared),
             "judge_failures": sum(q.get("judge_failures", 0) for q in queries),
             "empty_results": sum(1 for q in answerable if not q["recommended"]),
-            "misclassified": sum(1 for p in prepared if p.misclassified),
+            # Both over answerable entries: on an "ask" entry unsupported
+            # constraints are the right answer, and on an "empty" one neither
+            # is the failure it is for a query that has movies to find.
+            "misclassified": sum(1 for p in prepared if p.expected == "results" and p.misclassified),
             "possible_parse_fallbacks": sum(1 for p in prepared if p.possible_parse_fallback),
-            # Queries production would answer with a question and no movies.
-            "unsupported_constraints": sum(1 for p in prepared if p.unsupported_constraints),
+            # Answerable queries production would answer with a question and no movies.
+            "unsupported_constraints": sum(
+                1 for p in prepared if p.expected == "results" and p.unsupported_constraints
+            ),
             "expected_empty": len(outcomes("empty")),
             "expected_empty_correct": sum(outcomes("empty")),
             "expected_ask": len(outcomes("ask")),

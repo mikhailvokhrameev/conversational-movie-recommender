@@ -656,6 +656,26 @@ class TestExpectedEmptyAndAsk:
         assert record["counters"]["expected_empty_correct"] == 0
         assert record["counters"]["expected_ask_correct"] == 0
 
+    @pytest.mark.parametrize("category", ["follow_up", "general_chat", "clarify"])
+    def test_ask_needs_a_search_category(self, tmp_path, category):
+        # ChatView only asks on new_search/refinement; a conversational reply
+        # with unsupported constraints never reaches the question.
+        intent = MessageIntent(category=category, semantic_query="x", unsupported_constraints=["with Keanu Reeves"])
+        record = _Run(tmp_path, [_ask()], intent=intent)()
+        assert record["queries"][0]["outcome_correct"] is False
+        assert record["counters"]["expected_ask_correct"] == 0
+
+    def test_refinement_with_unsupported_constraints_asks(self, tmp_path):
+        intent = MessageIntent(category="refinement", semantic_query="x", unsupported_constraints=["4K"])
+        record = _Run(tmp_path, [_ask()], intent=intent)()
+        assert record["queries"][0]["outcome_correct"] is True
+
+    def test_parse_counters_are_over_answerable_entries_only(self, tmp_path):
+        intent = MessageIntent(category="clarify", semantic_query="x", unsupported_constraints=["4K"])
+        record = _Run(tmp_path, [_entry(), _empty(), _ask()], intent=intent)()
+        assert record["counters"]["misclassified"] == 1
+        assert record["counters"]["unsupported_constraints"] == 1
+
     def test_not_unscorable_and_not_in_accuracy_aggregates(self, tmp_path):
         run = _Run(tmp_path, [_entry(), _empty(), _ask()], movies=[_movie(1), _movie(2)], grades={1: 2})
         record = run("--k", "2")

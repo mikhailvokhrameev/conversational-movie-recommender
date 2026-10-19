@@ -514,7 +514,7 @@ the final message's category in oracle mode).
 |------------|----------------|-----------|
 | `results` (default) | A ranked list | P/R/nDCG against `relevant` (required) |
 | `empty` | Nothing: the catalog cannot serve the request | `outcome_correct` iff no movie is returned; needs `oracle_intent` (may be `{}`) |
-| `ask` | A question: a condition the catalog cannot check (ADR 0011) | `outcome_correct` iff the e2e parse lists `unsupported_constraints`; `e2e` only |
+| `ask` | A question: a condition the catalog cannot check (ADR 0011) | `outcome_correct` iff the e2e parse is `new_search`/`refinement` and lists `unsupported_constraints`; `e2e` only |
 
 `empty`/`ask` entries have no `relevant` list (absent or `[]`). They are not
 accuracy-scored, are not `unscorable_queries` (that counter means a labelling
@@ -564,7 +564,9 @@ or each `context` message as a user turn) are passed as history (the shape
 `ChatSession.history` uses), and the predicted category is
 recorded per query. A golden query classified `follow_up`/`general_chat` is
 still searched, so it still gets metrics, but it counts in `misclassified`
--- in production it would have produced no recommendations.
+-- in production it would have produced no recommendations. `misclassified`
+and `unsupported_constraints` count answerable (`expected: "results"`) entries
+only, so `empty`/`ask` entries do not inflate them.
 
 `aclassify_and_parse` never raises: on a failed request or an invalid reply
 it falls back to `new_search` with the raw message and no filters. So `e2e`
@@ -575,7 +577,8 @@ vague query can genuinely parse that way, but a run where many do is a run
 where parsing failed. A parsed intent with `unsupported_constraints` (ADR
 0011) is still searched, but its row is flagged `UNSUPPORTED(...)` and it
 counts in `unsupported_constraints`: in production that turn asks a question
-and shows no movies (an `expected: "ask"` entry is correct exactly then). Only the
+and shows no movies (an `expected: "ask"` entry is correct exactly then, if
+the parse is also `new_search`/`refinement`: ChatView asks only on a search turn). Only the
 text of the prior turns is replayed, not the session state stored beside them,
 so the exclusion of already-shown movies on refinements and the
 `pending_relaxation` follow-up are not reproduced. Comparing `e2e`
