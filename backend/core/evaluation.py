@@ -331,20 +331,22 @@ def label_report(
         if any(r["label"] is not None for r in group)
     }
 
-    def ceiling(qid):
-        group = all_by_query[qid]
-        pool = next((r["pool_max_rerank_score"] for r in group if r.get("pool_max_rerank_score") is not None), None)
-        if pool is not None:
-            return pool, False
-        return max(r["rerank_score"] for r in group if r["rerank_score"] is not None), True
-
-    ceilings = {qid: ceiling(qid) for qid in by_query}
-
     answerable = {qid for qid, group in by_query.items() if any(r["label"] for r in group)}
     best_scores = {
         qid: max(r["rerank_score"] for r in all_by_query[qid] if r["rerank_score"] is not None)
         for qid in by_query
     }
+
+    def ceiling(qid):
+        """The score an absolute gate must clear for the query to keep anything,
+        and whether it fell back to the best exported row."""
+        pool = next(
+            (r["pool_max_rerank_score"] for r in all_by_query[qid] if r.get("pool_max_rerank_score") is not None),
+            None,
+        )
+        return (pool, False) if pool is not None else (best_scores[qid], True)
+
+    ceilings = {qid: ceiling(qid) for qid in by_query}
 
     def evaluate(keep, empties) -> dict:
         kept = relevant_kept = emptied = unanswerable_emptied = 0
