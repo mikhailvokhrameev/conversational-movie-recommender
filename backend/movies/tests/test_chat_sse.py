@@ -1557,6 +1557,9 @@ class TestYearPastTheCatalog(_NoDbChat):
          "movies from 2049 like blade runner 2049"),
         (MessageIntent(category="general_chat"), "have you seen Blade Runner 2049?"),
         (MessageIntent(category="new_search"), "something like 2046"),
+        # A year used as a descriptor ("2046 quality") is not a release year.
+        (MessageIntent(category="new_search"), "a film of 2046 quality"),
+        (MessageIntent(category="general_chat"), "a movie of 2046 style"),
         # Decision: "set in" names the story's setting, not when the film came out.
         (MessageIntent(category="new_search", themes=["future"]), "movies set in 2077"),
     ])
@@ -1565,7 +1568,7 @@ class TestYearPastTheCatalog(_NoDbChat):
 
     @pytest.mark.parametrize("message", [
         "movies from 2026", "2026 movies", "films released in 2026", "best films of 2026",
-        "anything after 2026?", "what came out in 2026",
+        "anything after 2026?", "what came out in 2026", "films of 2026 with robots",
     ])
     def test_a_release_year_wording_routes(self, message):
         routed = self._route(MessageIntent(category="general_chat"), message)

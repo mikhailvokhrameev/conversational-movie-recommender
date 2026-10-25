@@ -99,9 +99,11 @@ _YEAR = r"(?:1[89]|2\d)\d\d"
 # A year worded as a release year: after "from", "of", "after", "since",
 # "released" or "in" (not "set in": that is the story's setting), or before
 # "movies"/"films"/"releases" ("2026 movies"). A bare year ("Blade Runner 2049",
-# "something like 2046") is not taken for one.
+# "something like 2046") is not taken for one, nor is one used as a descriptor
+# ("a film of 2046 quality": followed by quality/style/vibe/feel/level/...).
 _RELEASE_YEAR_RE = re.compile(
     rf"\b(?:from|of|after|since|released|(?<!\bset\s)in)\s+(?P<after_word>{_YEAR})\b"
+    rf"(?!\s+(?:quality|style|vibes?|feel|level|standard|caliber|era)\b)"
     rf"|(?<![\w-])(?P<before_noun>{_YEAR})(?=\s+(?:movies?|films?|releases?)\b)",
     re.IGNORECASE,
 )
@@ -124,8 +126,8 @@ def _route_past_catalog_year(intent: MessageIntent, message: str, year_bounds: t
     Only a year worded as a release year counts (`_RELEASE_YEAR_RE`), and never
     one that is part of a reference film's title ("movies from 2049 like Blade
     Runner 2049"). Residual false positive: a title year right after one of the
-    release-year words when the classifier did not list that film ("a film of
-    2046 quality"); that gets the catalog-end reply instead of a search."""
+    release-year words when the classifier did not list that film; that gets the
+    catalog-end reply instead of a search."""
     if year_bounds is None or intent.category == "follow_up":
         return intent
     titles = " ".join(intent.reference_films).casefold()
