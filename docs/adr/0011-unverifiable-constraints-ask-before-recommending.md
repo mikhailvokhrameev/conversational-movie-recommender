@@ -31,7 +31,8 @@ which does not tell the user which constraint to loosen.
    turn with `pending_relaxation: {"dropped": [...]}`. On the next turn, constraints in
    `dropped` are ignored (case-insensitive) even if the classifier lists them again, so
    a "yes" searches. A new unsupported condition still gets asked about. A "no" is an
-   ordinary next turn.
+   ordinary next turn. (`pending_relaxation` can also hold `search`: the catalog-end
+   reply's offered newest-years search, run on a bare "yes" -- see `docs/api.md`.)
 3. An empty result (hard filters, or later the relevance gate) gets a fixed reply that
    names the active hard filters, built from the intent dict: "Nothing in the catalog
    matches all of: released 1950–1959, under 20 min, rating ≥ 9.0. Which one should I
