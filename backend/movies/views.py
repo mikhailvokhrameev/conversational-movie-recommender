@@ -458,14 +458,18 @@ def _result_top_n(result_count):
 
 
 # "0 movies", "zero films" (not "10 movies", "2.0 movies"): a count of nothing.
+# Not checked for follow_up or general_chat (see `_asks_for_zero`).
 _ZERO_COUNT_RE = re.compile(r"(?<![\w.])(?:0|zero)\s+(?:more\s+)?(?:movies?|films?)\b", re.IGNORECASE)
 
 
 def _asks_for_zero(intent: MessageIntent, message: str) -> bool:
     """The user asked to be shown no movies: the classifier's result_count is
     zero or below, or the message says so ("I want 0 movies"; the model then
-    tends to file the phrase under unsupported_constraints). Not a search."""
-    if intent.category == "follow_up":
+    tends to file the phrase under unsupported_constraints). Not a search.
+    follow_up and general_chat are exempt: there "0 movies" is a statement about
+    movies seen ("I've seen 0 movies by Kubrick"), not a request to be shown some.
+    clarify, new_search and refinement still count."""
+    if intent.category in ("follow_up", "general_chat"):
         return False
     return (intent.result_count is not None and intent.result_count <= 0) or bool(_ZERO_COUNT_RE.search(message))
 

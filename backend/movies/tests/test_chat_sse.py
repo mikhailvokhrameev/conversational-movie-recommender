@@ -1184,6 +1184,32 @@ class TestUnsupportedConstraintsAndRelaxation:
         from movies.views import _asks_for_zero
         assert not _asks_for_zero(MessageIntent(category="new_search"), message)
 
+    @pytest.mark.parametrize("result_count", [None, 0])
+    def test_general_chat_is_never_a_zero_count(self, result_count):
+        # A statement about movies seen, not a request to be shown some.
+        from movies.views import _asks_for_zero
+        intent = MessageIntent(category="general_chat", result_count=result_count)
+        assert not _asks_for_zero(intent, "I've seen 0 movies by Kubrick")
+
+    @pytest.mark.parametrize("category, message", [
+        ("new_search", "give me some comedies"), ("new_search", "I want 0 movies"),
+        ("refinement", "show me zero films please"), ("clarify", "show me 0 movies"),
+    ])
+    def test_zero_count_still_fires_outside_follow_up_and_general_chat(self, category, message):
+        from movies.views import _asks_for_zero
+        result_count = 0 if message == "give me some comedies" else None
+        assert _asks_for_zero(MessageIntent(category=category, result_count=result_count), message)
+
+    @pytest.mark.asyncio
+    async def test_a_clarify_zero_count_gets_the_zero_count_reply(self):
+        explain = MagicMock(side_effect=AssertionError("no LLM for this reply"))
+        generate = MagicMock(side_effect=AssertionError("no search for this reply"))
+        events, _ = await self._run(
+            MessageIntent(category="clarify"), generate=generate, explain=explain, message="show me 0 movies",
+        )
+        text = "".join(d["text"] for name, d in events if name == "token")
+        assert text == f"I can't show zero movies. How many would you like, from 1 to {settings.MAX_N}?"
+
     @pytest.mark.asyncio
     async def test_short_line_compares_against_the_requested_count(self):
         # Two movies back when three were asked for: short. Two asked for: not.
