@@ -1322,6 +1322,17 @@ class TestConversationalPromptGrounding:
         assert "source of truth" in CONVERSATIONAL_SYSTEM_PROMPT
         assert "not in your catalog data" in CONVERSATIONAL_SYSTEM_PROMPT
 
+    def test_prompt_answers_only_from_the_supplied_catalog_facts(self):
+        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+
+        rule = next(line for line in CONVERSATIONAL_SYSTEM_PROMPT.splitlines() if "only from the catalog facts" in line)
+        for field in ("title", "year", "genres", "runtime", "description"):
+            assert field in rule
+        assert "actor" in rule and "director" in rule
+        assert "never guess" in rule
+        assert "do not add it from general knowledge" in rule
+        assert "marked as such" not in CONVERSATIONAL_SYSTEM_PROMPT
+
 
 class TestStructuredOutputSchema:
     """`format` carries a JSON schema (Ollama structured outputs), not the bare
