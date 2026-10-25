@@ -163,6 +163,10 @@ conversational path. A `session` event is sent first (`{"session_id": "...",
 but have no movie results to attach it to; `token` events follow for the reply
 text -- no `movies`, no `blurb`.
 
+A `follow_up` with nothing to follow up on (no shown list in the session and no open card, e.g. an opening
+message naming a film or plot) is treated as a `new_search` and searched
+(`core.ollama_client.route_unanchored_follow_up`).
+
 **Terminal**: A `done` event always closes the stream. If explanation generation
 failed, an `error` event precedes `done`.
 

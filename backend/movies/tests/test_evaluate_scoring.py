@@ -140,13 +140,32 @@ class TestE2eIntent:
         record = _Run(tmp_path, [_entry()])()
         assert "history" not in record["queries"][0]
 
-    @pytest.mark.parametrize("category", ["follow_up", "general_chat", "clarify"])
+    @pytest.mark.parametrize("category", ["general_chat", "clarify"])
     def test_non_search_category_still_searches_and_counts_misclassified(self, tmp_path, category):
         run = _Run(tmp_path, [_entry()], intent=MessageIntent(category=category, semantic_query="x"))
         record = run()
         run.pipeline.assert_called_once()
         assert record["counters"]["misclassified"] == 1
         assert record["queries"][0]["misclassified"] is True
+
+    def test_follow_up_after_a_reply_counts_misclassified(self, tmp_path):
+        history = [{"role": "user", "content": "a heist movie"}, {"role": "assistant", "content": "Heat."}]
+        run = _Run(tmp_path, [_entry(history=history, oracle_standalone_query="x")],
+                   intent=MessageIntent(category="follow_up", semantic_query="x"))
+        record = run()
+        assert record["queries"][0]["predicted_category"] == "follow_up"
+        assert record["counters"]["misclassified"] == 1
+
+    @pytest.mark.parametrize("entry_extra", [
+        {}, {"context": ["a heist movie"], "oracle_standalone_query": "x"},
+        {"history": [{"role": "user", "content": "hi"}], "oracle_standalone_query": "x"},
+    ])
+    def test_follow_up_with_nothing_shown_is_a_search_as_in_chat_view(self, tmp_path, entry_extra):
+        run = _Run(tmp_path, [_entry(**entry_extra)], intent=MessageIntent(category="follow_up", semantic_query="x"))
+        record = run()
+        assert record["queries"][0]["predicted_category"] == "new_search"
+        assert record["counters"]["misclassified"] == 0
+        run.pipeline.assert_called_once()
 
 
 class TestUnsupportedConstraints:
@@ -676,7 +695,8 @@ class TestExpectedEmptyAndAsk:
         # ChatView only asks on new_search/refinement; a conversational reply
         # with unsupported constraints never reaches the question.
         intent = MessageIntent(category=category, semantic_query="x", unsupported_constraints=["with Keanu Reeves"])
-        record = _Run(tmp_path, [_ask()], intent=intent)()
+        history = [{"role": "user", "content": "a heist movie"}, {"role": "assistant", "content": "Heat."}]
+        record = _Run(tmp_path, [_ask(history=history, oracle_standalone_query="x")], intent=intent)()
         assert record["queries"][0]["outcome_correct"] is False
         assert record["counters"]["expected_ask_correct"] == 0
 

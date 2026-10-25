@@ -431,11 +431,19 @@ class TestAssistantTurnText:
 class TestChatSSEConversational:
     @pytest.mark.asyncio
     async def test_follow_up_returns_text_only(self):
+        from movies.models import ChatSession
+
+        # A follow_up needs a shown list to follow up on, else it is searched.
+        session = await ChatSession.objects.acreate(history=[
+            {"role": "user", "content": "комедию"},
+            {"role": "assistant", "content": "[[1]] a", "movie_ids": [1], "movie_facts": [{"title": "Test Film", "year": 2024}]},
+        ])
         factory = AsyncRequestFactory()
         request = factory.post(
             "/api/chat/",
-            data=json.dumps({"message": "расскажи подробнее"}),
+            data=json.dumps({"message": "расскажи подробнее", "session_id": str(session.session_id)}),
             content_type="application/json",
+            headers={"X-Session-Token": session.session_token},
         )
 
         append_history_mock = AsyncMock()
@@ -1383,6 +1391,79 @@ def test_ordinal_positions(message, expected):
     from movies.views import _ordinal_positions
 
     assert _ordinal_positions(message) == expected
+
+
+class TestFollowUpWithNothingShown:
+    """No DB: session, history writers and the pipeline are patched. A follow_up
+    needs a shown list (or an open card) to follow up on; without one the turn
+    is searched."""
+
+    SHOWN = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "[[1]] a", "movie_ids": [10], "movie_facts": [{"title": "Alien", "year": 1979}]},
+    ]
+
+    async def _run(self, history=(), selected=None):
+        seen = {"generate": 0, "converse": 0}
+        session = MagicMock()
+        session.session_id = "00000000-0000-0000-0000-000000000001"
+        session.session_token = "token"
+        session.history = list(history)
+        generate = _mock_generate_and_score()
+
+        async def _counting_generate(*args, **kwargs):
+            seen["generate"] += 1
+            return await generate(*args, **kwargs)
+
+        async def _converse(message, history=None, system_prompt=None, selected_movie=None,
+                           selected_position=None):
+            seen["converse"] += 1
+            yield "ok"
+
+        body = {"message": "any documentary on the making of Dune: Part Two?"}
+        if selected is not None:
+            body["selected_tmdb_id"] = selected
+        request = AsyncRequestFactory().post(
+            "/api/chat/", data=json.dumps(body), content_type="application/json",
+        )
+        with patch("movies.views._get_or_create_session", AsyncMock(return_value=session)), \
+             patch("movies.views.aclassify_and_parse", _mock_classify_and_parse("follow_up", semantic_query="dune documentary")), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", _counting_generate), \
+             patch("movies.views._load_selected_movie", AsyncMock(return_value={"serial_name": "Alien"})), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", AsyncMock()), \
+             patch("movies.views.astream_conversational", _converse), \
+             patch("movies.views.astream_explanation_parts", _mock_explanation_parts((None, "Here you go."))):
+            response = await ChatView.as_view()(request)
+            text = b""
+            async for chunk in response.streaming_content:
+                text += chunk if isinstance(chunk, bytes) else chunk.encode()
+        return seen, [event for event, _ in _parse_sse(text.decode())]
+
+    @pytest.mark.asyncio
+    async def test_an_opening_follow_up_runs_the_search(self):
+        seen, events = await self._run()
+        assert seen == {"generate": 1, "converse": 0}
+        assert "movies" in events
+
+    @pytest.mark.asyncio
+    async def test_a_session_without_a_shown_list_searches(self):
+        # Chat turns only: no assistant entry carries movie_facts.
+        history = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "Hello!"}]
+        seen, _ = await self._run(history)
+        assert seen == {"generate": 1, "converse": 0}
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_after_a_shown_list_stays_conversational(self):
+        seen, events = await self._run(self.SHOWN)
+        assert seen == {"generate": 0, "converse": 1}
+        assert "movies" not in events
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_on_an_open_card_stays_conversational(self):
+        seen, _ = await self._run(self.SHOWN, selected=10)
+        assert seen == {"generate": 0, "converse": 1}
 
 
 class TestSelectedMovie:

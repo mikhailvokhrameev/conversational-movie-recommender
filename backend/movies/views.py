@@ -17,7 +17,7 @@ from core.catalog_bounds import catalog_year_range
 from core.embedding_service import encode_query
 from core.ollama_client import (
     CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent,
-    aclassify_and_parse, check_explanation_titles,
+    aclassify_and_parse, check_explanation_titles, route_unanchored_follow_up,
     astream_conversational, astream_explanation_parts,
 )
 from core.pipeline import generate_and_score
@@ -510,6 +510,8 @@ class ChatView(View):
             t0 = time.perf_counter()
             selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history, message)
             intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
+            has_shown_list = bool(_latest_shown(session.history)[1]) or selected_id is not None
+            intent = route_unanchored_follow_up(intent, has_shown_list)
             if _release_years(message):
                 year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
                 intent = _route_past_catalog_year(intent, message, year_bounds)

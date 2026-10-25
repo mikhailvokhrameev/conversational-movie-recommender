@@ -47,6 +47,7 @@ from core.ollama_client import (
     _fallback_intent,
     _resolve_fields,
     parse_intent,
+    route_unanchored_follow_up,
 )
 from core.entity_resolution import catalog_countries, catalog_languages
 
@@ -1968,3 +1969,33 @@ class TestSelectedMovieBlock:
 
     def test_classify_prompt_excludes_other_positions_from_the_note(self):
         assert '"the second one") is not about the note' in CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+
+
+class TestRouteUnanchoredFollowUp:
+    """A follow_up needs something to follow up on: a shown list or an open card."""
+
+    def test_follow_up_with_nothing_shown_becomes_a_new_search(self):
+        intent = MessageIntent(
+            category="follow_up", semantic_query="a robot raises a gosling", genres=["Animation"],
+            min_release_year=2020,
+        )
+        routed = route_unanchored_follow_up(intent, has_shown_list=False)
+        assert routed.category == "new_search"
+        assert routed.model_copy(update={"category": "follow_up"}) == intent
+
+    def test_follow_up_with_a_shown_list_is_unchanged(self):
+        intent = MessageIntent(category="follow_up", semantic_query="x")
+        assert route_unanchored_follow_up(intent, has_shown_list=True) is intent
+
+    @pytest.mark.parametrize("category", ["new_search", "refinement", "general_chat", "clarify"])
+    def test_other_categories_are_unchanged(self, category):
+        intent = MessageIntent(category=category, semantic_query="x")
+        assert route_unanchored_follow_up(intent, has_shown_list=False) is intent
+
+    def test_logs_the_rewrite(self, caplog):
+        intent = MessageIntent(category="follow_up", semantic_query="x")
+        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+            route_unanchored_follow_up(intent, has_shown_list=False)
+        assert [r.getMessage() for r in caplog.records if r.levelno == logging.INFO] == [
+            "follow_up with nothing shown yet: treating as new_search",
+        ]
