@@ -69,9 +69,9 @@ set, clamped to `diversification.max_n`; otherwise `diversification.top_n`, 5), 
 
 `no_match` is `false` on every normal response. It is `true` only when
 the turn ends with no movies to show: either the relevance gate
-(`reranking.min_score`, off by default -- see `ML.md`) removed every candidate, or
+(`reranking.min_score`, 0.005 as shipped -- see `ML.md`) removed every candidate, or
 the hard SQL filters left nothing to rank, which
-can happen with the gate off. Then `movies` is `[]`, the LLM explanation call is skipped, and
+can happen whether or not the gate is enabled. Then `movies` is `[]`, the LLM explanation call is skipped, and
 the stream is just `movies`, one `token` event carrying a fixed short message
 naming the active hard filters ("Nothing in the catalog matches all of: released
 1950–1959, under 20 min, rating ≥ 9.0. Which one should I loosen?"; with no hard
@@ -343,7 +343,7 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
   score_candidates(candidates, ...)          ← semantic + metadata + session + popularity,
                                                each normalized across the set
   rerank_candidates(query, scored)           ← cross-encoder, on by default, top_k=50
-  apply_relevance_gate(reranked, min_score)  ← drops rerank_score < min_score (off by default)
+  apply_relevance_gate(reranked, min_score)  ← drops rerank_score < min_score (0.005 as shipped)
   mmr_diversify(gated, top_n=5)              ← diversity selection
                  |
   _save_session()                            ← atomic update with SELECT FOR UPDATE

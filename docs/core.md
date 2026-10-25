@@ -41,7 +41,7 @@ scoring.score_candidates() over the whole candidate set
 reranking.rerank_candidates(query_text, scored)   [optional, GPU cross-encoder]
   |   top-50 by score -> (query, movie) pairs -> blended 50/50 with scorer
   v
-pipeline.apply_relevance_gate(reranked, min_score)   [off by default: min_score null]
+pipeline.apply_relevance_gate(reranked, min_score)   [min_score 0.005; null turns it off]
   |   drops rerank_score < min_score and unscored candidates; skipped if the
   |   reranker did not score the request; may leave fewer than the requested count (default top_n), or none
   v

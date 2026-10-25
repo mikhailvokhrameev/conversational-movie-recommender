@@ -83,7 +83,8 @@ llm:
   # conditions were added): call=classify_parse (the heaviest call; 79 calls)
   # mean ~2.7k, max ~4.0k (min ~2.4k); call=explanation (12 calls) mean ~1.5k,
   # max ~2.2k; call=conversational (2 calls) ~1.8k; no context-tokens warning.
-  # MEASURED 2026-10-25 (GPU box, with those additions): 21 call=classify_parse
+  # MEASURED 2026-10-25 (GPU box, after those additions; whether it already had
+  # the two latest few-shots is the caveat below): 21 call=classify_parse
   # calls over one long dialogue (6+ turns, including one "top 10" display):
   # mean ~3.8k (3824), max 4629 prompt tokens; no context-tokens warning
   # fired. That leaves ~1.5k of headroom at the max in 6144. CAVEAT: the exact
@@ -116,9 +117,10 @@ llm:
   # = 10 movies x (200 chars ~50 + ~15 title/year/genres/runtime) ~0.65k at the
   # cap (~0.33k for the default 5), minus the titles-only line it replaces
   # (~0.03k per 5 titles), so ~+0.6k at the cap (~+0.3k for 5). That block is
-  # already counted in the measured figures above; a second one would take
-  # most of the ~1.5k headroom (and, at the ~5.3k heavy case, all of it) and
-  # no longer fits. Older sets stay titles-only
+  # already counted in the measured figures above; a second one (~0.6k) would
+  # take ~40% of the ~1.5k headroom at the measured max (4629 + 0.6k = ~5.2k)
+  # but ~75% of the ~0.84k at the possible ~5.3k heavy case (~5.9k, over the
+  # ~5530 warning), so it is not affordable. Older sets stay titles-only
   # precisely to keep this to ONE block; do not replay facts for every past set without re-checking this
   # budget.
   #
@@ -373,8 +375,11 @@ session:
   # if that run predated the latest few-shots), so ~1.5k of headroom in the
   # 6144-token window -- see llm.num_ctx for the figures and the caveat.
   # 6 stays: lower it to 5 only if the max exceeds ~5.5k. A pair is ~0.34k
-  # typical, ~0.54k at the cap, so one more pair at the cap takes most of
-  # that headroom and a second one does not fit; check the
+  # typical, ~0.54k at the cap. At the measured max (~1.5k headroom) one more
+  # pair at the cap fits (4629 + 0.54k = ~5.2k) and two just fit under the
+  # window (~5.7k) but pass the ~5530 warning; at the possible ~5.3k heavy case
+  # (~0.84k headroom) one more fits (~5.9k, over the warning) and two do not.
+  # Check the
   # logged prompt_tokens first, and raise llm.num_ctx with it for more
   # (paying the extra KV-cache VRAM). Minimum 1: 0 does NOT
   # mean unlimited, and settings.py refuses to load a value below 1.

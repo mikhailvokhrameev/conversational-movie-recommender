@@ -333,7 +333,7 @@ the catalog matches all of: released 1950–1959, under 20 min. Which one should
 I loosen?", or a generic "rephrase or loosen" when no hard filter was set),
 skip the explanation LLM call, and report `no_match: true` in the `movies` event
 (see `api.md`). The same reply is sent whenever the turn ends with no movies, so
-also when hard SQL filters leave no candidates with the gate off.
+also when hard SQL filters leave no candidates, whether or not the gate is enabled.
 
 **Constraints the catalog cannot check** (ADR 0011): actors, director, silent or
 black-and-white, awards and studio are not in the catalog. Classify+parse puts
