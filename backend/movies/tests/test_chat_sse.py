@@ -1496,3 +1496,93 @@ class TestYearPastTheCatalog(_NoDbChat):
             "The catalog only covers films released up to September 2023, so there is "
             "nothing from 2026. Want the newest films it has (2022–2023)?"
         )
+
+
+class TestYesToTheNewestYearsOffer(_NoDbChat):
+    """The catalog-end reply offers the newest years; a bare "yes" must search
+    them, not depend on the classifier reading the offer back."""
+
+    OFFERED = {
+        "category": "new_search", "semantic_query": "a comedy", "standalone_query": "comedies from 2025",
+        "genres": ["Comedy"], "min_release_year": 2022, "max_release_year": 2023,
+    }
+
+    def _history(self, **pending):
+        return [
+            {"role": "user", "content": "2025 comedies"},
+            {"role": "assistant", "content": "The catalog only covers films released up to ...",
+             "pending_relaxation": pending or {"search": dict(self.OFFERED)}},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_catalog_end_reply_stores_the_offered_search(self):
+        intent = MessageIntent(
+            category="new_search", semantic_query="a comedy", standalone_query="comedies from 2025",
+            genres=["Comedy"], min_release_year=2025, max_release_year=2025,
+        )
+        events, append_history = await self._run(
+            intent, "2025 comedies", generate=self._recording_generate([], movies=[]),
+        )
+
+        assert "Want the newest films it has (2022–2023)?" in dict(events)["token"]["text"]
+        search = append_history.await_args.kwargs["pending_relaxation"]["search"]
+        assert (search["min_release_year"], search["max_release_year"]) == (2022, 2023)
+        assert search["genres"] == ["Comedy"]
+        assert search["standalone_query"] == "comedies from 2025"
+
+    @pytest.mark.asyncio
+    async def test_other_no_match_replies_store_no_offer(self):
+        intent = MessageIntent(category="new_search", semantic_query="x", max_runtime=5)
+        _, append_history = await self._run(intent, "tiny films", generate=self._recording_generate([], movies=[]))
+
+        assert not append_history.await_args.kwargs.get("pending_relaxation")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("category", ["clarify", "general_chat", "new_search"])
+    async def test_yes_searches_the_offered_years(self, category):
+        calls = []
+        intent = MessageIntent(category=category, semantic_query="yes", genres=["Comedy"])
+        events, _ = await self._run(intent, "yes", history=self._history(), generate=self._recording_generate(calls))
+
+        assert len(calls) == 1
+        assert (calls[0]["min_release_year"], calls[0]["max_release_year"]) == (2022, 2023)
+        assert calls[0]["genres"] == ["Comedy"]
+        assert [m["serial_name"] for m in dict(events)["movies"]["movies"]] == ["Film 1", "Film 2"]
+
+    @pytest.mark.asyncio
+    async def test_a_short_new_request_is_not_taken_for_a_yes(self):
+        calls = []
+        intent = MessageIntent(category="new_search", semantic_query="horror", genres=["Horror"])
+        await self._run(intent, "horror movies", history=self._history(), generate=self._recording_generate(calls))
+
+        assert calls[0]["genres"] == ["Horror"]
+        assert calls[0]["min_release_year"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_long_reply_is_a_new_request(self):
+        calls = []
+        intent = MessageIntent(category="new_search", semantic_query="dramas", genres=["Drama"])
+        await self._run(
+            intent, "no, show me dramas instead please", history=self._history(),
+            generate=self._recording_generate(calls),
+        )
+
+        assert calls[0]["genres"] == ["Drama"]
+        assert calls[0]["min_release_year"] is None
+
+    @pytest.mark.asyncio
+    async def test_the_offer_only_answers_the_directly_following_turn(self):
+        calls = []
+        history = self._history() + [
+            {"role": "user", "content": "why?"}, {"role": "assistant", "content": "Because."},
+        ]
+        intent = MessageIntent(category="new_search", semantic_query="comedy", genres=["Comedy"])
+        await self._run(intent, "ok", history=history, generate=self._recording_generate(calls))
+
+        assert calls[0]["min_release_year"] is None
+
+    def test_a_drop_offer_is_not_a_search_offer(self):
+        from movies.views import _accepted_search_offer
+
+        intent = MessageIntent(category="clarify")
+        assert _accepted_search_offer(intent, self._history(dropped=["silent"]), "yes") is None

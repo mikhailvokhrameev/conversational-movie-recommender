@@ -82,7 +82,11 @@ only covers films released up to <month year>, so there is nothing from <year>. 
 newest films it has (<first>–<last>)?"; the range is the newest `intent.recent_years` catalog years). A
 message naming a year past the catalog end always gets that reply: when the classifier answers it as
 `general_chat`/`clarify` (the model does not know today's date and may call the year "not released yet")
-or as a search with no year, the server makes it a `new_search` with `min_release_year` set to that year. Then `done` -- no `blurb`, no `error`. The
+or as a search with no year, the server makes it a `new_search` with `min_release_year` set to that year. The
+stored assistant turn then carries `pending_relaxation: {"search": {...}}`, the turn's intent with the offered
+years; when the next message is a bare consent (`session.consent_max_words`), is not a `follow_up` and adds no
+genre, negation, film, country or language the offer lacks, the server runs that search instead of the
+classifier's reading of the "yes". Then `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
 non-empty `movies` array can also hold fewer items than requested (the `result_count`, default `diversification.top_n`); those take the

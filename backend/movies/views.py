@@ -66,18 +66,27 @@ def _describe_filters(intent_dict: dict) -> str:
     return ", ".join(parts)
 
 
+def _newest_years_offer(intent_dict: dict, year_bounds: tuple | None) -> tuple[int, int] | None:
+    """(first, last) of the catalog's newest intent.recent_years years when the
+    intent's min_release_year is past the catalog's last film, else None."""
+    min_year = intent_dict.get("min_release_year")
+    if year_bounds is None or min_year is None or min_year <= year_bounds[1]:
+        return None
+    max_year = year_bounds[1]
+    return max_year - settings.INTENT_RECENT_YEARS + 1, max_year
+
+
 def _no_match_message(intent_dict: dict, year_bounds: tuple | None = None) -> str:
     """Name the hard filters that were active, so the user knows what to
     loosen; with no hard filter the cause was the relevance gate. A
     min_release_year past the catalog's last film is not something to loosen
     by guesswork: say where the catalog ends and offer its newest years."""
-    min_year = intent_dict.get("min_release_year")
-    if year_bounds is not None and min_year is not None and min_year > year_bounds[1]:
-        _, max_year, max_date = year_bounds
-        first_recent = max_year - settings.INTENT_RECENT_YEARS + 1
+    offer = _newest_years_offer(intent_dict, year_bounds)
+    if offer is not None:
+        first_recent, max_year = offer
         return (
-            f"The catalog only covers films released up to {max_date:%B %Y}, so there is nothing "
-            f"from {min_year}. Want the newest films it has ({first_recent}\u2013{max_year})?"
+            f"The catalog only covers films released up to {year_bounds[2]:%B %Y}, so there is nothing "
+            f"from {intent_dict['min_release_year']}. Want the newest films it has ({first_recent}\u2013{max_year})?"
         )
     filters = _describe_filters(intent_dict)
     if not filters:
@@ -147,6 +156,39 @@ def _agreed_drops(
     if history and history[-1].get("role") == "assistant" and _is_bare_consent(message):
         dropped += (history[-1].get("pending_relaxation") or {}).get("dropped") or []
     return list(dict.fromkeys(c for c in dropped if c.strip()))
+
+
+# The fields a reply must not add for a bare consent to count as a "yes" to an
+# offered search: a short reply that names a genre, film, country or language
+# ("horror movies") is a new request, not an agreement.
+_OFFER_HARD_FIELDS = (
+    "genres", "negations", "reference_films", "country_inclusions", "country_exclusions",
+    "original_languages",
+)
+
+
+def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: str) -> MessageIntent | None:
+    """The search the directly preceding assistant turn offered (the catalog-end
+    reply's "Want the newest films it has?", stored as
+    `pending_relaxation.search`), when `message` agrees to it; else None.
+
+    The classifier sees only the offer's text, and with nothing but an era to
+    search on it takes a bare "yes" for `clarify` and asks for a genre. So the
+    server runs the stored search itself. Agreement is the bare-consent word
+    count (`_is_bare_consent`), not a follow-up, and adding no hard field the
+    offer lacks."""
+    if intent.category == "follow_up" or not _is_bare_consent(message):
+        return None
+    if not history or history[-1].get("role") != "assistant":
+        return None
+    offered = (history[-1].get("pending_relaxation") or {}).get("search")
+    if not offered:
+        return None
+    for field in _OFFER_HARD_FIELDS:
+        known = {v.casefold() for v in offered.get(field) or []}
+        if any(v.casefold() not in known for v in getattr(intent, field)):
+            return None
+    return MessageIntent.model_validate({**offered, "category": "new_search"})
 
 
 def _unchecked_constraints(constraints: list[str], history: list[dict]) -> list[str]:
@@ -403,6 +445,7 @@ class ChatView(View):
             if _YEAR_RE.search(message):
                 year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
                 intent = _route_past_catalog_year(intent, message, year_bounds)
+            intent = _accepted_search_offer(intent, session.history, message) or intent
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
             logger.exception("ChatView classification error")
@@ -615,6 +658,12 @@ class ChatView(View):
             if intent_dict.get("min_release_year") is not None:
                 year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
             text = _no_match_message(intent_dict, year_bounds)
+            # The catalog-end reply offers the newest years: keep that search,
+            # so a bare "yes" next turn runs it (`_accepted_search_offer`).
+            offer = _newest_years_offer(intent_dict, year_bounds)
+            pending = {"search": intent.model_dump() | {
+                "min_release_year": offer[0], "max_release_year": offer[1],
+            }} if offer else None
             yield _sse_event("movies", {
                 "session_id": str(session.session_id),
                 "session_token": session.session_token,
@@ -624,7 +673,9 @@ class ChatView(View):
             })
             yield _sse_event("token", {"text": text})
             try:
-                await _append_history(session, "assistant", text, count_turn=False)
+                await _append_history(
+                    session, "assistant", text, count_turn=False, pending_relaxation=pending,
+                )
             except Exception:
                 logger.exception("failed to store assistant turn")
             _log_turn_latency(
