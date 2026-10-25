@@ -88,7 +88,7 @@ and may call the year "not released yet") or as a search with no year, the serve
 stored assistant turn then carries `pending_relaxation: {"search": {...}}`, the turn's intent with the offered
 years; when the next message is a bare consent (`session.consent_max_words`) with none of
 `session.refusal_words` ("no thanks", "nope"), the classifier reads it as `clarify`, `new_search` or `refinement`
-(not `general_chat`: "why?", "thanks, bye"), and it adds no genre, negation, film, country or language the offer lacks, the server runs that search instead of the
+(not `general_chat`: "why?", "thanks, bye"), and its intent carries nothing the offer lacks -- no other filter value (genres, years, rating, runtime, countries, languages), mood, theme, unsupported constraint or `result_count` ("movies from 1990", "Tom Hanks movies", "top 3", "something sad" are new requests; release years past the offered range are the declined request read back and are allowed), the server runs that search instead of the
 classifier's reading of the "yes". Then `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a

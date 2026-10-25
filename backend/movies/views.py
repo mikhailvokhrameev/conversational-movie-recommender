@@ -181,13 +181,35 @@ def _agreed_drops(
     return list(dict.fromkeys(c for c in dropped if c.strip()))
 
 
-# The fields a reply must not add for a bare consent to count as a "yes" to an
-# offered search: a short reply that names a genre, film, country or language
-# ("horror movies") is a new request, not an agreement.
-_OFFER_HARD_FIELDS = (
-    "genres", "negations", "reference_films", "country_inclusions", "country_exclusions",
-    "original_languages",
-)
+# Not compared when deciding whether a short reply only agrees to an offered
+# search: the routing and the free-text queries always differ from the offer's.
+_OFFER_FREE_FIELDS = ("category", "semantic_query", "standalone_query")
+
+
+def _adds_to_offer(intent: MessageIntent, offered: dict) -> bool:
+    """Whether the intent carries a filter, ranking value, constraint or count
+    the offered search does not have: then the short reply ("movies from 1990",
+    "Tom Hanks movies", "top 3", "something sad") is a new request, not a yes.
+
+    Lists must be a subset of the offer's (case-insensitive); any other set
+    value must equal the offer's. Mood and themes count too: they only rank, but
+    "something sad" still asks for something the offer lacks. The release years
+    may also lie past the offered range: that is the declined request (or the
+    offer's own wording) the classifier read back from the history."""
+    for field in MessageIntent.model_fields:
+        if field in _OFFER_FREE_FIELDS:
+            continue
+        value, offer = getattr(intent, field), offered.get(field)
+        if isinstance(value, list):
+            known = {v.casefold() for v in offer or []}
+            if any(v.casefold() not in known for v in value):
+                return True
+        elif value not in (None, "") and value != offer:
+            past_offer = offered.get("max_release_year")
+            if field in ("min_release_year", "max_release_year") and past_offer is not None and value > past_offer:
+                continue
+            return True
+    return False
 
 
 def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: str) -> MessageIntent | None:
@@ -200,8 +222,8 @@ def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: 
     server runs the stored search itself. Agreement is: a clarify, new_search or
     refinement reading (general_chat -- "why?", "thanks, bye" -- keeps the
     classifier's answer), a bare consent by word count (`_is_bare_consent`) with
-    none of session.refusal_words ("no thanks", "nope"), and no hard field the
-    offer lacks."""
+    none of session.refusal_words ("no thanks", "nope"), and nothing the offer
+    lacks (`_adds_to_offer`)."""
     if intent.category not in ("clarify", "new_search", "refinement") or not _is_bare_consent(message):
         return None
     if set(re.findall(r"[a-z']+", message.casefold())) & set(settings.SESSION_REFUSAL_WORDS):
@@ -211,10 +233,8 @@ def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: 
     offered = (history[-1].get("pending_relaxation") or {}).get("search")
     if not offered:
         return None
-    for field in _OFFER_HARD_FIELDS:
-        known = {v.casefold() for v in offered.get(field) or []}
-        if any(v.casefold() not in known for v in getattr(intent, field)):
-            return None
+    if _adds_to_offer(intent, offered):
+        return None
     return MessageIntent.model_validate({**offered, "category": "new_search"})
 
 

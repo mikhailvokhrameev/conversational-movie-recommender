@@ -1635,6 +1635,36 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
         assert calls[0]["genres"] == ["Horror"]
         assert calls[0]["min_release_year"] is None
 
+    @pytest.mark.parametrize("message, fields", [
+        ("movies from 1990", {"min_release_year": 1990, "max_release_year": 1990}),
+        ("Tom Hanks movies", {"unsupported_constraints": ["Tom Hanks"]}),
+        ("starring Julia Roberts", {"unsupported_constraints": ["starring Julia Roberts"]}),
+        ("top 3", {"result_count": 3}),
+        ("short ones please", {"max_runtime": 90}),
+        ("highly rated ones", {"min_vote_average": 7.0}),
+        ("something sad", {"mood": "sad"}),
+        ("about space", {"themes": ["space"]}),
+    ])
+    @pytest.mark.parametrize("category", ["clarify", "new_search", "refinement"])
+    def test_a_short_reply_with_its_own_content_is_not_a_yes(self, message, fields, category):
+        from movies.views import _accepted_search_offer
+
+        intent = MessageIntent(category=category, genres=["Comedy"], **fields)
+        assert _accepted_search_offer(intent, self._history(), message) is None
+
+    @pytest.mark.parametrize("message", ["yes", "sure", "ok please"])
+    @pytest.mark.parametrize("fields", [
+        {},
+        # What the classifier may carry over from the offer or the declined request.
+        {"genres": ["comedy"], "min_release_year": 2022, "max_release_year": 2023},
+        {"min_release_year": 2025, "max_release_year": 2025},
+    ])
+    def test_a_yes_carrying_only_the_offer_or_the_declined_years_is_accepted(self, message, fields):
+        from movies.views import _accepted_search_offer
+
+        accepted = _accepted_search_offer(MessageIntent(category="clarify", **fields), self._history(), message)
+        assert (accepted.min_release_year, accepted.max_release_year) == (2022, 2023)
+
     @pytest.mark.asyncio
     async def test_a_long_reply_is_a_new_request(self):
         calls = []
