@@ -1131,6 +1131,23 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert append_history.call_args.args[2].startswith(line)
 
     @pytest.mark.asyncio
+    async def test_cap_line_comes_before_the_short_list_line(self):
+        events, append_history = await self._run(
+            MessageIntent(
+                category="new_search", semantic_query="comedy", result_count=settings.MAX_N + 10, max_runtime=20,
+            ),
+            generate=_mock_generate_and_score(_two_movies()),
+            explain=_mock_explanation_parts((None, "Here you go.\n"), (0, "Desc.")),
+        )
+        expected = (
+            f"I can show at most {settings.MAX_N} movies at a time.\n"
+            "Only 2 movies in the catalog match: under 20 min.\n"
+        )
+        tokens = [d["text"] for name, d in events if name == "token"]
+        assert tokens[0] == expected
+        assert append_history.call_args.args[2].startswith(expected)
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("count", [None, 1, "max"])
     async def test_count_within_the_cap_has_no_cap_line(self, count):
         count = settings.MAX_N if count == "max" else count
