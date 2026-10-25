@@ -569,10 +569,7 @@ you then report on overstates the result.
 In `e2e` the prior turns (`core.golden_set.prior_turns`: `history` as written,
 or each `context` message as a user turn) are passed as history (the shape
 `ChatSession.history` uses), and the predicted category is
-recorded per query. A `follow_up` with no assistant turn in the replayed
-history (nothing shown yet) is rewritten to `new_search`, as `ChatView` does
-(`route_unanchored_follow_up`). A golden query otherwise classified
-`follow_up`/`general_chat` is
+recorded per query. A golden query classified `follow_up`/`general_chat` is
 still searched, so it still gets metrics, but it counts in `misclassified`
 -- in production it would have produced no recommendations. `misclassified`
 and `unsupported_constraints` count answerable (`expected: "results"`) entries

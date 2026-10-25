@@ -84,9 +84,7 @@ from core.golden_set import (
     resolve_references,
     select_split,
 )
-from core.ollama_client import (
-    NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available, route_unanchored_follow_up,
-)
+from core.ollama_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available
 from core.pipeline import generate_and_score
 from movies.models import Movie
 
@@ -431,13 +429,7 @@ class Command(BaseCommand):
             # Mirrors ChatView: the combined classify+parse call with the prior
             # turns as history, then embed its rewritten semantic_query. Only
             # the text is replayed, not the session state stored beside it.
-            turns = prior_turns(entry)
-            message_intent = asyncio.run(aclassify_and_parse(query, turns))
-            # A replayed assistant turn stands for a shown list (the golden set
-            # stores no movie_ids); context-only entries show nothing.
-            message_intent = route_unanchored_follow_up(
-                message_intent, has_shown_list=any(turn["role"] == "assistant" for turn in turns),
-            )
+            message_intent = asyncio.run(aclassify_and_parse(query, prior_turns(entry)))
             possible_fallback = self._is_fallback_shape(message_intent, query)
             predicted = message_intent.category
             category = predicted

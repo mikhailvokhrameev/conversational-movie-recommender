@@ -670,19 +670,6 @@ class MessageIntent(BaseModel):
         return _coerce_int(value)
 
 
-def route_unanchored_follow_up(intent: MessageIntent, has_shown_list: bool) -> MessageIntent:
-    """A follow_up with nothing to follow up on (no list shown, no open card) is
-    a new_search: the classifier reads a first message that names a specific
-    film or plot ("the one where a robot raises a gosling") as a question about
-    it, and a conversational reply would then talk about movies the user was
-    never shown. Any other category, or a follow_up after a list, is returned
-    as is."""
-    if intent.category != "follow_up" or has_shown_list:
-        return intent
-    logger.info("follow_up with nothing shown yet: treating as new_search")
-    return intent.model_copy(update={"category": "new_search"})
-
-
 def _resolve_fields(values: dict) -> dict:
     """Map each RESOLVED_FIELDS value list onto exact catalog values. Sync: the
     country and language catalogs come from the DB on first use."""
