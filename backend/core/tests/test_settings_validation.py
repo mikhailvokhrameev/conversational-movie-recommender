@@ -4,6 +4,7 @@ import pytest
 
 from recommender.settings import (
     _unchecked_text,
+    _validate_consent_max_words,
     _validate_diversification,
     _validate_intent,
     _validate_logging_level,
@@ -126,6 +127,27 @@ class TestPlaceholderMaxChars:
     def test_rejects_a_missing_key(self, llm):
         with pytest.raises(ValueError, match=r"llm\.explanation\.placeholder_max_chars"):
             _validate_placeholder_max_chars(llm)
+
+
+class TestConsentMaxWords:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert settings.SESSION_CONSENT_MAX_WORDS >= 1
+
+    @pytest.mark.parametrize("good", [1, 3, 10])
+    def test_accepts_a_positive_integer(self, good):
+        _validate_consent_max_words({"consent_max_words": good})
+
+    @pytest.mark.parametrize("bad", [0, -1, 1.5, "3", None, True])
+    def test_rejects_a_non_positive_or_non_integer_value(self, bad):
+        with pytest.raises(ValueError, match=r"session\.consent_max_words"):
+            _validate_consent_max_words({"consent_max_words": bad})
+
+    @pytest.mark.parametrize("session", [{}, None])
+    def test_rejects_a_missing_key(self, session):
+        with pytest.raises(ValueError, match=r"session\.consent_max_words"):
+            _validate_consent_max_words(session)
 
 
 class TestLoggingLevel:

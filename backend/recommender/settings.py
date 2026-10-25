@@ -386,8 +386,24 @@ def _validate_history_limits(session: dict) -> None:
             )
 
 
+def _validate_consent_max_words(session: dict) -> None:
+    """Fail at load unless session.consent_max_words is an integer >= 1.
+
+    0 is refused: it would make no reply a bare consent, so a plain "yes" to a
+    "search without X?" offer would never report X as unchecked. 1 ("yes") is
+    the smallest useful value.
+    """
+    value = session.get("consent_max_words") if isinstance(session, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"params.yaml: session.consent_max_words must be an integer >= 1 (got {value!r}). "
+            "0 would make even a bare \"yes\" count as a new search."
+        )
+
+
 _session = PARAMS["session"]
 _validate_history_limits(_session)
+_validate_consent_max_words(_session)
 SESSION_TTL_HOURS = _session["ttl_hours"]
 SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_CONSENT_MAX_WORDS = _session["consent_max_words"]
