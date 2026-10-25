@@ -98,7 +98,7 @@ JSON fields:
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
-- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
+- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). A named director, a named actor or an award/prize is always unsupported: list it here and keep it out of semantic_query and standalone_query, even when the rest of the message is searchable. Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
 - "result_count": the number of movies the user asks to be shown ("only one", "just 1 more" -> 1, "top 10" -> 10), else null
 
 Example:
@@ -128,6 +128,18 @@ User: "a highly rated 90s Korean thriller"
 Example:
 User: "1950s movies with Keanu Reeves"
 {{"category": "new_search", "semantic_query": "a 1950s film", "standalone_query": "movies from the 1950s", "genres": [], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": 1950, "max_release_year": 1959, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["with Keanu Reeves"], "result_count": null}}
+
+Example:
+User: "a moody sci-fi directed by Ridley Scott"
+{{"category": "new_search", "semantic_query": "a moody science fiction film", "standalone_query": "a moody science fiction film", "genres": ["Science Fiction"], "mood": "thoughtful", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["directed by Ridley Scott"], "result_count": null}}
+
+Example:
+User: "a romantic comedy starring Julia Roberts"
+{{"category": "new_search", "semantic_query": "a romantic comedy", "standalone_query": "a romantic comedy", "genres": ["Romance", "Comedy"], "mood": "romantic", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["starring Julia Roberts"], "result_count": null}}
+
+Example:
+User: "a Palme d'Or winning war drama"
+{{"category": "new_search", "semantic_query": "a war drama", "standalone_query": "a war drama", "genres": ["War", "Drama"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["Palme d'Or winning"], "result_count": null}}
 
 Example:
 User: "animated silent documentary under 20 minutes"

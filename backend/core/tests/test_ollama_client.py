@@ -451,6 +451,53 @@ class TestUnsupportedConstraints:
         assert example["genres"] == ["Animation", "Documentary"]
 
 
+    @pytest.mark.parametrize("phrase, genre", [
+        ("directed by Ridley Scott", "Science Fiction"),
+        ("starring Julia Roberts", "Romance"),
+        ("Palme d'Or", "War"),
+    ])
+    def test_person_and_award_examples_keep_the_searchable_part_and_flag_the_rest(self, phrase, genre):
+        example = next(
+            ex for ex in _prompt_examples()
+            if any(phrase in c for c in ex["unsupported_constraints"])
+        )
+        assert example["category"] == "new_search"
+        assert genre in example["genres"]
+        assert len(example["unsupported_constraints"]) == 1
+        name = phrase.split()[-1]
+        for field in ("semantic_query", "standalone_query"):
+            assert name not in example[field]
+            assert example[field]
+        assert not example["reference_films"]
+
+    def test_person_and_award_examples_do_not_copy_the_eval_phrases(self):
+        constraints = " ".join(c for ex in _prompt_examples() for c in ex["unsupported_constraints"])
+        for phrase in ("Villeneuve", "Hugh Grant", "Best Picture"):
+            assert phrase not in constraints
+
+    def test_unsupported_rule_names_director_actor_and_award_conditions(self):
+        line = next(
+            line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()
+            if line.startswith('- "unsupported_constraints"')
+        )
+        for word in ("director", "actor", "award"):
+            assert word in line
+        assert "semantic_query" in line
+
+    def test_new_examples_round_trip_through_the_classifier_schema(self):
+        examples = [ex for ex in _prompt_examples() if ex["unsupported_constraints"] not in ([], ["silent"])]
+        assert len(examples) >= 4  # Keanu Reeves + director + actor + award
+        for ex in examples:
+            assert set(ex) == set(CLASSIFY_PARSE_SCHEMA["properties"])
+            intent = MessageIntent.model_validate(ex)
+            assert intent.unsupported_constraints == ex["unsupported_constraints"]
+            assert set(intent.genres) <= set(CATALOG_GENRES)
+
+    def test_formatted_classify_messages_carry_the_new_examples(self):
+        content = _classify_and_parse_payload("hi", [])["messages"][0]["content"]
+        for phrase in ("directed by Ridley Scott", "starring Julia Roberts", "Palme d'Or"):
+            assert phrase in content
+
     def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
         line = next(
             line for line in CLASSIFY_AND_PARSE_SYSTEM_PROMPT.splitlines()

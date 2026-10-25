@@ -85,7 +85,8 @@ llm:
   # max ~2.2k; call=conversational (2 calls) ~1.8k; no context-tokens warning.
   # EXPECTED after those additions: classify_parse ~4.8k at the heavy end,
   # leaving ~1.3k of headroom in 6144. This is an estimate, to be re-measured
-  # on the GPU run.
+  # on the GPU run. The director/actor/award few-shots added later put
+  # ~0.5k (1.8k chars) on top of that, so ~5.3k and ~0.8k of headroom.
   #
   # Derivation, for sizing only (ASSUMPTION: ~4 characters per token for
   # English prose on Qwen-family tokenizers; titles, names and JSON tokenize
