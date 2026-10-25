@@ -1393,3 +1393,106 @@ class TestSelectedMovie:
         ]
         seen, _ = await self._run(20, later)
         assert seen["note"] is None
+
+
+_BOUNDS = (1915, 2023, datetime.date(2023, 9, 30))
+
+
+class _NoDbChat:
+    """Run one ChatView turn with no DB and no LLM: the session, both history
+    writers, the classifier and the catalog bounds are patched."""
+
+    @staticmethod
+    def _session(history=()):
+        session = MagicMock()
+        session.session_id = "00000000-0000-0000-0000-000000000001"
+        session.session_token = "token"
+        session.history = list(history)
+        return session
+
+    @staticmethod
+    def _recording_generate(calls, movies=None):
+        async def _gen(query_embedding, intent, query_text="", exclude_ids=None, top_n=None):
+            calls.append(intent)
+            result = [] if movies == [] else (movies or _two_movies())
+            return result, result
+        return _gen
+
+    async def _run(self, intent, message, history=(), generate=None, bounds=_BOUNDS):
+        append_history = AsyncMock()
+        conversational = MagicMock(side_effect=AssertionError("must not answer as chat"))
+        request = AsyncRequestFactory().post(
+            "/api/chat/", data=json.dumps({"message": message}), content_type="application/json",
+        )
+
+        async def _classify(message, history=None, selection_note=None):
+            return intent
+
+        with patch("movies.views._get_or_create_session", AsyncMock(return_value=self._session(history))), \
+             patch("movies.views.aclassify_and_parse", _classify), \
+             patch("movies.views.catalog_year_range", return_value=bounds), \
+             patch("movies.views.encode_query", return_value=[0.1] * 1024), \
+             patch("movies.views._generate_and_score", generate or _mock_generate_and_score()), \
+             patch("movies.views._save_session", AsyncMock()), \
+             patch("movies.views._append_history", append_history), \
+             patch("movies.views.astream_conversational", conversational), \
+             patch("movies.views.astream_explanation_parts", _mock_explanation_parts((None, "Here you go."))):
+            response = await ChatView.as_view()(request)
+            body = b""
+            async for chunk in response.streaming_content:
+                body += chunk if isinstance(chunk, bytes) else chunk.encode()
+        return _parse_sse(body.decode()), append_history
+
+
+class TestYearPastTheCatalog(_NoDbChat):
+    """"movies from 2026": the classifier may treat a year it thinks is in the
+    future as chat; the server routes it to the catalog-bounds reply."""
+
+    @staticmethod
+    def _route(intent, message, bounds=_BOUNDS):
+        from movies.views import _route_past_catalog_year
+        return _route_past_catalog_year(intent, message, bounds)
+
+    @pytest.mark.parametrize("category", ["general_chat", "clarify"])
+    def test_chat_or_clarify_naming_a_year_past_the_catalog_becomes_a_search(self, category):
+        intent = MessageIntent(category=category, semantic_query="movies from 2026")
+        routed = self._route(intent, "movies from 2026")
+        assert routed.category == "new_search"
+        assert routed.min_release_year == 2026
+        assert routed.semantic_query == "movies from 2026"
+        assert routed.standalone_query == "movies from 2026"
+
+    def test_a_search_without_any_year_gets_the_named_year(self):
+        intent = MessageIntent(category="new_search", semantic_query="movies", genres=["Drama"])
+        routed = self._route(intent, "dramas from 2026")
+        assert (routed.category, routed.min_release_year, routed.genres) == ("new_search", 2026, ["Drama"])
+
+    @pytest.mark.parametrize("intent, message", [
+        (MessageIntent(category="follow_up"), "is the first one from 2026?"),
+        (MessageIntent(category="general_chat"), "movies from 2023"),
+        (MessageIntent(category="general_chat"), "hi"),
+        (MessageIntent(category="new_search", min_release_year=2020, max_release_year=2026),
+         "movies from 2020 to 2026"),
+        (MessageIntent(category="new_search", max_release_year=2029), "movies before 2030"),
+    ])
+    def test_left_alone(self, intent, message):
+        assert self._route(intent, message) is intent
+
+    def test_unknown_bounds_leave_the_intent_alone(self):
+        intent = MessageIntent(category="general_chat")
+        assert self._route(intent, "movies from 2026", bounds=None) is intent
+
+    @pytest.mark.asyncio
+    async def test_movies_from_2026_gets_the_catalog_end_reply_not_a_chat_answer(self):
+        calls = []
+        intent = MessageIntent(category="general_chat", semantic_query="movies from 2026")
+        events, _ = await self._run(
+            intent, "movies from 2026", generate=self._recording_generate(calls, movies=[]),
+        )
+
+        assert [i["min_release_year"] for i in calls] == [2026]
+        assert dict(events)["movies"]["no_match"] is True
+        assert dict(events)["token"]["text"] == (
+            "The catalog only covers films released up to September 2023, so there is "
+            "nothing from 2026. Want the newest films it has (2022–2023)?"
+        )

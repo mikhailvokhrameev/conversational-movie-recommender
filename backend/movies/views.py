@@ -16,7 +16,7 @@ from rest_framework.views import APIView
 from core.catalog_bounds import catalog_year_range
 from core.embedding_service import encode_query
 from core.ollama_client import (
-    CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS,
+    CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent,
     aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation_parts,
 )
@@ -83,6 +83,32 @@ def _no_match_message(intent_dict: dict, year_bounds: tuple | None = None) -> st
     if not filters:
         return NO_MATCH_MESSAGE
     return f"Nothing in the catalog matches all of: {filters}. Which one should I loosen?"
+
+
+_YEAR_RE = re.compile(r"\b(?:1[89]|2\d)\d\d\b")
+
+
+def _route_past_catalog_year(intent: MessageIntent, message: str, year_bounds: tuple | None) -> MessageIntent:
+    """A message naming a year past the catalog's newest film ("movies from
+    2026") is a search, whatever the classifier said: the model has no notion of
+    today's date and may answer a year it takes for the future as chat ("not
+    released yet"). Chat or clarify becomes a new_search from that year, and a
+    search without any year gets it, so the no-match path says where the catalog
+    ends. A follow-up, or a search that already has a year range, is left alone."""
+    if year_bounds is None or intent.category == "follow_up":
+        return intent
+    past = [int(y) for y in _YEAR_RE.findall(message) if int(y) > year_bounds[1]]
+    if not past:
+        return intent
+    if intent.category in ("general_chat", "clarify"):
+        return intent.model_copy(update={
+            "category": "new_search", "min_release_year": min(past),
+            "semantic_query": intent.semantic_query or message,
+            "standalone_query": intent.standalone_query or message,
+        })
+    if intent.min_release_year is None and intent.max_release_year is None:
+        return intent.model_copy(update={"min_release_year": min(past)})
+    return intent
 
 
 def _history_window(history: list[dict]) -> list[dict]:
@@ -374,6 +400,9 @@ class ChatView(View):
             t0 = time.perf_counter()
             selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history, message)
             intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
+            if _YEAR_RE.search(message):
+                year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
+                intent = _route_past_catalog_year(intent, message, year_bounds)
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:
             logger.exception("ChatView classification error")

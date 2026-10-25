@@ -79,7 +79,10 @@ filter set, "Nothing in the catalog matched that well. Try rephrasing your reque
 or loosening some of the constraints."). When the active `min_release_year` is past the
 newest film the catalog holds, the reply instead says where the catalog ends ("The catalog
 only covers films released up to <month year>, so there is nothing from <year>. Want the
-newest films it has (<first>–<last>)?"; the range is the newest `intent.recent_years` catalog years), and `done` -- no `blurb`, no `error`. The
+newest films it has (<first>–<last>)?"; the range is the newest `intent.recent_years` catalog years). A
+message naming a year past the catalog end always gets that reply: when the classifier answers it as
+`general_chat`/`clarify` (the model does not know today's date and may call the year "not released yet")
+or as a search with no year, the server makes it a `new_search` with `min_release_year` set to that year. Then `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
 non-empty `movies` array can also hold fewer items than requested (the `result_count`, default `diversification.top_n`); those take the
