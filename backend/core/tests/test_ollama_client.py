@@ -1045,13 +1045,24 @@ class TestStreamExplanationUnverified:
     @pytest.mark.asyncio
     async def test_turn_names_the_conditions_the_catalog_could_not_check(self):
         turn = await self._last_turn(unverified=["silent", "with Keanu Reeves"])
-        assert 'The catalog cannot check: "silent", "with Keanu Reeves".' in turn
-        assert "Do not claim the movies meet it; say it was not checked." in turn
+        assert '[Not checked: "silent", "with Keanu Reeves"]' in turn
+
+    @pytest.mark.asyncio
+    async def test_turn_carries_the_conditions_as_data_not_as_an_instruction(self):
+        turn = await self._last_turn(unverified=["silent"])
+        assert "Do not claim" not in turn
+        assert "say it was not checked" not in turn
+        assert "you " not in turn.lower()
+
+    def test_system_prompt_explains_the_unchecked_field(self):
+        flat = " ".join(EXPLANATION_SYSTEM_PROMPT.split())
+        assert "Not checked:" in flat
+        assert "own words" in flat
 
     @pytest.mark.asyncio
     async def test_turn_has_no_such_line_by_default(self):
-        assert "cannot check" not in await self._last_turn()
-        assert "cannot check" not in await self._last_turn(unverified=[])
+        assert "Not checked" not in await self._last_turn()
+        assert "Not checked" not in await self._last_turn(unverified=[])
 
     @pytest.mark.asyncio
     async def test_parts_stream_forwards_unverified(self):

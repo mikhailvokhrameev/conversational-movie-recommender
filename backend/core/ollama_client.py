@@ -245,6 +245,10 @@ PART 1 -- an opening line of one or two short sentences confirming the request a
 saying what this set has in common. Do NOT name any film title in the opening line.
 Describe the movies from the listed facts only: never state that the movies meet a
 condition (silent, a rating, a year, a country) the listed facts do not show.
+If the user's message has a "[Not checked: ...]" field, those conditions were not in the
+catalog data and the movies were never checked against them. Say so in your own words in
+the opening line (for example "I could not check X, so these are chosen on the rest of
+your request"). Never copy the field, its brackets or its label into your answer.
 
 PART 2 -- for EACH movie listed in the user's latest message, in the same order, write its marker ([[1]], [[2]], ...)
 alone on a line, then two or three sentences about that one film: what it is about,
@@ -269,10 +273,9 @@ EXPLANATION_TURN_TEMPLATE = """The user asked: "{query}"
 Movies:
 {movies_context}"""
 
-EXPLANATION_UNVERIFIED_LINE = (
-    "The catalog cannot check: {conditions}. "
-    "Do not claim the movies meet it; say it was not checked.\n"
-)
+# A labelled data field, not a sentence: the system prompt says how to use it.
+# An instruction placed in the user turn got read out as answer text.
+EXPLANATION_UNVERIFIED_LINE = "[Not checked: {conditions}]\n"
 
 
 _THINK_OPEN = "<think>"
@@ -1218,8 +1221,8 @@ async def astream_explanation(
     """Async streaming variant of generate_explanation. Yields tokens as they arrive.
 
     `unverified` lists conditions the user asked for that the catalog cannot
-    check (dropped with their agreement); the turn tells the model not to claim
-    the movies meet them."""
+    check (dropped with their agreement); the turn lists them in a
+    "[Not checked: ...]" field that the system prompt explains."""
     history = history or []
     unverified_line = EXPLANATION_UNVERIFIED_LINE.format(
         conditions=", ".join(f'"{c}"' for c in unverified)
