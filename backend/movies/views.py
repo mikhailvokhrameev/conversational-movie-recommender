@@ -261,13 +261,15 @@ _ORDINAL_WORDS = {
 # at the end of the message, or in a list of positions ("the first and the second").
 _ORDINAL_NOUN = r"(?:one|movie|film|result|pick|title|recommendation|suggestion)"
 _ORDINAL_WORD = "|".join(_ORDINAL_WORDS)
+# "a second one" / "another third film" ask for more, not for a list item.
+_NOT_AFTER_ARTICLE = r"(?<!\ba\s)(?<!\ban\s)(?<!\banother\s)"
 _ORDINAL_RE = re.compile(
-    rf"\b(?P<word>{_ORDINAL_WORD})\b"
+    rf"{_NOT_AFTER_ARTICLE}\b(?P<word>{_ORDINAL_WORD})\b"
     rf"(?:\s+{_ORDINAL_NOUN}\b"
     rf"|(?=\s*(?:,|and|or|&|vs\.?|versus)\s*(?:the\s+)?(?:{_ORDINAL_WORD})\b)"
     r"|(?=[\s?.!]*$))"
-    rf"|\b(?P<nth>\d{{1,2}})(?:st|nd|rd|th)\s+{_ORDINAL_NOUN}\b"
-    r"|(?:#|\bnumber\s+)(?P<num>\d{1,2})\b",
+    rf"|{_NOT_AFTER_ARTICLE}\b(?P<nth>\d{{1,2}})(?:st|nd|rd|th)\b(?!\s+century)"
+    r"|(?:#|\bnumber\s+|\bno\.\s*|\b(?:movie|film|result|pick)\s+)(?P<num>\d{1,2})\b",
     re.IGNORECASE,
 )
 
@@ -301,8 +303,10 @@ def _selection(selected_tmdb_id, history: list[dict], message: str = "") -> tupl
     ids, facts = _latest_shown(history)
     positions = _ordinal_positions(message)
     if positions:
+        if len(positions) != 1:
+            return None, None, None
         position = next(iter(positions)) - 1
-        if len(positions) != 1 or not 0 <= position < min(len(ids), len(facts)):
+        if not 0 <= position < min(len(ids), len(facts)):
             return None, None, None
         return ids[position], position + 1, None
     if type(selected_tmdb_id) is not int:
