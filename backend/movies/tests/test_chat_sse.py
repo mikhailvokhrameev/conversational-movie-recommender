@@ -1700,7 +1700,7 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
         intent = MessageIntent(category="clarify")
         assert _accepted_search_offer(intent, self._history(dropped=["silent"]), "yes") is None
 
-    @pytest.mark.parametrize("message", ["no", "no thanks", "nope", "nah", "Not now", "don't"])
+    @pytest.mark.parametrize("message", ["no", "no thanks", "nope", "nah", "don't", "don\u2019t", "Don\u2019t bother"])
     @pytest.mark.parametrize("category", ["clarify", "new_search", "refinement"])
     def test_a_refusal_is_not_a_yes(self, message, category):
         from movies.views import _accepted_search_offer
@@ -1712,6 +1712,12 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
         from movies.views import _accepted_search_offer
 
         assert _accepted_search_offer(MessageIntent(category="general_chat"), self._history(), message) is None
+
+    @pytest.mark.parametrize("message", ["why not", "sure, why not"])
+    def test_an_agreement_with_not_is_a_yes(self, message):
+        from movies.views import _accepted_search_offer
+
+        assert _accepted_search_offer(MessageIntent(category="clarify"), self._history(), message) is not None
 
     def test_the_refusal_words_come_from_the_setting(self, settings):
         from movies.views import _accepted_search_offer

@@ -226,7 +226,7 @@ def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: 
     lacks (`_adds_to_offer`)."""
     if intent.category not in ("clarify", "new_search", "refinement") or not _is_bare_consent(message):
         return None
-    if set(re.findall(r"[a-z']+", message.casefold())) & set(settings.SESSION_REFUSAL_WORDS):
+    if set(re.findall(r"[a-z']+", message.casefold().replace("\u2019", "'"))) & set(settings.SESSION_REFUSAL_WORDS):
         return None
     if not history or history[-1].get("role") != "assistant":
         return None

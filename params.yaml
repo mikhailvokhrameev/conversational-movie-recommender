@@ -352,8 +352,9 @@ session:
   # A short reply containing any of these words ("no thanks", "nope") declines
   # the catalog-end offer of its newest years, so the offered search is not run
   # (it only answers that offer; a "search without X?" drop is unaffected).
-  # Lowercase single words, matched word by word.
-  refusal_words: ["no", "nope", "nah", "not", "don't", "dont", "never", "cancel", "stop"]
+  # Lowercase single words, matched word by word (a curly apostrophe in the
+  # reply counts as a straight one). No "not"/"never": "why not" agrees.
+  refusal_words: ["no", "nope", "nah", "don't", "dont", "cancel", "stop"]
   # Cap on how much conversation history gets replayed into every LLM call
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are

@@ -135,6 +135,9 @@ class TestRefusalWords:
         from django.conf import settings
 
         assert "no" in settings.SESSION_REFUSAL_WORDS
+        # "why not" / "sure, why not" agree.
+        assert "not" not in settings.SESSION_REFUSAL_WORDS
+        assert "never" not in settings.SESSION_REFUSAL_WORDS
 
     def test_accepts_distinct_lowercase_words(self):
         _validate_refusal_words({"refusal_words": ["no", "nope", "don't"]})
