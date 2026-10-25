@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import secrets
 import time
 from datetime import datetime
@@ -251,18 +252,61 @@ def _load_selected_movie(tmdb_id: int) -> dict | None:
     ).first()
 
 
-def _selection(selected_tmdb_id, history: list[dict]) -> tuple[int | None, int | None, str | None]:
-    """The client-reported card, kept only if it is one of the movies in the
-    latest recommendation (the last assistant entry with movie_facts); anything
-    else is ignored. Returns (tmdb_id, 1-based position in that list, note for the
-    classifier)."""
-    if type(selected_tmdb_id) is not int:
-        return None, None, None
+_ORDINAL_WORDS = {
+    "first": 1, "second": 2, "third": 3, "fourth": 4, "fifth": 5,
+    "sixth": 6, "seventh": 7, "eighth": 8, "ninth": 9, "tenth": 10,
+}
+# "the third one", "3rd movie", "#3", "number 3": a position in the shown list. A bare
+# ordinal word ("a second chance") only counts before a noun that names a list item,
+# at the end of the message, or in a list of positions ("the first and the second").
+_ORDINAL_NOUN = r"(?:one|movie|film|result|pick|title|recommendation|suggestion)"
+_ORDINAL_WORD = "|".join(_ORDINAL_WORDS)
+_ORDINAL_RE = re.compile(
+    rf"\b(?P<word>{_ORDINAL_WORD})\b"
+    rf"(?:\s+{_ORDINAL_NOUN}\b"
+    rf"|(?=\s*(?:,|and|or|&|vs\.?|versus)\s*(?:the\s+)?(?:{_ORDINAL_WORD})\b)"
+    r"|(?=[\s?.!]*$))"
+    rf"|\b(?P<nth>\d{{1,2}})(?:st|nd|rd|th)\s+{_ORDINAL_NOUN}\b"
+    r"|(?:#|\bnumber\s+)(?P<num>\d{1,2})\b",
+    re.IGNORECASE,
+)
+
+
+def _ordinal_positions(message: str) -> set[int]:
+    """The 1-based list positions the message points at ("the first one", "#3"), if any."""
+    positions = set()
+    for m in _ORDINAL_RE.finditer(message):
+        word, nth, num = m.group("word"), m.group("nth"), m.group("num")
+        positions.add(_ORDINAL_WORDS[word.lower()] if word else int(nth or num))
+    return positions
+
+
+def _latest_shown(history: list[dict]) -> tuple[list, list]:
+    """(movie_ids, movie_facts) of the latest recommendation (the last assistant
+    entry with movie_facts)."""
     latest = next(
         (e for e in reversed(history) if e.get("role") == "assistant" and e.get("movie_facts")), None,
     )
-    ids = (latest or {}).get("movie_ids") or []
-    facts = (latest or {}).get("movie_facts") or []
+    return (latest or {}).get("movie_ids") or [], (latest or {}).get("movie_facts") or []
+
+
+def _selection(selected_tmdb_id, history: list[dict], message: str = "") -> tuple[int | None, int | None, str | None]:
+    """Which listed movie a follow-up is about. An explicit list position in the
+    message ("the first one") refers to the latest list and beats the card the
+    client reports as open; with several positions, or one outside the list, no
+    movie is picked. Without a position, the client-reported card is kept only if
+    it is one of the movies in the latest recommendation; anything else is ignored.
+    Returns (tmdb_id, 1-based position in that list, note for the classifier --
+    only for the open card)."""
+    ids, facts = _latest_shown(history)
+    positions = _ordinal_positions(message)
+    if positions:
+        position = next(iter(positions)) - 1
+        if len(positions) != 1 or not 0 <= position < min(len(ids), len(facts)):
+            return None, None, None
+        return ids[position], position + 1, None
+    if type(selected_tmdb_id) is not int:
+        return None, None, None
     if selected_tmdb_id not in ids or ids.index(selected_tmdb_id) >= len(facts):
         return None, None, None
     position = ids.index(selected_tmdb_id)
@@ -324,7 +368,7 @@ class ChatView(View):
             token = request.headers.get("X-Session-Token", "")
             session = await _get_or_create_session(session_id, token)
             t0 = time.perf_counter()
-            selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history)
+            selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history, message)
             intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
             classify_parse_ms = (time.perf_counter() - t0) * 1000
         except Exception:

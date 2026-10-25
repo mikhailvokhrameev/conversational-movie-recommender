@@ -1260,6 +1260,23 @@ class TestNoMatchMessage:
         assert _no_match_message({"genres": ["Drama"], "mood": "sad"}) == NO_MATCH_MESSAGE
 
 
+@pytest.mark.parametrize("message,expected", [
+    ("tell me about the first one", {1}),
+    ("tell me about the third", {3}),
+    ("the 4th film", {4}),
+    ("#3 please", {3}),
+    ("what about number 2?", {2}),
+    ("which is better, the first or the second?", {1, 2}),
+    ("a second chance movie", set()),
+    ("give me 3 movies", set()),
+    ("is it good?", set()),
+])
+def test_ordinal_positions(message, expected):
+    from movies.views import _ordinal_positions
+
+    assert _ordinal_positions(message) == expected
+
+
 class TestSelectedMovie:
     """No DB: session, history writers and the Movie lookup are patched."""
 
@@ -1269,7 +1286,7 @@ class TestSelectedMovie:
         {"role": "assistant", "content": "[[1]] a", "movie_ids": [10, 20], "movie_facts": FACTS},
     ]
 
-    async def _run(self, selected, history=None, load=None):
+    async def _run(self, selected, history=None, load=None, message="is it good?"):
         seen = {}
         session = MagicMock()
         session.session_id = "00000000-0000-0000-0000-000000000001"
@@ -1287,7 +1304,7 @@ class TestSelectedMovie:
             yield "ok"
 
         load = load or AsyncMock(return_value={"serial_name": "Heat"})
-        body = {"message": "is it good?"}
+        body = {"message": message}
         if selected is not None:
             body["selected_tmdb_id"] = selected
         request = AsyncRequestFactory().post(
@@ -1310,6 +1327,36 @@ class TestSelectedMovie:
         assert seen["selected_movie"] == {"serial_name": "Heat"}
         assert seen["selected_position"] == 2
         load.assert_awaited_once_with(20)
+
+    @pytest.mark.asyncio
+    async def test_ordinal_beats_the_selected_card(self):
+        # Card 2 (Heat) is open, but the user asks about "the first one".
+        seen, load = await self._run(20, message="tell me about the first one")
+        load.assert_awaited_once_with(10)
+        assert seen["selected_position"] == 1
+        # The classifier is not told the card is the subject of a message that points elsewhere.
+        assert seen["note"] is None
+
+    @pytest.mark.asyncio
+    async def test_ordinal_without_a_selected_card_uses_the_list_position(self):
+        seen, load = await self._run(None, message="tell me about the second one")
+        load.assert_awaited_once_with(20)
+        assert seen["selected_position"] == 2
+
+    @pytest.mark.asyncio
+    async def test_no_ordinal_keeps_the_selected_card(self):
+        seen, load = await self._run(20, message="tell me about this movie")
+        load.assert_awaited_once_with(20)
+        assert seen["selected_position"] == 2
+        assert seen["note"] is not None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("message", ["tell me about the third one", "compare the first and second one"])
+    async def test_ordinal_not_resolving_to_one_listed_movie_drops_the_card(self, message):
+        # Out of range (only 2 listed) or several positions: the card must not answer for it.
+        seen, load = await self._run(20, message=message)
+        load.assert_not_awaited()
+        assert seen["selected_movie"] is None
 
     @pytest.mark.asyncio
     async def test_load_failure_degrades_to_no_selected_movie(self):
