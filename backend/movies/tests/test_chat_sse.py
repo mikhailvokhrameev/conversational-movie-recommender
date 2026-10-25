@@ -1329,6 +1329,12 @@ class TestNoMatchMessage:
     ("movies from the 20th century", set()),
     ("give me 3 movies", set()),
     ("is it good?", set()),
+    ("the second?", {2}),
+    ("first one", {1}),
+    # A bare ordinal word at the end is an adverb, not a list position.
+    ("should I watch this first?", set()),
+    ("which came out first?", set()),
+    ("which one should I watch first", set()),
 ])
 def test_ordinal_positions(message, expected):
     from movies.views import _ordinal_positions

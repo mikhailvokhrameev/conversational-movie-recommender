@@ -373,7 +373,9 @@ _ORDINAL_WORDS = {
 }
 # "the third one", "3rd movie", "#3", "number 3": a position in the shown list. A bare
 # ordinal word ("a second chance") only counts before a noun that names a list item,
-# at the end of the message, or in a list of positions ("the first and the second").
+# in a list of positions ("the first and the second"), or at the end of the message
+# right after "the" ("the second?"): a bare "first" at the end ("which came out
+# first?") is an adverb.
 _ORDINAL_NOUN = r"(?:one|movie|film|result|pick|title|recommendation|suggestion)"
 _ORDINAL_WORD = "|".join(_ORDINAL_WORDS)
 # "a second one" / "another third film" ask for more, not for a list item.
@@ -381,8 +383,8 @@ _NOT_AFTER_ARTICLE = r"(?<!\ba\s)(?<!\ban\s)(?<!\banother\s)"
 _ORDINAL_RE = re.compile(
     rf"{_NOT_AFTER_ARTICLE}\b(?P<word>{_ORDINAL_WORD})\b"
     rf"(?:\s+{_ORDINAL_NOUN}\b"
-    rf"|(?=\s*(?:,|and|or|&|vs\.?|versus)\s*(?:the\s+)?(?:{_ORDINAL_WORD})\b)"
-    r"|(?=[\s?.!]*$))"
+    rf"|(?=\s*(?:,|and|or|&|vs\.?|versus)\s*(?:the\s+)?(?:{_ORDINAL_WORD})\b))"
+    rf"|(?<=\bthe\s)(?P<end>{_ORDINAL_WORD})(?=[\s?.!]*$)"
     rf"|{_NOT_AFTER_ARTICLE}\b(?P<nth>\d{{1,2}})(?:st|nd|rd|th)\b(?!\s+century)"
     r"|(?:#|\bnumber\s+|\bno\.\s*|\b(?:movie|film|result|pick)\s+)(?P<num>\d{1,2})\b",
     re.IGNORECASE,
@@ -393,7 +395,7 @@ def _ordinal_positions(message: str) -> set[int]:
     """The 1-based list positions the message points at ("the first one", "#3"), if any."""
     positions = set()
     for m in _ORDINAL_RE.finditer(message):
-        word, nth, num = m.group("word"), m.group("nth"), m.group("num")
+        word, nth, num = m.group("word") or m.group("end"), m.group("nth"), m.group("num")
         positions.add(_ORDINAL_WORDS[word.lower()] if word else int(nth or num))
     return positions
 
