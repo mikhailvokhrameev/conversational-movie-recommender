@@ -353,11 +353,15 @@ turn's "yes" searches even if the classifier lists them again.
   had fewer than two candidates, no candidate has a `rerank_score` and the gate is
   skipped with one WARNING per request: an infrastructure fault must never turn
   into zero results.
-- *Off by default, no number shipped.* `min_score: null`. A threshold nobody
+- *Shipped value: 0.005, calibrated from hand labels.* A threshold nobody
   measured is exactly the defect found in `intent.genre_match_threshold`
-  (an eyeballed `0.5`): too high silently empties answerable queries, too low
-  gates nothing. The value depends on this reranker and this catalog, so it is
-  calibrated, not guessed.
+  (an eyeballed `0.5`), so the value was read off labelled dev results (rule: no
+  answerable query emptied, at most ~5% of relevant movies dropped; numbers in
+  [ADR 0009](adr/0009-relevance-gate-off-until-calibrated.md)). It trims junk
+  at the bottom of the pool; it cannot say "nothing in the catalog", because the
+  best pool scores of unanswerable queries (up to 0.65) overlap those of
+  answerable ones (some peak at 0.025-0.15). The value depends on this reranker
+  and this catalog; `null` turns the gate off. Still to confirm on the test split.
 - *Calibrating from hand labels (preferred).* Golden lists are incomplete, so
   "hit" undercounts relevance. Export the ungated dev results, label them, and
   read the curves back: `evaluate_scoring --intent oracle --k 10 --label-export
@@ -413,11 +417,12 @@ turn's "yes" searches even if the classifier lists them again.
   split (`counters.empty_results` counts gated-empty queries in a normal run, over the
   answerable `expected: "results"` queries only; `expected_empty_correct` is the
   benefit side).
-- *2026-10-17 run: gate stays off.* On the dev split (oracle) the report had 6 hits
+- *2026-10-17 run: too few hits.* On the dev split (oracle) the report had 6 hits
   against 129 non-hits, with scores inside [0, 1]. A threshold of 0.01 drops no hits
-  and 14% of non-hits; 0.02 empties 7.4% of queries. Six hits are too few to choose
-  a value, so `min_score` stays `null` until the golden labels are reviewed
-  ([ADR 0009](adr/0009-relevance-gate-off-until-calibrated.md), still Proposed).
+  and 14% of non-hits; 0.02 empties 7.4% of queries. Six hits were too few to choose
+  a value; the hand-label calibration of 2026-10-25 (see Evaluation Results) replaced it
+  ([ADR 0009](adr/0009-relevance-gate-off-until-calibrated.md), still Proposed until
+  the test-split check).
 
 **Not yet measured**: whether reranking improves results here is unverified.
 It is a well-established technique and the reasoning is sound, but a
@@ -692,7 +697,7 @@ docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,
 
 ### Evaluation Results
 
-**None yet.** No run of the golden-set evaluation has been recorded. The
+**Golden-set metrics: none recorded yet.** The
 numbers that used to live here were measured with the old genre-overlap
 heuristic (inflated by construction, see above) against the old Okko catalog
 (18,130 items), the old mpnet embedder (768-dim), the old 3-signal weight
@@ -700,6 +705,33 @@ scheme, and a Russian-language test set -- none of them describe the current
 system. Before reporting numbers here: import and embed the catalog, review
 the draft labels (start with whatever the run reports as unresolved), then
 run on `test` with weights chosen on `dev`, and cite the run record.
+
+**Relevance gate calibration (2026-10-25, dev, hand labels).** 30 queries x
+top-10 = 300 labelled rows, 139 relevant (27 answerable queries, 3 whose every
+row is irrelevant), read with `evaluate_scoring --label-report`. Kept precision
+is over the exported top-10 (46.3% with no gate):
+
+| min_score | kept precision | relevant dropped | answerable queries emptied |
+|---|---|---|---|
+| 0.001 | 46.3% | 0.0% | 0.0% |
+| **0.005** (shipped) | 47.7% | 4.3% | 0.0% |
+| 0.010 | 47.0% | 10.1% | 0.0% |
+| 0.020 | 49.0% | 13.7% | 0.0% |
+| 0.050 | 51.0% | 25.9% | 7.4% |
+| 0.100 | 53.1% | 31.7% | 14.8% |
+
+The relative (margin-from-best) variant never beat the baseline by more than 1.4
+points. Thresholds that empty the unanswerable queries (0.20 and up) also empty
+29.6% or more of the answerable ones, so the gate trims junk and does not detect
+"nothing here" (`expected_empty_correct` stays 0/5 on the golden set). Full table
+in [ADR 0009](adr/0009-relevance-gate-off-until-calibrated.md).
+
+A finding from the same labels, not acted on: relevance rises with the movie's TMDB
+`vote_count`. Of the 300 rows, 20-100 votes: 140 rows, 34% relevant; 100-1000:
+110 rows, 53%; 1000+: 50 rows, 66%. The median `vote_average` is 6.70 for relevant
+rows against 6.12 for irrelevant ones. The labeller may have been biased (a
+well-known film is easier to recognise as relevant), so treat it as motivation for
+a future quality prior in scoring, not as a measured effect and not as a change made.
 
 ## Production Extensions (not implemented)
 

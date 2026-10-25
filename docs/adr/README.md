@@ -21,7 +21,7 @@ supersedes the old one; the old one is kept with status `Superseded by NNNN`.
 | [0006](0006-params-yaml-single-source-of-truth.md) | `params.yaml` is the single source of truth | Accepted |
 | [0007](0007-evaluation-methodology.md) | Evaluation: golden set, e2e vs oracle, dev/test split, judge is not ground truth | Accepted |
 | [0008](0008-embedding-index-provenance.md) | The embedding index records what built it, and start-up checks it | Accepted |
-| [0009](0009-relevance-gate-off-until-calibrated.md) | The relevance gate ships off until it is calibrated | Proposed |
+| [0009](0009-relevance-gate-off-until-calibrated.md) | The relevance gate ships off until it is calibrated (calibrated on dev: 0.005; test check pending) | Proposed |
 | [0010](0010-drop-session-vector-contextual-query-text.md) | Drop the session vector; rank on a context-aware standalone query | Accepted |
 | [0011](0011-unverifiable-constraints-ask-before-recommending.md) | Ask before dropping constraints the catalog cannot check | Accepted |
 
