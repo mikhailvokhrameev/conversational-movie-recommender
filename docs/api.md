@@ -129,6 +129,11 @@ brackets, such as `<opening line>`) are dropped from the intro and every descrip
 with the same hold-back for one split across chunks; the prompts themselves describe
 the format in words and show an example without angle brackets.
 
+**Zero count**: a request for no movies ("I want 0 movies", `result_count` of 0 or below) is not a
+search. The stream is `session`, one fixed `token` ("I can't show zero movies. How many would you
+like, from 1 to N?", N = `max_n`) and `done`: no `movies` event, no retrieval, no LLM call, and no
+`pending_relaxation` stored.
+
 **Short result under hard filters**: when fewer than the requested count (`result_count`, or
 `diversification.top_n` when none was asked for) movies come back and at least one hard filter is active (the same list `_no_match_message` names),
 the server first emits one fixed `token` line, "Only N movies in the catalog match:
@@ -416,7 +421,7 @@ these can be changed -- no environment variable overrides them.
 | `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
 | `scoring.weights.*` | 0.4667 / 0.3333 / 0.2 | Signal weights (semantic / metadata / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
 | `diversification.top_n` | `5` | Results returned when the user does not ask for a count |
-| `diversification.max_n` | `10` | Upper bound on a user-requested count (intent `result_count`, e.g. "top 10"); a larger request is clamped to it. Minimum 1 |
+| `diversification.max_n` | `10` | Upper bound on a user-requested count (intent `result_count`, e.g. "top 10"); a larger request is clamped to it. Minimum 1 (a request for 0 is asked about, not run) |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |
 | `reranking.enabled` | `true` | Cross-encoder reranking on/off |
 | `reranking.model` | `BAAI/bge-reranker-v2-m3` | Cross-encoder model |

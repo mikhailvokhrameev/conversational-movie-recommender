@@ -39,6 +39,7 @@ UNSUPPORTED_MESSAGE = (
     "I can't check {constraints} -- the catalog has no data on {unchecked}. "
     "Want me to search without that?"
 )
+ZERO_COUNT_MESSAGE = "I can't show zero movies. How many would you like, from 1 to {max_n}?"
 
 
 def _describe_filters(intent_dict: dict) -> str:
@@ -432,6 +433,19 @@ def _result_top_n(result_count):
     return max(1, min(result_count, settings.MAX_N))
 
 
+# "0 movies", "zero films" (not "10 movies", "2.0 movies"): a count of nothing.
+_ZERO_COUNT_RE = re.compile(r"(?<![\w.])(?:0|zero)\s+(?:more\s+)?(?:movies?|films?)\b", re.IGNORECASE)
+
+
+def _asks_for_zero(intent: MessageIntent, message: str) -> bool:
+    """The user asked to be shown no movies: the classifier's result_count is
+    zero or below, or the message says so ("I want 0 movies"; the model then
+    tends to file the phrase under unsupported_constraints). Not a search."""
+    if intent.category == "follow_up":
+        return False
+    return (intent.result_count is not None and intent.result_count <= 0) or bool(_ZERO_COUNT_RE.search(message))
+
+
 def _log_turn_latency(category, **stage_ms):
     logger.info(
         "turn_latency category=%s %s",
@@ -477,6 +491,8 @@ class ChatView(View):
             logger.exception("ChatView classification error")
             return JsonResponse({"error": "internal error"}, status=500)
 
+        if _asks_for_zero(intent, message):
+            return await self._zero_count_response(session, message, classify_parse_ms)
         if intent.category in ("follow_up", "general_chat", "clarify"):
             return await self._handle_conversational(
                 session, message, intent.category, classify_parse_ms,
@@ -618,6 +634,32 @@ class ChatView(View):
                 intent.category, classify_parse_ms=classify_parse_ms,
                 embed_ms=embed_ms, score_ms=score_ms, explain_ms=explain_ms,
             )
+            yield _sse_event("done", {})
+
+        return StreamingHttpResponse(
+            event_stream(),
+            content_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    async def _zero_count_response(self, session, message, classify_parse_ms):
+        """"0 movies": nothing to search for. A fixed question for a real count,
+        no retrieval, no LLM, nothing stored for a later "yes" to pick up."""
+        text = ZERO_COUNT_MESSAGE.format(max_n=settings.MAX_N)
+        try:
+            await _append_history(session, "user", message)
+        except Exception:
+            logger.exception("ChatView zero-count error")
+            return JsonResponse({"error": "internal error"}, status=500)
+
+        async def event_stream():
+            yield _sse_event("session", {"session_id": str(session.session_id), "session_token": session.session_token})
+            yield _sse_event("token", {"text": text})
+            try:
+                await _append_history(session, "assistant", text, count_turn=False)
+            except Exception:
+                logger.exception("failed to store assistant turn")
+            _log_turn_latency("zero_count", classify_parse_ms=classify_parse_ms)
             yield _sse_event("done", {})
 
         return StreamingHttpResponse(

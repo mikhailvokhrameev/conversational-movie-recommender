@@ -1112,12 +1112,40 @@ class TestUnsupportedConstraintsAndRelaxation:
             seen.append(top_n)
             return await inner(query_embedding, intent, query_text)
 
-        for count in (1, 0, 25, None):
+        for count in (1, 25, None):
             await self._run(
                 MessageIntent(category="new_search", semantic_query="comedy", result_count=count),
                 generate=_gen,
             )
-        assert seen == [1, 1, settings.MAX_N, settings.TOP_N]
+        assert seen == [1, settings.MAX_N, settings.TOP_N]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("intent_count, message", [
+        (0, "give me some comedies"), (-2, "give me some comedies"), (None, "I want 0 movies"),
+        (None, "show me zero films please"),
+    ])
+    async def test_a_count_of_zero_asks_how_many_instead_of_searching(self, intent_count, message):
+        explain = MagicMock(side_effect=AssertionError("no LLM for this reply"))
+        generate = MagicMock(side_effect=AssertionError("no search for this reply"))
+        intent = MessageIntent(
+            category="new_search", semantic_query="movies", result_count=intent_count,
+            unsupported_constraints=[message] if intent_count is None else [],
+        )
+        events, append_history = await self._run(intent, generate=generate, explain=explain, message=message)
+        text = "".join(d["text"] for name, d in events if name == "token")
+        assert text == f"I can't show zero movies. How many would you like, from 1 to {settings.MAX_N}?"
+        assert "movies" not in dict(events) or dict(events)["movies"]["movies"] == []
+        stored = [c.args[:3] for c in append_history.call_args_list]
+        assert ("user", message) == stored[0][1:3]
+        assert stored[-1][1:3] == ("assistant", text)
+        assert all("pending_relaxation" not in c.kwargs for c in append_history.call_args_list)
+
+    @pytest.mark.parametrize("message", [
+        "10 movies", "top 20 films", "2.0 movies", "movies from the 90s", "no movies about war",
+    ])
+    def test_other_counts_are_not_a_zero_count(self, message):
+        from movies.views import _asks_for_zero
+        assert not _asks_for_zero(MessageIntent(category="new_search"), message)
 
     @pytest.mark.asyncio
     async def test_short_line_compares_against_the_requested_count(self):

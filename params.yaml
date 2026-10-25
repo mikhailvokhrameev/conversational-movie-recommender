@@ -275,7 +275,7 @@ diversification:
   # Results returned to the user.
   top_n: 5
   # Upper bound on a user-requested count (intent `result_count`, e.g. "top 10");
-  # a larger request is clamped to this. Minimum is 1 (a request below it is raised).
+  # a larger request is clamped to this. Minimum is 1 (a request for 0 is asked about, not run).
   max_n: 10
   # MMR relevance/diversity tradeoff. 1.0 is pure relevance, 0.0 pure novelty.
   lambda: 0.7
