@@ -98,7 +98,7 @@ JSON fields:
 - "min_runtime": if the user wants a long film (e.g. "a long epic") a minimum runtime in minutes, else null
 - "max_runtime": if the user wants a short film (e.g. "something short", "under 90 minutes" -> 90) a maximum runtime in minutes, else null
 - "original_languages": list of ISO 639-1 language codes if the user names a specific film-industry language (e.g. "a Korean movie" -> ["ko"], "French cinema" -> ["fr"]), else []
-- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "silent", "Oscar winners"). A named director, a named actor or an award/prize is always unsupported: list it here and keep it out of semantic_query and standalone_query, even when the rest of the message is searchable. Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
+- "unsupported_constraints": conditions in the latest message that the catalog cannot check, in the user's words. The catalog knows genre, mood/theme, country, rating, release year, runtime and language. It does NOT know {unchecked} (e.g. "with Keanu Reeves", "directed by Nolan", "in the style of Nolan", "silent", "Oscar winners"). A named director, a named actor or an award/prize is always unsupported, and a director named as a style or influence ("in the style of ...") is still a named director: list it here and keep it out of semantic_query and standalone_query, even when the rest of the message is searchable. Leave them out of every other field. If the assistant just offered to search without a condition and the user agreed, do not list that condition again. Else []
 - "result_count": the number of movies the user asks to be shown ("only one", "just 1 more" -> 1, "top 10" -> 10), else null
 
 Example:
@@ -132,6 +132,10 @@ User: "1950s movies with Keanu Reeves"
 Example:
 User: "a moody sci-fi directed by Ridley Scott"
 {{"category": "new_search", "semantic_query": "a moody science fiction film", "standalone_query": "a moody science fiction film", "genres": ["Science Fiction"], "mood": "thoughtful", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["directed by Ridley Scott"], "result_count": null}}
+
+Example:
+User: "a mind-bending sci-fi thriller in the style of Nolan"
+{{"category": "new_search", "semantic_query": "a mind-bending science fiction thriller", "standalone_query": "a mind-bending science fiction thriller", "genres": ["Science Fiction", "Thriller"], "mood": "", "themes": [], "negations": [], "reference_films": [], "country_exclusions": [], "country_inclusions": [], "min_vote_average": null, "min_release_year": null, "max_release_year": null, "min_runtime": null, "max_runtime": null, "original_languages": [], "unsupported_constraints": ["in the style of Nolan"], "result_count": null}}
 
 Example:
 User: "a romantic comedy starring Julia Roberts"

@@ -455,6 +455,7 @@ class TestUnsupportedConstraints:
         ("directed by Ridley Scott", "Science Fiction"),
         ("starring Julia Roberts", "Romance"),
         ("Palme d'Or", "War"),
+        ("in the style of Nolan", "Science Fiction"),
     ])
     def test_person_and_award_examples_keep_the_searchable_part_and_flag_the_rest(self, phrase, genre):
         example = next(
@@ -483,6 +484,8 @@ class TestUnsupportedConstraints:
         for word in ("director", "actor", "award"):
             assert word in line
         assert "semantic_query" in line
+        assert "in the style of Nolan" in line
+        assert "style or influence" in line
 
     def test_new_examples_round_trip_through_the_classifier_schema(self):
         examples = [ex for ex in _prompt_examples() if ex["unsupported_constraints"] not in ([], ["silent"])]
@@ -495,7 +498,7 @@ class TestUnsupportedConstraints:
 
     def test_formatted_classify_messages_carry_the_new_examples(self):
         content = _classify_and_parse_payload("hi", [])["messages"][0]["content"]
-        for phrase in ("directed by Ridley Scott", "starring Julia Roberts", "Palme d'Or"):
+        for phrase in ("directed by Ridley Scott", "starring Julia Roberts", "Palme d'Or", "in the style of Nolan"):
             assert phrase in content
 
     def test_standalone_query_field_says_to_leave_unsupported_constraints_out(self):
