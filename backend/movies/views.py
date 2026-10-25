@@ -91,17 +91,27 @@ def _history_window(history: list[dict]) -> list[dict]:
     return history[-(settings.SESSION_HISTORY_MAX_TURNS * 2):]
 
 
-def _agreed_drops(constraints: list[str], unchecked: list[str], history: list[dict]) -> list[str]:
+def _is_bare_consent(message: str) -> bool:
+    """A reply of at most session.consent_max_words words ("yes", "sure, go
+    ahead"): too short to be a search of its own, so it can only answer the
+    assistant's offer. Anything longer is a new request."""
+    return len(message.split()) <= settings.SESSION_CONSENT_MAX_WORDS
+
+
+def _agreed_drops(
+    constraints: list[str], unchecked: list[str], history: list[dict], message: str,
+) -> list[str]:
     """Conditions this search runs without because the user agreed to drop them:
     the intent's constraints that are no longer `unchecked`, plus what the
-    assistant's directly preceding turn offered to drop (a bare "yes" leaves the
-    intent without them). The explanation must say these were not checked.
+    assistant's directly preceding turn offered to drop when `message` is a bare
+    consent (a bare "yes" leaves the intent without them). The explanation must
+    say these were not checked.
 
-    Known limitation: the server has no consent signal, so an offer the user
-    ignored (an unrelated new search next) is still reported. The fix belongs in
-    the classifier (see TODOS.md)."""
+    The server has no explicit consent signal, so a longer message counts as a
+    new search that ignored the offer and the offered drops are not carried over;
+    a longer reply that still lists the constraint is reported by the first part."""
     dropped = [c for c in constraints if c not in unchecked]
-    if history and history[-1].get("role") == "assistant":
+    if history and history[-1].get("role") == "assistant" and _is_bare_consent(message):
         dropped += (history[-1].get("pending_relaxation") or {}).get("dropped") or []
     return list(dict.fromkeys(c for c in dropped if c.strip()))
 
@@ -334,7 +344,7 @@ class ChatView(View):
         history = session.history
         intent_dict = intent.model_dump(exclude=set(NON_FILTER_FIELDS))
         unchecked = _unchecked_constraints(intent.unsupported_constraints, history)
-        unverified = _agreed_drops(intent.unsupported_constraints, unchecked, history)
+        unverified = _agreed_drops(intent.unsupported_constraints, unchecked, history, message)
         if unchecked:
             _log_search_turn(intent, 0)
             return await self._unsupported_response(

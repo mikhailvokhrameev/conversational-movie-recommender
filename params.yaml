@@ -343,6 +343,11 @@ reranking:
 
 session:
   ttl_hours: 24
+  # A reply of at most this many words ("yes", "sure, go ahead") counts as a
+  # bare answer to the assistant's "search without X?" offer; a longer one is a
+  # new request that ignored it, so the offered drop is not reported as
+  # unchecked for that search.
+  consent_max_words: 3
   # Cap on how much conversation history gets replayed into every LLM call
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are

@@ -390,6 +390,7 @@ _session = PARAMS["session"]
 _validate_history_limits(_session)
 SESSION_TTL_HOURS = _session["ttl_hours"]
 SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
+SESSION_CONSENT_MAX_WORDS = _session["consent_max_words"]
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
 SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS = _session["history_movie_description_chars"]
 

@@ -770,12 +770,12 @@ class TestUnsupportedConstraintsAndRelaxation:
         session.history = list(history)
         return session
 
-    async def _run(self, intent, history=(), generate=None, explain=None):
+    async def _run(self, intent, history=(), generate=None, explain=None, message="msg"):
         append_history = AsyncMock()
         generate = generate or _mock_generate_and_score()
         explain = explain or _mock_explanation_parts((None, "Here you go."))
         request = AsyncRequestFactory().post(
-            "/api/chat/", data=json.dumps({"message": "msg"}), content_type="application/json",
+            "/api/chat/", data=json.dumps({"message": message}), content_type="application/json",
         )
 
         async def _classify(message, history=None, selection_note=None):
@@ -916,15 +916,35 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert seen == [["silent"]]
 
     @pytest.mark.asyncio
-    async def test_ignored_offer_still_reports_drops_known_leak(self):
-        # Documents a known leak, not desired behaviour: the user ignored the
-        # offer and searched for something else, yet the dropped condition is
-        # reported as unchecked. The server has no consent signal (TODOS.md,
-        # "ignored relaxation offer"); flip this when the classifier supplies one.
+    async def test_a_short_yes_after_an_offer_still_names_the_dropped_condition(self):
         seen = []
         history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
-        intent = MessageIntent(category="new_search", semantic_query="space operas")
-        await self._run(intent, history=history, explain=self._recording_explain(seen))
+        intent = MessageIntent(category="new_search", semantic_query="documentaries")
+        await self._run(intent, history=history, explain=self._recording_explain(seen), message="yes, please")
+        assert seen == [["silent"]]
+
+    @pytest.mark.asyncio
+    async def test_ignored_offer_and_a_new_search_does_not_report_the_dropped_condition(self):
+        # The user ignored the offer and asked for something else: the stale
+        # condition must not be reported as unchecked for this search.
+        seen = []
+        history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["I want 0 movies"]}}]
+        intent = MessageIntent(category="new_search", semantic_query="family movies")
+        await self._run(
+            intent, history=history, explain=self._recording_explain(seen), message="I want 20 family movies",
+        )
+        assert seen == [[]]
+
+    @pytest.mark.asyncio
+    async def test_a_new_search_still_reports_a_constraint_the_user_agreed_to_drop(self):
+        seen = []
+        history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
+        intent = MessageIntent(
+            category="new_search", semantic_query="family movies", unsupported_constraints=["silent"],
+        )
+        await self._run(
+            intent, history=history, explain=self._recording_explain(seen), message="family movies, silent is fine",
+        )
         assert seen == [["silent"]]
 
     @pytest.mark.asyncio

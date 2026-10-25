@@ -417,6 +417,7 @@ these can be changed -- no environment variable overrides them.
 | `reranking.min_score` | `null` | "Nothing suitable" gate: minimum `rerank_score` (strictly between 0 and 1) to keep a candidate; `null` = off. Uncalibrated, so off (see ML.md) |
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.ttl_hours` | `24` | Session expiry |
+| `session.consent_max_words` | `3` | A reply of at most this many words counts as a bare "yes" to a "search without X?" offer; a longer one is a new search and the offered drop is not reported as unchecked |
 | `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so a heavy-use prompt fits `llm.num_ctx` with room to spare. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |
 | `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |
