@@ -87,10 +87,11 @@ llm:
   # leaving ~1.3k of headroom in 6144. This is an estimate, to be re-measured
   # on the GPU run. The director/actor/award few-shots added later put
   # ~0.5k (1.8k chars) on top of that, so ~5.3k and ~0.8k of headroom; the
-  # "in the style of Nolan" clause and few-shot after them add ~0.1k, so
-  # ~5.4k and ~0.7k of headroom. The `prompt_eval_count >= 0.9 * num_ctx`
-  # warning (~5530 tokens, see ollama_client.py) is now only ~0.1k above that
-  # expected heavy case, so re-measure on the GPU run.
+  # "in the style of Nolan" clause and few-shot after them add ~0.2k (~0.7k
+  # chars), so ~5.5k and ~0.6k of headroom. The `prompt_eval_count >= 0.9 *
+  # num_ctx` warning (~5530 tokens, see ollama_client.py) now sits about AT
+  # that expected heavy case, so it may fire at the heavy end; re-measure on
+  # the GPU run.
   #
   # Derivation, for sizing only (ASSUMPTION: ~4 characters per token for
   # English prose on Qwen-family tokenizers; titles, names and JSON tokenize
@@ -113,17 +114,17 @@ llm:
   # = 10 movies x (200 chars ~50 + ~15 title/year/genres/runtime) ~0.65k at the
   # cap (~0.33k for the default 5), minus the titles-only line it replaces
   # (~0.03k per 5 titles), so ~+0.6k at the cap (~+0.3k for 5). That block is
-  # already counted in the ~5.4k above; a second one would take ~0.6k of the
-  # ~0.7k headroom left. Older sets stay titles-only precisely to keep this to
-  # ONE block; do not replay facts for every past set without re-checking this
+  # already counted in the ~5.5k above; a second one would take all of the
+  # ~0.6k headroom left and no longer fits. Older sets stay titles-only
+  # precisely to keep this to ONE block; do not replay facts for every past set without re-checking this
   # budget.
   #
   # Cost: the KV cache for qwen3:8b is ~36 layers x 8 KV heads x 128 dims x
   # 2 (K and V) x 2 bytes (fp16) ~= 0.147 MB/token, so 6144 tokens is ~0.9 GB
   # of extra VRAM (see the budget in the header -- on estimate it is now over
   # 11 GB). Each 1024 tokens of window is ~0.15 GB, so a smaller value is the
-  # first lever if the card does not fit, but with only ~0.7k of headroom left
-  # no full step fits: 5120 is below the ~5.4k heavy classify case, so a cut
+  # first lever if the card does not fit, but with only ~0.6k of headroom left
+  # no full step fits: 5120 is below the ~5.5k heavy classify case, so a cut
   # needs a shorter prompt or fewer history turns first; measure the prompt
   # sizes first.
   #
@@ -368,10 +369,10 @@ session:
   # used; older turns are dropped, not summarized. Together with llm.num_ctx
   # this bounds the prompt: with 6 pairs the heaviest call (classify_parse)
   # measured mean ~2.7k / max ~4.0k tokens before this branch's prompt
-  # additions, expected ~5.4k at the heavy end after them (to be re-measured
-  # on the GPU run), so ~0.7k of headroom in the 6144-token window -- see
+  # additions, expected ~5.5k at the heavy end after them (to be re-measured
+  # on the GPU run), so ~0.6k of headroom in the 6144-token window -- see
   # llm.num_ctx for the figures and caveats. A pair is ~0.34k typical, ~0.54k
-  # at the cap, so one more pair at the cap takes about three quarters of that
+  # at the cap, so one more pair at the cap takes nearly all of that
   # headroom and a second one does not fit; check the
   # logged prompt_tokens first, and raise llm.num_ctx with it for more
   # (paying the extra KV-cache VRAM). Minimum 1: 0 does NOT
