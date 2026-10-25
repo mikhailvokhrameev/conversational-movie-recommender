@@ -563,10 +563,17 @@ class ChatView(View):
             _describe_filters(intent_dict) if len(top_movies) < top_n and not could_exclude else ""
         )
         count = len(top_movies)
+        # Asked for more than the cap: say so, or the shorter list looks like
+        # the catalog running out.
+        cap_line = (
+            f"I can show at most {settings.MAX_N} movies at a time.\n"
+            if intent.result_count is not None and intent.result_count > settings.MAX_N else ""
+        )
         short_line = (
             f"Only {count} movie in the catalog matches: {short_filters}.\n" if count == 1
             else f"Only {count} movies in the catalog match: {short_filters}.\n"
         ) if short_filters else ""
+        short_line = cap_line + short_line
 
         async def event_stream():
             yield _sse_event("movies", {

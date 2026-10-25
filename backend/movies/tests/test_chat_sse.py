@@ -1120,6 +1120,26 @@ class TestUnsupportedConstraintsAndRelaxation:
         assert seen == [1, settings.MAX_N, settings.TOP_N]
 
     @pytest.mark.asyncio
+    async def test_count_above_the_cap_says_what_the_cap_is(self):
+        events, append_history = await self._run(
+            MessageIntent(category="new_search", semantic_query="comedy", result_count=settings.MAX_N + 10),
+            explain=_mock_explanation_parts((None, "Here you go.\n"), (0, "Desc.")),
+        )
+        line = f"I can show at most {settings.MAX_N} movies at a time."
+        tokens = [d["text"] for name, d in events if name == "token"]
+        assert tokens[0].strip() == line
+        assert append_history.call_args.args[2].startswith(line)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("count", [None, 1, "max"])
+    async def test_count_within_the_cap_has_no_cap_line(self, count):
+        count = settings.MAX_N if count == "max" else count
+        events, _ = await self._run(
+            MessageIntent(category="new_search", semantic_query="comedy", result_count=count),
+        )
+        assert "at most" not in "".join(d["text"] for name, d in events if name == "token")
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("intent_count, message", [
         (0, "give me some comedies"), (-2, "give me some comedies"), (None, "I want 0 movies"),
         (None, "show me zero films please"),
