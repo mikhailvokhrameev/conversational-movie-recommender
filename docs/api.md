@@ -20,7 +20,7 @@ via Server-Sent Events.
 |-------|------|----------|-------------|-------------|
 | `message` | string | yes | 1-2000 chars, trimmed | Movie query in natural language |
 | `session_id` | UUID string | no | valid UUID v4 | Existing session to continue |
-| `selected_tmdb_id` | integer | no | a `tmdb_id` | The card the user is viewing in the carousel. Ignored unless it is one of the movies in the latest shown list (the last assistant turn with `movie_facts`). Its title is given to the classifier; on a `follow_up` turn its full catalog record is also given to the answer model |
+| `selected_tmdb_id` | integer | no | a `tmdb_id` | The card the user is viewing in the carousel. Ignored unless it is one of the movies in the latest shown list (the last assistant turn with `movie_facts`). Its title is given to the classifier; on a `follow_up` turn its full catalog record is also given to the answer model. An explicit list position in the message ("the third one", "#3", "the 2nd") beats the open card: with one position inside the latest list, that movie's record goes to the answer model on a `follow_up` and no card title is sent to the classifier; with several positions, or one outside the list, no movie is attached |
 
 Continuing a session requires **both** `session_id` in the body **and** the
 `X-Session-Token` header (the `session_token` value returned by the previous
