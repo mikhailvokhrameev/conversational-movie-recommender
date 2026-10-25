@@ -237,7 +237,7 @@ class TestMinScoreValidation:
         with pytest.raises(ValueError, match="reranking.min_score"):
             _validate_rerank_min_score({"min_score": bad})
 
-    def test_shipped_params_leave_the_gate_off(self):
+    def test_shipped_params_set_the_calibrated_gate(self):
         from django.conf import settings
 
-        assert settings.RERANK_MIN_SCORE is None
+        assert settings.RERANK_MIN_SCORE == 0.005
