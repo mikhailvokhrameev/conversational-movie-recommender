@@ -1331,8 +1331,18 @@ class TestConversationalPromptGrounding:
         assert "actor" in rule and "director" in rule
         assert "never guess" in rule
         assert "do not add it from general knowledge" in rule
-        assert "marked as such" not in CONVERSATIONAL_SYSTEM_PROMPT
 
+    def test_catalog_only_rule_is_scoped_to_movies_with_supplied_facts(self):
+        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+
+        rule = next(line for line in CONVERSATIONAL_SYSTEM_PROMPT.splitlines() if "only from the catalog facts" in line)
+        # Applies to the listed / selected movies...
+        assert rule.index("only from the catalog facts") < rule.index("do not add it from general knowledge")
+        assert rule.startswith("- When answering about a movie from the")
+        # ...while a film with no supplied facts (general chat, no list) may still be
+        # answered from marked general knowledge.
+        assert "not in the list or the block" in rule
+        assert "from general knowledge, not our catalog" in rule
 
 class TestStructuredOutputSchema:
     """`format` carries a JSON schema (Ollama structured outputs), not the bare
