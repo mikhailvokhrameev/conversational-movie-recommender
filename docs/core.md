@@ -172,8 +172,8 @@ Ollama request carries `options.num_ctx` = `llm.num_ctx` (6144), so a long-lived
 session's prompt stays bounded. The heaviest call, classify+parse, measured mean ~2.7k / max
 ~4.0k prompt tokens (per-call log, GPU box, before the year rule, result_count,
 selected-card block, up-to-10-movie facts and unverified-conditions additions); after them
-it is expected at ~4.8k at the heavy end (an estimate, to be re-measured on the GPU run),
-~1.3k of headroom in 6144. The derivation is in the `llm.num_ctx` comment in `params.yaml`;
+and the director/actor/award few-shots (~0.5k) it is expected at ~5.3k at the heavy end (an
+estimate, to be re-measured on the GPU run), ~0.8k of headroom in 6144. The derivation is in the `llm.num_ctx` comment in `params.yaml`;
 the logged `prompt_tokens` (below) is the measured figure (it may count only newly evaluated
 tokens when Ollama reuses a cached prompt prefix, so read it from a cold call). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start (dropping the system prompt and oldest turns
