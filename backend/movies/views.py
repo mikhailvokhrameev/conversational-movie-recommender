@@ -94,7 +94,13 @@ def _history_window(history: list[dict]) -> list[dict]:
 def _is_bare_consent(message: str) -> bool:
     """A reply of at most session.consent_max_words words ("yes", "sure, go
     ahead"): too short to be a search of its own, so it can only answer the
-    assistant's offer. Anything longer is a new request."""
+    assistant's offer. Anything longer is a new request.
+
+    A word-count heuristic with two known failure modes. A new search of at most
+    N words ("horror movies") after an ignored offer still counts as consent, so
+    the stale drop is reported as unchecked. A longer agreement ("yes please do
+    that") does not count, so the drop is not named in the explanation (the
+    condition is still not asked about again)."""
     return len(message.split()) <= settings.SESSION_CONSENT_MAX_WORDS
 
 

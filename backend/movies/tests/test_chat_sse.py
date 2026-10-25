@@ -758,6 +758,25 @@ def test_chat_session_has_no_preference_vector():
     assert "preference_vector" not in {f.name for f in ChatSession._meta.get_fields()}
 
 
+class TestIsBareConsent:
+    def test_exactly_the_limit_is_consent_and_one_more_word_is_not(self, settings):
+        from movies.views import _is_bare_consent
+
+        settings.SESSION_CONSENT_MAX_WORDS = 3
+        assert _is_bare_consent("yes")
+        assert _is_bare_consent("sure go ahead")
+        assert not _is_bare_consent("yes please go ahead")
+
+    def test_the_limit_comes_from_the_setting(self, settings):
+        from movies.views import _is_bare_consent
+
+        settings.SESSION_CONSENT_MAX_WORDS = 1
+        assert _is_bare_consent("yes")
+        assert not _is_bare_consent("yes please")
+        settings.SESSION_CONSENT_MAX_WORDS = 5
+        assert _is_bare_consent("yes please go ahead now")
+
+
 class TestUnsupportedConstraintsAndRelaxation:
     """No DB: the session and both history writers are patched, so these run on
     a host without Postgres. `history` is what the session held before the turn."""
@@ -912,7 +931,7 @@ class TestUnsupportedConstraintsAndRelaxation:
         seen = []
         history = [{"role": "assistant", "content": "I can't check...", "pending_relaxation": {"dropped": ["silent"]}}]
         intent = MessageIntent(category="new_search", semantic_query="documentaries")
-        await self._run(intent, history=history, explain=self._recording_explain(seen))
+        await self._run(intent, history=history, explain=self._recording_explain(seen), message="yes")
         assert seen == [["silent"]]
 
     @pytest.mark.asyncio

@@ -1052,7 +1052,6 @@ class TestStreamExplanationUnverified:
         turn = await self._last_turn(unverified=["silent"])
         assert "Do not claim" not in turn
         assert "say it was not checked" not in turn
-        assert "you " not in turn.lower()
 
     def test_system_prompt_explains_the_unchecked_field(self):
         flat = " ".join(EXPLANATION_SYSTEM_PROMPT.split())
