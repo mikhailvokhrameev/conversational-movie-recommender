@@ -86,8 +86,9 @@ reply: when the classifier answers it as `general_chat`/`clarify` (the model doe
 and may call the year "not released yet") or as a search with no year, the server makes it a search with
 `min_release_year` set to that year. The
 stored assistant turn then carries `pending_relaxation: {"search": {...}}`, the turn's intent with the offered
-years; when the next message is a bare consent (`session.consent_max_words`), is not a `follow_up` and adds no
-genre, negation, film, country or language the offer lacks, the server runs that search instead of the
+years; when the next message is a bare consent (`session.consent_max_words`) with none of
+`session.refusal_words` ("no thanks", "nope"), the classifier reads it as `clarify`, `new_search` or `refinement`
+(not `general_chat`: "why?", "thanks, bye"), and it adds no genre, negation, film, country or language the offer lacks, the server runs that search instead of the
 classifier's reading of the "yes". Then `done` -- no `blurb`, no `error`. The
 stored assistant turn holds that text with no `movies`/`movie_facts`, so a
 follow-up is not grounded in movies that were never shown. With the gate on, a
@@ -427,6 +428,7 @@ these can be changed -- no environment variable overrides them.
 | `reranking.description_chars` | `400` | Description chars sent per candidate to the cross-encoder |
 | `session.ttl_hours` | `24` | Session expiry |
 | `session.consent_max_words` | `3` | A reply of at most this many words counts as a bare "yes" to a "search without X?" offer; a longer one is a new search and the offered drop is not reported as unchecked |
+| `session.refusal_words` | `no, nope, nah, not, don't, dont, never, cancel, stop` | A short reply containing any of these words declines the catalog-end offer of its newest years, so the offered search is not run |
 | `session.history_max_turns` | `6` | Max past user/assistant pairs replayed to the LLM; sized so a heavy-use prompt fits `llm.num_ctx` with room to spare. Minimum 1 (0 is not "unlimited"; settings refuses to load it) |
 | `session.history_max_chars_per_entry` | `1000` | Max chars of a single history entry replayed to the LLM. Minimum 1 |
 | `session.history_movie_description_chars` | `200` | Per-movie description cap for the `movie_facts` stored with an assistant recommendation turn (applied at storage time). Minimum 1 |

@@ -196,10 +196,14 @@ def _accepted_search_offer(intent: MessageIntent, history: list[dict], message: 
 
     The classifier sees only the offer's text, and with nothing but an era to
     search on it takes a bare "yes" for `clarify` and asks for a genre. So the
-    server runs the stored search itself. Agreement is the bare-consent word
-    count (`_is_bare_consent`), not a follow-up, and adding no hard field the
+    server runs the stored search itself. Agreement is: a clarify, new_search or
+    refinement reading (general_chat -- "why?", "thanks, bye" -- keeps the
+    classifier's answer), a bare consent by word count (`_is_bare_consent`) with
+    none of session.refusal_words ("no thanks", "nope"), and no hard field the
     offer lacks."""
-    if intent.category == "follow_up" or not _is_bare_consent(message):
+    if intent.category not in ("clarify", "new_search", "refinement") or not _is_bare_consent(message):
+        return None
+    if set(re.findall(r"[a-z']+", message.casefold())) & set(settings.SESSION_REFUSAL_WORDS):
         return None
     if not history or history[-1].get("role") != "assistant":
         return None

@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -401,12 +402,31 @@ def _validate_consent_max_words(session: dict) -> None:
         )
 
 
+def _validate_refusal_words(session: dict) -> None:
+    """Fail at load unless session.refusal_words is a non-empty list of
+    distinct, lowercase, single words -- a reply is matched word by word, so a
+    capitalised entry or a phrase would never match."""
+    value = session.get("refusal_words") if isinstance(session, dict) else None
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(w, str) and re.fullmatch(r"[a-z']+", w) for w in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(
+            "params.yaml: session.refusal_words must be a non-empty list of distinct "
+            f"lowercase single words (got {value!r})."
+        )
+
+
 _session = PARAMS["session"]
 _validate_history_limits(_session)
 _validate_consent_max_words(_session)
+_validate_refusal_words(_session)
 SESSION_TTL_HOURS = _session["ttl_hours"]
 SESSION_HISTORY_MAX_TURNS = _session["history_max_turns"]
 SESSION_CONSENT_MAX_WORDS = _session["consent_max_words"]
+SESSION_REFUSAL_WORDS = tuple(_session["refusal_words"])
 SESSION_HISTORY_MAX_CHARS_PER_ENTRY = _session["history_max_chars_per_entry"]
 SESSION_HISTORY_MOVIE_DESCRIPTION_CHARS = _session["history_movie_description_chars"]
 

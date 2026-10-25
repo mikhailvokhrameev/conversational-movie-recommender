@@ -349,6 +349,11 @@ session:
   # new request that ignored it, so the offered drop is not reported as
   # unchecked for that search.
   consent_max_words: 3
+  # A short reply containing any of these words ("no thanks", "nope") declines
+  # the catalog-end offer of its newest years, so the offered search is not run
+  # (it only answers that offer; a "search without X?" drop is unaffected).
+  # Lowercase single words, matched word by word.
+  refusal_words: ["no", "nope", "nah", "not", "don't", "dont", "never", "cancel", "stop"]
   # Cap on how much conversation history gets replayed into every LLM call
   # (classification, conversational replies, explanations) as native
   # multi-turn `messages`. The last this-many user+assistant turn-pairs are

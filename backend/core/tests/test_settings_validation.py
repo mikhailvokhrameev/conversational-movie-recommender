@@ -5,6 +5,7 @@ import pytest
 from recommender.settings import (
     _unchecked_text,
     _validate_consent_max_words,
+    _validate_refusal_words,
     _validate_diversification,
     _validate_intent,
     _validate_logging_level,
@@ -127,6 +128,28 @@ class TestPlaceholderMaxChars:
     def test_rejects_a_missing_key(self, llm):
         with pytest.raises(ValueError, match=r"llm\.explanation\.placeholder_max_chars"):
             _validate_placeholder_max_chars(llm)
+
+
+class TestRefusalWords:
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        assert "no" in settings.SESSION_REFUSAL_WORDS
+
+    def test_accepts_distinct_lowercase_words(self):
+        _validate_refusal_words({"refusal_words": ["no", "nope", "don't"]})
+
+    @pytest.mark.parametrize("bad", [
+        [], None, "no", ["no", "no"], ["No"], [""], ["no thanks"], [1],
+    ])
+    def test_rejects_anything_else(self, bad):
+        with pytest.raises(ValueError, match=r"session\.refusal_words"):
+            _validate_refusal_words({"refusal_words": bad})
+
+    @pytest.mark.parametrize("session", [{}, None])
+    def test_rejects_a_missing_key(self, session):
+        with pytest.raises(ValueError, match=r"session\.refusal_words"):
+            _validate_refusal_words(session)
 
 
 class TestConsentMaxWords:

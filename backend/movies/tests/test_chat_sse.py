@@ -1565,11 +1565,13 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
         assert not append_history.await_args.kwargs.get("pending_relaxation")
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("category", ["clarify", "general_chat", "new_search"])
-    async def test_yes_searches_the_offered_years(self, category):
+    @pytest.mark.parametrize("category, message", [
+        ("clarify", "yes"), ("new_search", "yes"), ("refinement", "sure"), ("clarify", "ok sure"),
+    ])
+    async def test_yes_searches_the_offered_years(self, category, message):
         calls = []
         intent = MessageIntent(category=category, semantic_query="yes", genres=["Comedy"])
-        events, _ = await self._run(intent, "yes", history=self._history(), generate=self._recording_generate(calls))
+        events, _ = await self._run(intent, message, history=self._history(), generate=self._recording_generate(calls))
 
         assert len(calls) == 1
         assert (calls[0]["min_release_year"], calls[0]["max_release_year"]) == (2022, 2023)
@@ -1613,3 +1615,23 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
 
         intent = MessageIntent(category="clarify")
         assert _accepted_search_offer(intent, self._history(dropped=["silent"]), "yes") is None
+
+    @pytest.mark.parametrize("message", ["no", "no thanks", "nope", "nah", "Not now", "don't"])
+    @pytest.mark.parametrize("category", ["clarify", "new_search", "refinement"])
+    def test_a_refusal_is_not_a_yes(self, message, category):
+        from movies.views import _accepted_search_offer
+
+        assert _accepted_search_offer(MessageIntent(category=category), self._history(), message) is None
+
+    @pytest.mark.parametrize("message", ["yes", "why?", "thanks, bye"])
+    def test_a_general_chat_reply_keeps_the_classifier_reading(self, message):
+        from movies.views import _accepted_search_offer
+
+        assert _accepted_search_offer(MessageIntent(category="general_chat"), self._history(), message) is None
+
+    def test_the_refusal_words_come_from_the_setting(self, settings):
+        from movies.views import _accepted_search_offer
+
+        settings.SESSION_REFUSAL_WORDS = ("meh",)
+        assert _accepted_search_offer(MessageIntent(category="clarify"), self._history(), "meh") is None
+        assert _accepted_search_offer(MessageIntent(category="clarify"), self._history(), "no") is not None
