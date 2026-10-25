@@ -80,9 +80,11 @@ or loosening some of the constraints."). When the active `min_release_year` is p
 newest film the catalog holds, the reply instead says where the catalog ends ("The catalog
 only covers films released up to <month year>, so there is nothing from <year>. Want the
 newest films it has (<first>–<last>)?"; the range is the newest `intent.recent_years` catalog years). A
-message naming a year past the catalog end always gets that reply: when the classifier answers it as
-`general_chat`/`clarify` (the model does not know today's date and may call the year "not released yet")
-or as a search with no year, the server makes it a `new_search` with `min_release_year` set to that year. The
+message naming a release year past the catalog end ("movies from 2026", "2026 movies"; not a bare year
+such as "Blade Runner 2049", "set in 2077", or a year inside a `reference_films` title) always gets that
+reply: when the classifier answers it as `general_chat`/`clarify` (the model does not know today's date
+and may call the year "not released yet") or as a search with no year, the server makes it a search with
+`min_release_year` set to that year. The
 stored assistant turn then carries `pending_relaxation: {"search": {...}}`, the turn's intent with the offered
 years; when the next message is a bare consent (`session.consent_max_words`), is not a `follow_up` and adds no
 genre, negation, film, country or language the offer lacks, the server runs that search instead of the

@@ -1478,6 +1478,33 @@ class TestYearPastTheCatalog(_NoDbChat):
     def test_left_alone(self, intent, message):
         assert self._route(intent, message) is intent
 
+    @pytest.mark.parametrize("intent, message", [
+        # A year inside a film title is not a release year.
+        (MessageIntent(category="new_search", reference_films=["Blade Runner 2049"]),
+         "movies like Blade Runner 2049"),
+        (MessageIntent(category="new_search", reference_films=["blade runner 2049"]),
+         "movies from 2049 like blade runner 2049"),
+        (MessageIntent(category="general_chat"), "have you seen Blade Runner 2049?"),
+        (MessageIntent(category="new_search"), "something like 2046"),
+        # Decision: "set in" names the story's setting, not when the film came out.
+        (MessageIntent(category="new_search", themes=["future"]), "movies set in 2077"),
+    ])
+    def test_a_year_that_is_not_a_release_year_is_left_alone(self, intent, message):
+        assert self._route(intent, message) is intent
+
+    @pytest.mark.parametrize("message", [
+        "movies from 2026", "2026 movies", "films released in 2026", "best films of 2026",
+        "anything after 2026?", "what came out in 2026",
+    ])
+    def test_a_release_year_wording_routes(self, message):
+        routed = self._route(MessageIntent(category="general_chat"), message)
+        assert (routed.category, routed.min_release_year) == ("new_search", 2026)
+
+    def test_a_refinement_without_a_year_gets_the_named_year(self):
+        intent = MessageIntent(category="refinement", semantic_query="comedies", genres=["Comedy"])
+        routed = self._route(intent, "only ones from 2026")
+        assert (routed.category, routed.min_release_year) == ("refinement", 2026)
+
     def test_unknown_bounds_leave_the_intent_alone(self):
         intent = MessageIntent(category="general_chat")
         assert self._route(intent, "movies from 2026", bounds=None) is intent

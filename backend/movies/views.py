@@ -94,19 +94,41 @@ def _no_match_message(intent_dict: dict, year_bounds: tuple | None = None) -> st
     return f"Nothing in the catalog matches all of: {filters}. Which one should I loosen?"
 
 
-_YEAR_RE = re.compile(r"\b(?:1[89]|2\d)\d\d\b")
+_YEAR = r"(?:1[89]|2\d)\d\d"
+# A year worded as a release year: after "from", "of", "after", "since",
+# "released" or "in" (not "set in": that is the story's setting), or before
+# "movies"/"films"/"releases" ("2026 movies"). A bare year ("Blade Runner 2049",
+# "something like 2046") is not taken for one.
+_RELEASE_YEAR_RE = re.compile(
+    rf"\b(?:from|of|after|since|released|(?<!\bset\s)in)\s+(?P<after_word>{_YEAR})\b"
+    rf"|(?<![\w-])(?P<before_noun>{_YEAR})(?=\s+(?:movies?|films?|releases?)\b)",
+    re.IGNORECASE,
+)
+
+
+def _release_years(message: str) -> list[int]:
+    """The years `message` words as release years (see `_RELEASE_YEAR_RE`)."""
+    return [int(m.group("after_word") or m.group("before_noun")) for m in _RELEASE_YEAR_RE.finditer(message)]
 
 
 def _route_past_catalog_year(intent: MessageIntent, message: str, year_bounds: tuple | None) -> MessageIntent:
-    """A message naming a year past the catalog's newest film ("movies from
-    2026") is a search, whatever the classifier said: the model has no notion of
-    today's date and may answer a year it takes for the future as chat ("not
-    released yet"). Chat or clarify becomes a new_search from that year, and a
-    search without any year gets it, so the no-match path says where the catalog
-    ends. A follow-up, or a search that already has a year range, is left alone."""
+    """A message naming a release year past the catalog's newest film ("movies
+    from 2026") is a search, whatever the classifier said: the model has no
+    notion of today's date and may answer a year it takes for the future as chat
+    ("not released yet"). Chat or clarify becomes a new_search from that year,
+    and a new_search or refinement without any year gets it, so the no-match
+    path says where the catalog ends. A follow-up, or a search that already has
+    a year range, is left alone.
+
+    Only a year worded as a release year counts (`_RELEASE_YEAR_RE`), and never
+    one that is part of a reference film's title ("movies from 2049 like Blade
+    Runner 2049"). Residual false positive: a title year right after one of the
+    release-year words when the classifier did not list that film ("a film of
+    2046 quality"); that gets the catalog-end reply instead of a search."""
     if year_bounds is None or intent.category == "follow_up":
         return intent
-    past = [int(y) for y in _YEAR_RE.findall(message) if int(y) > year_bounds[1]]
+    titles = " ".join(intent.reference_films).casefold()
+    past = [y for y in _release_years(message) if y > year_bounds[1] and str(y) not in titles]
     if not past:
         return intent
     if intent.category in ("general_chat", "clarify"):
@@ -442,7 +464,7 @@ class ChatView(View):
             t0 = time.perf_counter()
             selected_id, selected_position, selection_note = _selection(body.get("selected_tmdb_id"), session.history, message)
             intent = await aclassify_and_parse(message, session.history, selection_note=selection_note)
-            if _YEAR_RE.search(message):
+            if _release_years(message):
                 year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
                 intent = _route_past_catalog_year(intent, message, year_bounds)
             intent = _accepted_search_offer(intent, session.history, message) or intent
