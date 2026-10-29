@@ -234,6 +234,18 @@ retrieval:
   rrf_weights:
     semantic: 1.0
     lexical: 0.7
+    # Third channel, fed by quality_channel below. 0.0 = off: the channel does
+    # not run and retrieval is exactly semantic + lexical. Above 0 it joins
+    # the fusion at this weight (an obscure-leaning request skips it).
+    quality: 0.0
+
+  quality_channel:
+    # Why it exists: the semantic top-N is whatever sits closest to the query,
+    # so a well-known good film just outside it never reaches scoring, however
+    # high its weighted rating. This channel ranks the same query over only the
+    # films with at least this many votes (hard filters still apply), putting
+    # such films into the pool. Empty after the filters -> channel adds nothing.
+    min_vote_count: 1000
 
   lexical:
     # Postgres text search configuration. 'english' gives snowball stemming

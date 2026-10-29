@@ -1,9 +1,12 @@
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from django.conf import settings
 
 from core.candidate_generation import (
     _lexical_terms,
+    _quality_ranked_ids,
     _rrf_fuse,
     generate_candidates,
 )
@@ -262,3 +265,116 @@ class TestLexicalRetrieval:
 
         assert len(results) == 1
         assert results[0]["lexical_rank"] is None
+
+
+def _mocked_retrieval(semantic_ids, lexical_ids=(), quality_ids=()):
+    """Patch the three channels and the final Movie fetch so no DB is needed.
+
+    Returns (patches, quality_mock): enter the patches, then call
+    generate_candidates; quality_mock records whether the channel ran.
+    """
+    base = MagicMock(name="base_queryset")
+    base.annotate.return_value.order_by.return_value.values_list.return_value.__getitem__.return_value = list(
+        semantic_ids
+    )
+    movie_model = MagicMock(name="Movie")
+    movie_model.objects.filter.return_value.annotate.return_value = [
+        MagicMock(id=movie_id) for movie_id in {*semantic_ids, *lexical_ids, *quality_ids}
+    ]
+    quality = MagicMock(name="_quality_ranked_ids", return_value=list(quality_ids))
+    patches = [
+        patch("core.candidate_generation.Movie", movie_model),
+        patch("core.candidate_generation._apply_hard_filters", return_value=base),
+        patch("core.candidate_generation._lexical_ranked_ids", return_value=list(lexical_ids)),
+        patch("core.candidate_generation._quality_ranked_ids", quality),
+        patch(
+            "core.candidate_generation._as_candidate_dict",
+            side_effect=lambda movie, lexical_rank: {"id": movie.id},
+        ),
+    ]
+    return patches, quality
+
+
+def _run_generate(patches, **kwargs):
+    from contextlib import ExitStack
+
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        return [c["id"] for c in generate_candidates(EMBEDDING, **kwargs)]
+
+
+class TestQualityChannel:
+    """The well-known-films channel, with the DB layer mocked out."""
+
+    def test_quality_channel_skipped_when_weight_zero(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.0}
+        patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
+
+        ids = _run_generate(patches, intent=None)
+
+        quality.assert_not_called()
+        assert ids == [1, 2]
+
+    def test_quality_channel_fused_under_its_own_rrf_weight(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.5}
+        patches, quality = _mocked_retrieval([1, 2], quality_ids=[9, 1])
+
+        ids = _run_generate(patches, intent=None)
+
+        quality.assert_called_once()
+        assert 9 in ids
+        assert ids[0] == 1  # in both channels, so it outranks the quality-only film
+
+    def test_quality_channel_skipped_for_obscure_intent(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.5}
+        patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
+
+        ids = _run_generate(patches, intent={"wants_obscure": True})
+
+        quality.assert_not_called()
+        assert 9 not in ids
+
+    def test_quality_channel_empty_subset_falls_back(self, settings):
+        """Hard filters can leave no well-known film ("1950s Korean
+        documentaries"); candidates then come from the other channels."""
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.5}
+        patches, quality = _mocked_retrieval([1, 2], lexical_ids=[3], quality_ids=[])
+
+        ids = _run_generate(patches, intent=None, query_text="anything")
+
+        quality.assert_called_once()
+        assert set(ids) == {1, 2, 3}
+
+    def test_quality_channel_empty_subset_semantic_only_unchanged(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.5}
+        patches, _ = _mocked_retrieval([1, 2], quality_ids=[])
+
+        assert _run_generate(patches, intent=None) == [1, 2]
+
+    def test_explicit_true_forces_channel_on_at_zero_weight(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.0}
+        patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
+
+        _run_generate(patches, intent=None, quality_channel=True)
+
+        quality.assert_called_once()
+
+    def test_explicit_false_forces_channel_off(self, settings):
+        settings.RRF_WEIGHTS = {"semantic": 1.0, "lexical": 0.7, "quality": 0.5}
+        patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
+
+        _run_generate(patches, intent=None, quality_channel=False)
+
+        quality.assert_not_called()
+
+    def test_quality_ranked_ids_filters_by_min_vote_count(self):
+        base = MagicMock(name="base_queryset")
+        filtered = base.filter.return_value
+        filtered.annotate.return_value.order_by.return_value.values_list.return_value.__getitem__.return_value = [
+            4,
+            5,
+        ]
+
+        assert _quality_ranked_ids(base, EMBEDDING, 100, 1000) == [4, 5]
+        base.filter.assert_called_once_with(vote_count__gte=1000)

@@ -250,6 +250,27 @@ _retrieval = PARAMS["retrieval"]
 CANDIDATE_COUNT = _retrieval["candidate_count"]
 RRF_K = _retrieval["rrf_k"]
 RRF_WEIGHTS = _retrieval["rrf_weights"]
+
+
+def _validate_quality_channel(retrieval: dict) -> None:
+    """Fail at load if the quality channel's weight or vote floor is invalid.
+
+    The weight is read unconditionally by candidate generation, so a missing
+    one must fail here rather than at the first request. A negative weight
+    would push well-known films down the fused ranking.
+    """
+    weight = retrieval["rrf_weights"].get("quality")
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
+        raise ValueError(f"params.yaml: retrieval.rrf_weights.quality must be a number >= 0 (got {weight!r}).")
+    floor = retrieval["quality_channel"]["min_vote_count"]
+    if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
+        raise ValueError(
+            f"params.yaml: retrieval.quality_channel.min_vote_count must be an integer >= 0 (got {floor!r})."
+        )
+
+
+_validate_quality_channel(_retrieval)
+QUALITY_CHANNEL_MIN_VOTE_COUNT = _retrieval["quality_channel"]["min_vote_count"]
 LEXICAL_SEARCH_CONFIG = _retrieval["lexical"]["text_search_config"]
 LEXICAL_MIN_TERM_LENGTH = _retrieval["lexical"]["min_term_length"]
 LEXICAL_MAX_TERMS = _retrieval["lexical"]["max_terms"]

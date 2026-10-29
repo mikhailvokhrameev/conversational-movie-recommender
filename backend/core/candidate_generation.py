@@ -1,17 +1,23 @@
-"""Candidate generation: hard filters, two retrieval channels, RRF fusion.
+"""Candidate generation: hard filters, three retrieval channels, RRF fusion.
 
 Applies hard filters (genre negation, country exclusion/inclusion, rating
 floor, release year range, runtime range, original language) as SQL WHERE
-clauses, then retrieves through two independent channels and fuses their
+clauses, then retrieves through independent channels and fuses their
 rankings:
 
   semantic  exact pgvector cosine distance over the query embedding
   lexical   Postgres full-text match over title/original_title/keywords
+  quality   the same cosine ordering, restricted to films with at least
+            retrieval.quality_channel.min_vote_count votes (off at weight 0
+            and for "obscure" requests)
 
-The two exist for different failure modes. Embeddings encode meaning but not
+The first two exist for different failure modes. Embeddings encode meaning but not
 identity, so a query naming a specific film or actor can miss it entirely.
 Full-text matches names literally but understands nothing. Neither subsumes
-the other.
+the other. The quality channel covers a third: the semantic top-N is
+dominated by whatever sits closest to the query, so a well-known good film
+that is only a little farther away never makes the pool. Ranking just the
+well-voted subset surfaces those.
 
 Their scores are not comparable -- a cosine distance and a ts_rank live on
 unrelated scales -- so they are fused by *rank* via Reciprocal Rank Fusion
@@ -26,8 +32,9 @@ instead: there, all signals rank the same pool and magnitude is meaningful.
 Fusion decides pool *membership*; scoring.py then re-ranks the pool.
 
 Pipeline position:
-  query ──> hard filters ──┬──> semantic top-N ──┐
-                           └──> lexical top-N  ──┴──> RRF ──> candidates
+  query ──> hard filters ──┬──> semantic top-N ──────┐
+                           ├──> lexical top-N  ──────┼──> RRF ──> candidates
+                           └──> quality top-N (opt.) ┘
 """
 
 import logging
@@ -45,7 +52,7 @@ from movies.models import Movie
 logger = logging.getLogger(__name__)
 
 # Every tuning value here comes from params.yaml via settings: retrieval.*
-# (candidate_count, rrf_k, rrf_weights, lexical.*). Resolved at call time
+# (candidate_count, rrf_k, rrf_weights, lexical.*, quality_channel.*). Resolved at call time
 # rather than import time so overriding settings in tests works.
 
 _WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
@@ -56,8 +63,9 @@ def generate_candidates(
     intent: dict | None = None,
     limit: int | None = None,
     query_text: str = "",
+    quality_channel: bool | None = None,
 ) -> list[dict]:
-    """Retrieve candidates via hard-filtered semantic + lexical search.
+    """Retrieve candidates via hard-filtered semantic + lexical (+ quality) search.
 
     1. Hard filters: exclude movies matching negated genres, excluded/not
        included countries, below the requested rating, outside the
@@ -66,7 +74,11 @@ def generate_candidates(
     2. Rank the survivors by exact cosine distance (semantic channel)
     3. Rank the survivors by full-text match (lexical channel), if
        `query_text` yields any usable terms
-    4. Fuse the two rankings with RRF and take `limit`
+    4. Rank the well-voted survivors by the same distance (quality
+       channel), when enabled: `quality_channel=None` means on iff
+       `retrieval.rrf_weights.quality` > 0 and the intent does not set
+       `wants_obscure`; True / False force it on / off
+    5. Fuse the non-empty rankings with RRF and take `limit`
 
     The filters are true SQL WHERE-clause exclusions, not scoring weights --
     a movie violating a hard constraint never reaches the candidate set,
@@ -89,8 +101,21 @@ def generate_candidates(
     )
     lexical_ids = _lexical_ranked_ids(base_queryset, query_text, limit)
 
-    if lexical_ids:
-        fused = _rrf_fuse({"semantic": semantic_ids, "lexical": lexical_ids})
+    if quality_channel is None:
+        quality_channel = settings.RRF_WEIGHTS["quality"] > 0 and not (
+            intent or {}
+        ).get("wants_obscure")
+    quality_ids = (
+        _quality_ranked_ids(
+            base_queryset, query_embedding, limit, settings.QUALITY_CHANNEL_MIN_VOTE_COUNT
+        )
+        if quality_channel
+        else []
+    )
+
+    if lexical_ids or quality_ids:
+        channels = {"semantic": semantic_ids, "lexical": lexical_ids, "quality": quality_ids}
+        fused = _rrf_fuse({name: ids for name, ids in channels.items() if ids})
         ordered_ids = [movie_id for movie_id, _ in fused][:limit]
     else:
         ordered_ids = semantic_ids
@@ -205,6 +230,23 @@ def _lexical_ranked_ids(base_queryset, query_text: str, limit: int) -> list[int]
         base_queryset.filter(search_vector=search_query)
         .annotate(lexical_rank=SearchRank(F("search_vector"), search_query))
         .order_by("-lexical_rank")
+        .values_list("id", flat=True)[:limit]
+    )
+
+
+def _quality_ranked_ids(
+    base_queryset, query_embedding: list[float], limit: int, min_vote_count: int
+) -> list[int]:
+    """Movie ids among the well-voted films, nearest to the query first.
+
+    The semantic channel's ordering over `base_queryset` narrowed to
+    `vote_count >= min_vote_count`, so the hard filters still apply. Empty when
+    the filters leave no well-voted film; the caller then fuses without it.
+    """
+    return list(
+        base_queryset.filter(vote_count__gte=min_vote_count)
+        .annotate(distance=CosineDistance("embedding", query_embedding))
+        .order_by("distance")
         .values_list("id", flat=True)[:limit]
     )
 
