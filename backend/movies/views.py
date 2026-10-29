@@ -197,7 +197,8 @@ def _adds_to_offer(intent: MessageIntent, offered: dict) -> bool:
     value must equal the offer's. Mood and themes count too: they only rank, but
     "something sad" still asks for something the offer lacks. The release years
     may also lie past the offered range: that is the declined request (or the
-    offer's own wording) the classifier read back from the history."""
+    offer's own wording) the classifier read back from the history. A False flag
+    (`wants_obscure`) is the default, not a request."""
     for field in MessageIntent.model_fields:
         if field in _OFFER_FREE_FIELDS:
             continue
@@ -206,7 +207,7 @@ def _adds_to_offer(intent: MessageIntent, offered: dict) -> bool:
             known = {v.casefold() for v in offer or []}
             if any(v.casefold() not in known for v in value):
                 return True
-        elif value not in (None, "") and value != offer:
+        elif value not in (None, "") and value is not False and value != offer:
             past_offer = offered.get("max_release_year")
             if field in ("min_release_year", "max_release_year") and past_offer is not None and value > past_offer:
                 continue

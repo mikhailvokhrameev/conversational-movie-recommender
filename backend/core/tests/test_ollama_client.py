@@ -509,6 +509,31 @@ class TestUnsupportedConstraints:
         assert "unsupported_constraints" in line
 
 
+class TestWantsObscure:
+    def test_wants_obscure_defaults_false_and_coerces_strings(self):
+        assert MessageIntent.model_validate({"category": "new_search"}).wants_obscure is False
+        for raw, expected in (("true", True), ("True", True), ("false", False), (None, False), (True, True)):
+            intent = MessageIntent.model_validate({"category": "new_search", "wants_obscure": raw})
+            assert intent.wants_obscure is expected
+
+    def test_wants_obscure_survives_into_intent_dict(self):
+        intent = MessageIntent.model_validate({"category": "new_search", "wants_obscure": True})
+        assert "wants_obscure" not in NON_FILTER_FIELDS
+        assert intent.model_dump(exclude=set(NON_FILTER_FIELDS))["wants_obscure"] is True
+        assert "wants_obscure" in CLASSIFY_PARSE_SCHEMA["properties"]
+
+    def test_classify_prompt_mentions_wants_obscure_once(self):
+        instruction = "true only if the user explicitly asks for obscure"
+        assert CLASSIFY_AND_PARSE_SYSTEM_PROMPT.count(instruction) == 1
+
+    def test_every_few_shot_line_carries_the_key(self):
+        prompt = CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        lines = [line for line in prompt.splitlines() if line.startswith('{{"category"')]
+        assert len(lines) >= 5
+        assert all('"wants_obscure": false' in line for line in lines)
+        assert all("wants_obscure" in ex for ex in _prompt_examples())
+
+
 class TestClassifyPromptRules:
     def test_a_complaint_about_shown_movies_is_not_taught_as_a_refinement(self):
         assert not any(
@@ -1456,6 +1481,7 @@ class TestStructuredOutputSchema:
             "country_inclusions": [], "min_vote_average": None, "min_release_year": None,
             "max_release_year": None, "min_runtime": None, "max_runtime": 90,
             "original_languages": [], "unsupported_constraints": [], "result_count": None,
+            "wants_obscure": False,
         }
         assert set(reply) == set(CLASSIFY_PARSE_SCHEMA["properties"])
         assert MessageIntent.model_validate(reply).max_runtime == 90
