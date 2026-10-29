@@ -8,6 +8,7 @@ from recommender.settings import (
     _validate_refusal_words,
     _validate_diversification,
     _validate_intent,
+    _validate_label_queries,
     _validate_logging_level,
     _validate_placeholder_max_chars,
     _validate_unchecked_attributes,
@@ -349,3 +350,27 @@ class TestDiversification:
     def test_rejects_bad_bounds(self, top_n, max_n):
         with pytest.raises(ValueError, match="diversification"):
             _validate_diversification({"top_n": top_n, "max_n": max_n})
+
+
+class TestLabelQueries:
+    GOOD = {
+        "count": 120, "test_share": 0.33, "seed": 7,
+        "min_chars": 30, "max_chars": 600, "min_linked_recs": 3,
+    }
+
+    def test_shipped_params_pass(self):
+        from django.conf import settings
+
+        _validate_label_queries(settings.EVAL_LABEL_QUERIES)
+
+    @pytest.mark.parametrize(
+        "key, value",
+        [
+            ("count", 0), ("count", True), ("count", 1.5), ("min_chars", 0),
+            ("min_linked_recs", 0), ("seed", "7"), ("test_share", -0.1),
+            ("test_share", 1.1), ("test_share", True), ("max_chars", 10),
+        ],
+    )
+    def test_rejects_bad_values(self, key, value):
+        with pytest.raises(ValueError, match="label_queries"):
+            _validate_label_queries({**self.GOOD, key: value})

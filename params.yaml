@@ -447,6 +447,25 @@ evaluation:
   # a judge failure (no substitute score).
   judge_timeout_seconds: 30
 
+  # Label-query set (manage.py import_label_queries): movie requests mined
+  # from Reddit-Movie for hand grading (core/label_queries.py).
+  label_queries:
+    # Queries kept after filtering. The user deletes unusable ones (non-requests,
+    # non-English) by hand afterwards, so this leaves headroom over what is graded.
+    count: 120
+    # Share of the kept queries assigned to the test split; the rest is dev.
+    test_share: 0.33
+    # Draw seed: the same seed and source file give the same set.
+    seed: 7
+    # Seeker post length bounds, in characters. Below min_chars it is a title
+    # or a greeting, not a request; above max_chars it is a backstory the
+    # classifier prompt would mostly spend tokens on.
+    min_chars: 30
+    max_chars: 600
+    # A request needs at least this many distinct recommended films that exist
+    # in the catalog, or there is too little community signal to seed a grade.
+    min_linked_recs: 3
+
 intent:
   # "newest/latest/recent" means the last N catalog years, counted back from the
   # newest year the catalog holds (never the calendar year; the data can end

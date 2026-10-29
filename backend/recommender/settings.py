@@ -547,8 +547,35 @@ def _validate_evaluation(evaluation: dict) -> None:
         )
 
 
+def _validate_label_queries(label_queries: dict) -> None:
+    """Fail at load if evaluation.label_queries cannot drive a selection."""
+    for key in ("count", "seed", "min_chars", "max_chars", "min_linked_recs"):
+        value = label_queries[key]
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(
+                f"params.yaml: evaluation.label_queries.{key} must be an integer (got {value!r})."
+            )
+    for key in ("count", "min_chars", "min_linked_recs"):
+        if label_queries[key] < 1:
+            raise ValueError(
+                f"params.yaml: evaluation.label_queries.{key} must be >= 1 (got {label_queries[key]!r})."
+            )
+    if label_queries["max_chars"] < label_queries["min_chars"]:
+        raise ValueError(
+            "params.yaml: evaluation.label_queries.max_chars must be >= min_chars "
+            f"(got {label_queries['max_chars']!r} < {label_queries['min_chars']!r})."
+        )
+    share = label_queries["test_share"]
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 <= share <= 1:
+        raise ValueError(
+            f"params.yaml: evaluation.label_queries.test_share must be a number in [0, 1] (got {share!r})."
+        )
+
+
 _evaluation = PARAMS["evaluation"]
 _validate_evaluation(_evaluation)
+_validate_label_queries(_evaluation["label_queries"])
+EVAL_LABEL_QUERIES = _evaluation["label_queries"]
 EVAL_JUDGE_DESCRIPTION_CHARS = _evaluation["judge_description_chars"]
 EVAL_JUDGE_TIMEOUT_SECONDS = _evaluation["judge_timeout_seconds"]
 

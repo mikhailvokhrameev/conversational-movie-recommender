@@ -157,3 +157,50 @@ precision is a lower bound. The first 18 queries were migrated from an older tes
 and the rest were added for the new evaluation. Review the labels before trusting any
 number from it ([ADR 0007](adr/0007-evaluation-methodology.md), `TODOS.md`
 "Evaluation").
+
+## The label-query set (Reddit-Movie)
+
+`data/label_queries.json` holds movie requests to be graded by hand, so the
+evaluation does not rest on the draft golden set alone. It is built from
+**Reddit-Movie** (`ZhankuiHe/reddit_movie_large_v1`, He et al. 2023,
+[arXiv 2308.10053](https://arxiv.org/abs/2308.10053)) by
+`manage.py import_label_queries` (`core/label_queries.py`). The command reads a
+file the user downloaded; it never downloads the dataset, and the dataset itself
+is not committed.
+
+- **Format** (from the dataset card): `id2name.json` plus `{train, valid, test}.csv`,
+  one row per conversation turn with the columns `conv_id`, `turn_id`, `turn_order`,
+  `user_id`, `is_seeker`, `utc_time`, `upvotes`, `processed`, `raw`,
+  `context_processed`, `context_raw`, `context_turn_ids`. `conv_id` is
+  `<reddit thread id>_<path>/<paths>` (one conversation per path through the reply
+  tree); `turn_order` 0 is the original post. `processed` has movie mentions replaced
+  by IMDb ids (`tt0053779`), `raw` keeps the titles. The importer reads `conv_id`,
+  `turn_id`, `turn_order`, `is_seeker`, `processed` and `raw`, and groups rows by
+  thread, so the many paths of one thread yield one query.
+- **Assumption not stated on the card:** `processed`/`raw` cells look like
+  stringified `[role, text]` lists (seen in the dataset viewer's first rows); the
+  importer takes the last element, and also accepts a plain `ROLE: text`. The IMDb
+  ids are found with the pattern `tt` + 7 or more digits, wherever they sit in the
+  text. Check the first output records against the downloaded file.
+- **Query and recs:** the query is the seeker's original post (`raw`, titles as
+  written). `community_recs` are the TMDB ids of films the replies recommended,
+  linked through the `imdb_id` column of the catalog CSV and limited to films the
+  import keeps (`catalog.min_vote_count` etc.). They are a starting list for the
+  grader, not labels: an upvoted reply can be wrong, and replies that name films
+  without a catalog match are lost.
+- **Selection** (`evaluation.label_queries` in `params.yaml`): seeker post of
+  30-600 characters, at least 3 distinct linked films, a seeded hash-ranked draw of
+  120 threads, 33% to the test split.
+- **Known issues:** the card calls the text noisy and warns of toxic content; the
+  data is Reddit English but not filtered for language or for being a request, so the
+  user removes non-requests and non-English posts by hand before committing the file.
+  Reddit users skew towards popular, English-language, recent films, like the catalog.
+- **License:** the dataset card states no license. It says the data is "only for
+  research use" (conversational recommendation, long-query retrieval). Building an
+  offline evaluation set for a research project falls under that. The raw Reddit
+  text is user content collected by Pushshift, so the file of selected posts is a
+  small research excerpt, not a redistribution of the dataset; check Reddit's and
+  the dataset's terms before publishing the repository with it. If that use is
+  ever ruled out, the fallback is ReDial's first seeker utterances with
+  `community_recs` from the movies the recommender mentioned, through the same
+  `select_queries` interface.
