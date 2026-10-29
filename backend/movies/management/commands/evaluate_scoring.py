@@ -111,20 +111,24 @@ def _catalog_stats() -> tuple[dict[str, float], int]:
 def _scoring_weights(semantic: float, metadata: float) -> dict:
     """Full scoring weights from the two signals this command varies.
 
-    The pair is taken as relative proportions and scaled to `1 - popularity`,
-    with popularity held at its configured value, so the result sums to 1.0 and
+    The pair is taken as relative proportions and scaled to
+    `1 - popularity - quality`, with popularity and quality held at their
+    configured values, so the result sums to 1.0 and
     can be pasted into params.yaml as-is (settings refuses weights that do not
     sum to 1). Metadata takes the rounding remainder to keep the sum exact.
     """
     popularity = settings.SCORE_WEIGHTS["popularity"]
+    quality = settings.SCORE_WEIGHTS["quality"]
+    free = 1.0 - popularity - quality
     total = semantic + metadata
     if total <= 0:
         raise CommandError("weights must have a positive sum")
-    sem = round(semantic * (1.0 - popularity) / total, 4)
+    sem = round(semantic * free / total, 4)
     return {
         "semantic": sem,
-        "metadata": round(1.0 - popularity - sem, 4),
+        "metadata": round(free - sem, 4),
         "popularity": popularity,
+        "quality": quality,
     }
 
 
@@ -416,9 +420,10 @@ class Command(BaseCommand):
             parts = []
         if len(parts) != 2:
             raise CommandError("--weights needs two numbers: semantic,metadata")
-        # popularity is held at its configured value -- --weights only varies
-        # semantic and metadata, so it doesn't silently zero popularity.
-        # The pair is scaled to 1 - popularity so the weights stay pasteable.
+        # popularity and quality are held at their configured values --
+        # --weights only varies semantic and metadata, so it doesn't silently
+        # zero them. The pair is scaled to 1 - popularity - quality so the
+        # weights stay pasteable.
         return _scoring_weights(*parts)
 
     # --- Per-entry preparation (weight-independent) ---

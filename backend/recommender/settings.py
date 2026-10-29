@@ -270,10 +270,10 @@ def _validate_score_weights(weights: dict) -> None:
                 f"params.yaml: scoring.weights.{name} must be a number >= 0 (got {value!r})."
             )
     # Literal: settings cannot import core.scoring.SIGNALS.
-    if set(weights) != {"semantic", "metadata", "popularity"}:
+    if set(weights) != {"semantic", "metadata", "popularity", "quality"}:
         raise ValueError(
             "params.yaml: scoring.weights must have exactly the signals "
-            f"semantic, metadata, popularity (got {sorted(weights)})."
+            f"semantic, metadata, popularity, quality (got {sorted(weights)})."
         )
     total = sum(weights.values())
     if abs(total - 1.0) > 1e-6:
@@ -282,9 +282,23 @@ def _validate_score_weights(weights: dict) -> None:
         )
 
 
+
+def _validate_quality(quality: dict) -> None:
+    """Fail at load if scoring.quality.prior_votes is not a positive number.
+
+    It is the m of the weighted rating v / (v + m): zero would let a one-vote
+    movie keep its own rating unshrunk, a negative value inverts the shrinkage.
+    """
+    value = quality["prior_votes"]
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        raise ValueError(f"params.yaml: scoring.quality.prior_votes must be a number > 0 (got {value!r}).")
+
+
 _scoring = PARAMS["scoring"]
 _validate_score_weights(_scoring["weights"])
+_validate_quality(_scoring["quality"])
 SCORE_WEIGHTS = _scoring["weights"]
+QUALITY_PRIOR_VOTES = _scoring["quality"]["prior_votes"]
 NEUTRAL_SCORE = _scoring["neutral_score"]
 
 def _validate_diversification(diversification: dict) -> None:

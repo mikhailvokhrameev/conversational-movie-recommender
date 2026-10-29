@@ -758,8 +758,9 @@ class TestScoringWeights:
         from movies.management.commands.evaluate_scoring import _scoring_weights
         from recommender.settings import _validate_score_weights
         weights = _scoring_weights(*pair)
-        assert set(weights) == {"semantic", "metadata", "popularity"}
+        assert set(weights) == {"semantic", "metadata", "popularity", "quality"}
         assert weights["popularity"] == settings.SCORE_WEIGHTS["popularity"]
+        assert weights["quality"] == settings.SCORE_WEIGHTS["quality"]
         assert sum(weights.values()) == pytest.approx(1.0, abs=1e-9)
         _validate_score_weights(weights)
 

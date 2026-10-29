@@ -2,16 +2,29 @@ import pytest
 
 from django.conf import settings
 
+from unittest.mock import patch
+
 from core.scoring import (
+    SIGNALS,
     _metadata_score,
     _semantic_score,
+    effective_weights,
     normalize_scores,
     mmr_diversify,
     score_candidates,
+    weighted_rating,
 )
 
 
-WEIGHTS = {"semantic": 0.5, "metadata": 0.3, "popularity": 0.2}
+@pytest.fixture(autouse=True)
+def _catalog_mean():
+    """The catalog mean comes from the DB; these tests run on the host without
+    one. Tests that need a specific value (or None) patch it again."""
+    with patch("core.scoring.catalog_mean_rating", return_value=6.3):
+        yield
+
+
+WEIGHTS = {"semantic": 0.5, "metadata": 0.3, "popularity": 0.2, "quality": 0.0}
 
 
 def _make_movie(embedding=None, genres=None, movie_id=1):
@@ -57,7 +70,7 @@ class TestScoreCandidates:
         ]
         result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
         assert all(
-            key in result[0] for key in ("total", "semantic", "metadata", "popularity", "raw_scores")
+            key in result[0] for key in ("total", "semantic", "metadata", "popularity", "quality", "raw_scores")
         )
 
     def test_session_is_not_a_signal(self):
@@ -67,7 +80,7 @@ class TestScoreCandidates:
         ]
         result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
         assert "session" not in result[0]
-        assert set(result[0]["raw_scores"]) == {"semantic", "metadata", "popularity"}
+        assert set(result[0]["raw_scores"]) == {"semantic", "metadata", "popularity", "quality"}
 
     def test_does_not_mutate_input_candidates(self):
         candidates = [_make_movie(embedding=[1.0, 0.0, 0.0])]
@@ -173,3 +186,110 @@ class TestMMRDiversify:
         ]
         result = mmr_diversify(candidates, top_n=2, lambda_param=0.5)
         assert result[1]["total"] == 0.8
+
+
+class TestWeightedRating:
+    def test_weighted_rating_shrinks_low_vote_movies_to_catalog_mean(self):
+        assert weighted_rating(9.0, 10, 500, 6.3) == pytest.approx(6.3, abs=0.06)
+        assert weighted_rating(8.0, 50000, 500, 6.3) == pytest.approx(8.0, abs=0.02)
+
+    def test_weighted_rating_zero_votes_is_catalog_mean(self):
+        assert weighted_rating(0.0, 0, 500, 6.3) == 6.3
+
+
+def _rated(movie_id, vote_average, vote_count, embedding):
+    return {
+        **_make_movie(embedding=embedding, movie_id=movie_id),
+        "vote_average": vote_average,
+        "vote_count": vote_count,
+    }
+
+
+class TestQualitySignal:
+    def test_signals_include_quality(self):
+        assert SIGNALS == ("semantic", "metadata", "popularity", "quality")
+
+    def test_quality_signal_neutral_without_catalog_mean(self):
+        candidates = [
+            _rated(1, 9.0, 20000, [1.0, 0.0, 0.0]),
+            _rated(2, 3.0, 20000, [0.0, 1.0, 0.0]),
+        ]
+        with patch("core.scoring.catalog_mean_rating", return_value=None):
+            result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        assert all(r["quality"] == settings.NEUTRAL_SCORE for r in result)
+
+    def test_quality_signal_ranks_higher_rated_movie_first(self):
+        candidates = [
+            _rated(1, 5.0, 20000, [1.0, 0.0, 0.0]),
+            _rated(2, 8.5, 20000, [1.0, 0.0, 0.0]),
+        ]
+        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
+            result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        by_id = {r["id"]: r for r in result}
+        assert by_id[2]["quality"] == pytest.approx(1.0)
+        assert by_id[1]["quality"] == pytest.approx(0.0)
+        assert by_id[2]["raw_scores"]["quality"] > by_id[1]["raw_scores"]["quality"]
+
+    def test_missing_vote_fields_score_as_catalog_mean(self):
+        candidates = [
+            _make_movie(embedding=[1.0, 0.0, 0.0], movie_id=1),
+            _rated(2, 9.0, 20000, [1.0, 0.0, 0.0]),
+        ]
+        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
+            result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        assert result[0]["raw_scores"]["quality"] == pytest.approx(6.3)
+
+    def test_quality_weight_zero_keeps_order(self):
+        """With the shipped weights, vote data does not change the ordering."""
+        assert settings.SCORE_WEIGHTS["quality"] == 0.0
+        embeddings = [[1.0, 0.0, 0.0], [0.9, 0.4, 0.0], [0.3, 0.9, 0.0], [0.0, 1.0, 0.0]]
+        pool = [
+            {**_make_movie(embedding=e, movie_id=i), "popularity": 10.0 * (4 - i)}
+            for i, e in enumerate(embeddings)
+        ]
+        rated = [
+            {**m, "vote_average": va, "vote_count": vc}
+            for m, (va, vc) in zip(pool, [(4.0, 90000), (9.0, 90000), (5.0, 3), (9.5, 90000)])
+        ]
+        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
+            before = score_candidates(pool, [1.0, 0.0, 0.0], {"genres": []})
+            after = score_candidates(rated, [1.0, 0.0, 0.0], {"genres": []})
+        order = lambda rs: [r["id"] for r in sorted(rs, key=lambda r: -r["total"])]
+        assert order(before) == order(after)
+        assert [r["total"] for r in before] == pytest.approx([r["total"] for r in after])
+
+
+class TestEffectiveWeights:
+    FULL = {"semantic": 0.4, "metadata": 0.3, "popularity": 0.1, "quality": 0.2}
+
+    def test_effective_weights_drop_quality_for_obscure(self):
+        result = effective_weights(self.FULL, {"wants_obscure": True})
+        assert result["quality"] == 0
+        assert sum(result.values()) == pytest.approx(1.0)
+        assert result["semantic"] / result["metadata"] == pytest.approx(4 / 3)
+        assert result["semantic"] / result["popularity"] == pytest.approx(4.0)
+
+    def test_unchanged_without_the_flag(self):
+        assert effective_weights(self.FULL, {}) == self.FULL
+        assert effective_weights(self.FULL, {"wants_obscure": False}) == self.FULL
+
+    def test_does_not_mutate_input(self):
+        effective_weights(self.FULL, {"wants_obscure": True})
+        assert self.FULL["quality"] == 0.2
+
+    def test_obscure_with_zero_quality_weight_is_unchanged(self):
+        assert effective_weights(WEIGHTS, {"wants_obscure": True}) == WEIGHTS
+
+    def test_score_candidates_applies_it(self):
+        candidates = [
+            _rated(1, 9.0, 20000, [0.0, 1.0, 0.0]),
+            _rated(2, 3.0, 20000, [1.0, 0.0, 0.0]),
+        ]
+        weights = {"semantic": 0.3, "metadata": 0.0, "popularity": 0.0, "quality": 0.7}
+        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
+            plain = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=weights)
+            obscure = score_candidates(
+                candidates, [1.0, 0.0, 0.0], {"genres": [], "wants_obscure": True}, weights=weights
+            )
+        assert max(plain, key=lambda r: r["total"])["id"] == 1
+        assert max(obscure, key=lambda r: r["total"])["id"] == 2

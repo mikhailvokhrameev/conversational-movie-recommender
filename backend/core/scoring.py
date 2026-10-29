@@ -1,8 +1,9 @@
 from django.conf import settings
 
+from core.catalog_bounds import catalog_mean_rating
 from core.embedding_service import cosine_similarity
 
-SIGNALS = ("semantic", "metadata", "popularity")
+SIGNALS = ("semantic", "metadata", "popularity", "quality")
 
 # scoring.neutral_score and diversification.* come from params.yaml.
 # Avoiding division by a near-zero range
@@ -27,12 +28,15 @@ def score_candidates(
     if not candidates:
         return []
 
-    w = weights or settings.SCORE_WEIGHTS
+    w = effective_weights(weights or settings.SCORE_WEIGHTS, intent)
+    # One lookup per request, not per candidate (cached after the first call).
+    catalog_mean = catalog_mean_rating()
 
     raw = {
         "semantic": [_semantic_score(c, query_embedding) for c in candidates],
         "metadata": [_metadata_score(c, intent) for c in candidates],
         "popularity": [_popularity_score(c) for c in candidates],
+        "quality": [_quality_score(c, catalog_mean) for c in candidates],
     }
     normalized = {signal: normalize_scores(values) for signal, values in raw.items()}
 
@@ -48,6 +52,36 @@ def score_candidates(
             }
         )
     return scored
+
+
+def effective_weights(weights: dict, intent: dict) -> dict:
+    """The weights to score with for this query.
+
+    A `wants_obscure` intent ("hidden gems", "something nobody has heard of")
+    switches the quality signal off: quality is zeroed and the remaining
+    weights are rescaled to sum to 1 again. It is only ever dropped, never
+    inverted. Any other intent returns the weights unchanged.
+    """
+    if not intent.get("wants_obscure"):
+        return weights
+    rest = sum(value for signal, value in weights.items() if signal != "quality")
+    if rest <= 0 or weights.get("quality", 0) == 0:
+        return weights
+    return {
+        signal: 0 if signal == "quality" else value / rest
+        for signal, value in weights.items()
+    }
+
+
+def weighted_rating(vote_average: float, vote_count: int, prior_votes: float, catalog_mean: float) -> float:
+    """IMDb's Bayesian weighted rating, WR = v / (v + m) * R + m / (v + m) * C.
+
+    R = `vote_average`, v = `vote_count`, m = `prior_votes`, C = `catalog_mean`.
+    A movie with few votes is pulled toward the catalog mean; one with none
+    (v = 0) is exactly the catalog mean, i.e. neutral.
+    """
+    v = max(vote_count, 0)
+    return (v * vote_average + prior_votes * catalog_mean) / (v + prior_votes)
 
 
 def mmr_diversify(
@@ -159,3 +193,18 @@ def _metadata_score(movie: dict, intent: dict) -> float:
 def _popularity_score(movie: dict) -> float:
     """Raw TMDB popularity, min-max normalized across the pool by the caller."""
     return movie.get("popularity", 0.0) or 0.0
+
+
+def _quality_score(movie: dict, catalog_mean: float | None) -> float:
+    """Weighted rating of the movie's TMDB votes, min-max normalized across
+    the pool by the caller. Without a catalog mean (empty catalog) there is
+    nothing to shrink toward, so every movie gets the same value and the
+    signal collapses to NEUTRAL_SCORE."""
+    if catalog_mean is None:
+        return 0.0
+    return weighted_rating(
+        movie.get("vote_average") or 0.0,
+        movie.get("vote_count") or 0,
+        settings.QUALITY_PRIOR_VOTES,
+        catalog_mean,
+    )

@@ -279,6 +279,20 @@ scoring:
     # so there's no absolute threshold an LLM could reliably pick (unlike
     # vote_average's bounded 0-10 scale, which *is* a hard filter below).
     popularity: 0.2
+    # Bayesian weighted rating (see `quality` below). 0.0 = signal computed but
+    # not used, so rankings are unchanged; raised only after an offline eval.
+    # `wants_obscure` intents zero it at query time (core.scoring.effective_weights).
+    quality: 0.0
+  # Quality signal: the IMDb "true Bayesian" weighted rating,
+  #   WR = v / (v + m) * R + m / (v + m) * C
+  # with R = the movie's vote_average, v = its vote_count, m = prior_votes and
+  # C = the catalog mean vote_average (over movies with votes). A movie with few
+  # votes is pulled toward C, so a 9.0 from 10 voters does not outrank an 8.0
+  # from 50,000. Min-max normalized across the pool like the other signals.
+  quality:
+    # m: how many votes it takes for a movie's own rating to outweigh the
+    # catalog mean (at v = m they count equally). Starting value; refit offline.
+    prior_votes: 500
   # Value given to a signal that is identical across every candidate and so
   # carries no ranking information.
   neutral_score: 0.5
