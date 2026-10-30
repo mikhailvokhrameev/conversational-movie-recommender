@@ -54,7 +54,8 @@ llm:
   # hf.co GGUF pull) -- the product is English now, so there's no reason for
   # a Russian-adapted variant. Same architecture family as before: it's still
   # a hybrid-reasoning model, so the "think" handling below still applies.
-  model: qwen3:8b
+  provider: ollama
+  model: qwen3.5:9b-q4_K_M
   base_url: http://ollama:11434
 
   # Qwen3 8B is a HYBRID REASONING model: left to itself it emits a
@@ -162,6 +163,9 @@ llm:
   # prompt (on the same Ollama build and hardware). Any int works; it is
   # pinned, not tuned.
   seed: 42
+  max_output_tokens:
+    structured: 1024
+    generation: 1024
 
   # Characters of each movie's description put into the explanation prompt
   # (the `[[n]]` movie list the model writes its per-movie text from). Same
@@ -205,6 +209,8 @@ embedding:
   # match this file, since same-width vectors from a different model or text
   # are not comparable with query vectors. After a deliberate change,
   # `generate_embeddings --all` rebuilds the catalog and refreshes the record.
+  provider: local
+  timeout_seconds: 60
   model: BAAI/bge-m3
   dimensions: 1024
   # Hugging Face commit the weights are downloaded at (SHA of the model repo's
@@ -331,6 +337,8 @@ reranking:
   # 50 pairs ~0.64s, 100 pairs ~1.22s -- versus ~5.6s for 20 pairs on CPU.
   # The GFLOPs estimate this used to cite was off by ~2x on the GPU side and
   # ~3x on the CPU side; the CPU/GPU ratio it implied held up.
+  provider: local
+  timeout_seconds: 60
   model: BAAI/bge-reranker-v2-m3
   # Hugging Face commit the weights are downloaded at (SHA of the model repo's
   # main branch on 2026-10-15; last upstream change 2024-06-24), so a
@@ -539,3 +547,27 @@ catalog:
 # name. INFO carries the per-call Ollama stats and per-turn latency lines.
 logging:
   level: INFO
+
+# Only explicit INFERENCE_MODE=openrouter selects these overrides.
+runtime_profiles:
+  openrouter:
+    llm:
+      provider: openrouter
+      model: qwen/qwen3.5-9b
+      base_url: https://openrouter.ai/api/v1
+    embedding:
+      provider: openrouter
+      api_model: baai/bge-m3
+      base_url: https://openrouter.ai/api/v1
+      revision: null
+      provider_preferences:
+        order: [DeepInfra]
+        allow_fallbacks: false
+    reranking:
+      provider: openrouter
+      model: voyageai/rerank-3-lite
+      base_url: https://openrouter.ai/api/v1
+      revision: null
+      top_k: 50
+      weight: 0.5
+      min_score: null

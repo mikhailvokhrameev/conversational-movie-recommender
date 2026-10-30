@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from core.inference_config import resolve_inference_config
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -33,6 +35,10 @@ def _find_params() -> Path:
 PARAMS_FILE = _find_params()
 with open(PARAMS_FILE) as _params_handle:
     PARAMS = yaml.safe_load(_params_handle)
+
+INFERENCE_MODE = os.environ.get("INFERENCE_MODE", "local")
+EFFECTIVE_PARAMS = resolve_inference_config(PARAMS, INFERENCE_MODE)
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 
 SECRET_KEY = os.environ.get("SECRET_KEY", "dev-only-insecure-key-do-not-use-in-prod")
 DEBUG = os.environ.get("DEBUG", "0") == "1"
@@ -123,7 +129,7 @@ REST_FRAMEWORK = {
 # --- Values below come from params.yaml. Do not add os.environ fallbacks: the
 # --- point of that file is that it is the only place these can be changed.
 
-_llm = PARAMS["llm"]
+_llm = EFFECTIVE_PARAMS["llm"]
 
 
 def _validate_num_ctx(llm: dict) -> None:
@@ -191,6 +197,18 @@ def _validate_placeholder_max_chars(llm: dict) -> None:
 _validate_num_ctx(_llm)
 _validate_sampling(_llm)
 _validate_explanation_description_chars(_llm)
+LLM_PROVIDER = _llm["provider"]
+LLM_BASE_URL = _llm["base_url"]
+LLM_MODEL = _llm["model"]
+LLM_TIMEOUTS = _llm["timeout_seconds"]
+LLM_THINKING = _llm["thinking"]
+LLM_NUM_CTX = _llm["num_ctx"]
+LLM_TEMPERATURE = _llm["temperature"]
+LLM_SEED = _llm["seed"]
+LLM_MAX_OUTPUT_TOKENS = _llm["max_output_tokens"]
+LLM_EXPLANATION_DESCRIPTION_CHARS = _llm["explanation_description_chars"]
+LLM_PLACEHOLDER_MAX_CHARS = _llm["explanation"]["placeholder_max_chars"]
+# Compatibility names for the existing local client during adapter migration.
 OLLAMA_BASE_URL = _llm["base_url"]
 OLLAMA_MODEL = _llm["model"]
 OLLAMA_TIMEOUTS = _llm["timeout_seconds"]
@@ -237,7 +255,7 @@ def _validate_revision(section: str, params: dict) -> None:
         )
 
 
-_embedding = PARAMS["embedding"]
+_embedding = EFFECTIVE_PARAMS["embedding"]
 _validate_embedding_text(_embedding)
 _validate_revision("embedding", _embedding)
 EMBEDDING_MODEL = _embedding["model"]
@@ -390,7 +408,7 @@ def _validate_lexical_stopwords(stopwords: list) -> None:
 _validate_lexical_stopwords(_retrieval["lexical"]["stopwords"])
 LEXICAL_STOPWORDS = frozenset(_retrieval["lexical"]["stopwords"])
 
-_reranking = PARAMS["reranking"]
+_reranking = EFFECTIVE_PARAMS["reranking"]
 _validate_rerank_min_score(_reranking)
 _validate_rerank_weight(_reranking)
 _validate_revision("reranking", _reranking)
