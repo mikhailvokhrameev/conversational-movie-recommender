@@ -12,6 +12,8 @@ from core.embedding_provenance import (
 )
 
 CURRENT = {
+    "provider": "local",
+    "api_provider": None,
     "model_name": "BAAI/bge-m3",
     "dimensions": 1024,
     "revision": "rev-a",
@@ -35,6 +37,8 @@ class TestCurrentProvenance:
         current = current_provenance()
 
         assert current == {
+            "provider": "local",
+            "api_provider": None,
             "model_name": settings.EMBEDDING_MODEL,
             "dimensions": settings.EMBEDDING_DIMENSIONS,
             "revision": settings.EMBEDDING_REVISION,

@@ -8,11 +8,13 @@ pure decisions (no DB, no model) the two management commands act on.
 
 To record one more thing about the index, add its key to current_provenance()
 and the matching column to EmbeddingIndex -- comparison, messages and the
-commands iterate the dict and need no further change.
+commands compare the dict. Origin differences require a read-only compatibility
+sample; hard model, dimensions and text differences still require a rebuild.
 """
 
 from dataclasses import dataclass, field
 
+import numpy as np
 from django.conf import settings
 
 from core.embedding_service import EMBEDDING_TEXT_VERSION
@@ -33,10 +35,11 @@ _PIN_KEYS = frozenset({"revision"})
 
 @dataclass(frozen=True)
 class IndexCheck:
-    status: str  # "ok" | "missing" | "mismatch"
+    status: str  # "ok" | "missing" | "mismatch" | "backend_changed"
     differences: list[str] = field(default_factory=list)
     # Differences that cannot be judged (see _PIN_KEYS); never change `status`.
     notes: list[str] = field(default_factory=list)
+    origin_differences: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -48,10 +51,13 @@ class Verdict:
 
 def current_provenance() -> dict:
     """What an index built right now would be recorded as."""
+    config = settings.EFFECTIVE_PARAMS["embedding"]
     return {
+        "provider": config["provider"],
+        "api_provider": config.get("api_provider"),
         "model_name": settings.EMBEDDING_MODEL,
         "dimensions": settings.EMBEDDING_DIMENSIONS,
-        "revision": settings.EMBEDDING_REVISION,
+        "revision": None if config["provider"] != "local" else settings.EMBEDDING_REVISION,
         "text_version": EMBEDDING_TEXT_VERSION,
         "text_config": {
             "description_chars": settings.EMBEDDING_TEXT_DESCRIPTION_CHARS,
@@ -72,7 +78,7 @@ def _flatten(record: dict) -> dict:
 
 
 def compare_provenance(stored: dict | None, current: dict) -> IndexCheck:
-    """ok / missing (no record) / mismatch (with one line per differing field).
+    """Separate origin changes from hard differences and absent provenance.
 
     A differing _PIN_KEYS field with a null on either side goes to `notes`
     instead, so an index recorded before revisions were pinned stays ok.
@@ -80,17 +86,20 @@ def compare_provenance(stored: dict | None, current: dict) -> IndexCheck:
     if stored is None:
         return IndexCheck("missing")
     stored_flat, current_flat = _flatten(stored), _flatten(current)
-    differences, notes = [], []
+    differences, notes, origin_differences = [], [], []
     for key in sorted(stored_flat.keys() | current_flat.keys()):
         was, now = stored_flat.get(key), current_flat.get(key)
         if was == now:
             continue
         line = f"{key}: index was built with {was!r}, config now has {now!r}"
-        if key in _PIN_KEYS and (was is None or now is None):
+        if key in {"provider", "api_provider"}:
+            origin_differences.append(line)
+        elif key in _PIN_KEYS and (was is None or now is None):
             notes.append(line)
         else:
             differences.append(line)
-    return IndexCheck("mismatch" if differences else "ok", differences, notes)
+    status = "mismatch" if differences else "backend_changed" if origin_differences else "ok"
+    return IndexCheck(status, differences, notes, origin_differences)
 
 
 def _bullets(differences: list[str]) -> str:
@@ -116,6 +125,13 @@ def plan_generate(check: IndexCheck, has_embeddings: bool, rebuild_all: bool, ad
         if not has_embeddings:
             raise ProvenanceError("--adopt has nothing to adopt: no embeddings exist yet. Run without --adopt.")
         return "adopt"
+    if check.status == "backend_changed" and has_embeddings:
+        raise ProvenanceError(
+            "The embedding origin changed. A read compatibility check does not authorize "
+            "mixing origins during generation:\n"
+            f"{_bullets(check.origin_differences)}\n"
+            f"Use the original inference mode, or {_FIX_ALL}."
+        )
     if check.status == "mismatch":
         raise ProvenanceError(
             "The embedding index was built with a different config; embedding only the "
@@ -135,7 +151,14 @@ def plan_generate(check: IndexCheck, has_embeddings: bool, rebuild_all: bool, ad
 
 
 def check_verdict(check: IndexCheck, has_embeddings: bool) -> Verdict:
-    """What check_embedding_index reports; only a mismatch is unhealthy."""
+    """Report hard mismatches and origins requiring a compatibility sample."""
+    if check.status == "backend_changed":
+        return Verdict(
+            not has_embeddings, "notice" if not has_embeddings else "error",
+            "No embeddings exist; initial generation is allowed." if not has_embeddings else
+            "The embedding origin changed; a sample compatibility check is required. "
+            "Use the original inference mode, or explicitly run `manage.py generate_embeddings --all`.",
+        )
     if check.status == "ok" and check.notes:
         return Verdict(
             True, "warning",
@@ -166,3 +189,29 @@ def check_verdict(check: IndexCheck, has_embeddings: bool) -> Verdict:
         f"{_bullets(check.differences)}\n"
         "Revert the config, or run `manage.py generate_embeddings --all` to rebuild the index.",
     )
+
+
+def validate_compatibility_vectors(stored_vectors, active_vectors, min_cosine: float) -> None:
+    """Require every sampled pair to be finite, nonzero and compatible."""
+    try:
+        stored = np.asarray(stored_vectors, dtype=float)
+        active = np.asarray(active_vectors, dtype=float)
+        if stored.ndim != 2 or stored.shape != active.shape or not len(stored):
+            raise ValueError
+        if not np.isfinite(stored).all() or not np.isfinite(active).all():
+            raise ValueError
+        # Normalize separately to avoid overflowing a product of norms.
+        stored_norms = np.linalg.norm(stored, axis=1)
+        active_norms = np.linalg.norm(active, axis=1)
+        if (not np.isfinite(stored_norms).all() or not np.isfinite(active_norms).all()
+                or np.any(stored_norms == 0) or np.any(active_norms == 0)):
+            raise ValueError
+        similarities = np.sum((stored / stored_norms[:, None]) * (active / active_norms[:, None]), axis=1)
+        if np.any(similarities < min_cosine):
+            raise ValueError
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise ProvenanceError(
+            "Embedding compatibility could not be confirmed for every sampled movie. "
+            "Use the original inference mode, or explicitly run "
+            "`manage.py generate_embeddings --all` to rebuild the index."
+        ) from exc

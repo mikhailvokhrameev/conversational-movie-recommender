@@ -255,7 +255,18 @@ def _validate_revision(section: str, params: dict) -> None:
         )
 
 
+def _validate_embedding_compatibility(embedding: dict) -> None:
+    config = embedding["compatibility"]
+    size = config["sample_size"]
+    threshold = config["min_cosine"]
+    if type(size) is not int or not 1 <= size <= 32:
+        raise ValueError("params.yaml: embedding.compatibility.sample_size must be an integer from 1 to 32.")
+    if type(threshold) not in (int, float) or not 0.999 <= threshold <= 1:
+        raise ValueError("params.yaml: embedding.compatibility.min_cosine must be between 0.999 and 1.")
+
+
 _embedding = EFFECTIVE_PARAMS["embedding"]
+_validate_embedding_compatibility(_embedding)
 _validate_embedding_text(_embedding)
 _validate_revision("embedding", _embedding)
 EMBEDDING_MODEL = _embedding["model"]

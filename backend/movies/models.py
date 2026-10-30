@@ -70,6 +70,8 @@ class EmbeddingIndex(models.Model):
 
     SINGLETON_PK = 1
 
+    provider = models.CharField(max_length=32, default="local")
+    api_provider = models.CharField(max_length=64, null=True, blank=True)
     model_name = models.CharField(max_length=255)
     dimensions = models.PositiveIntegerField()
     # Hugging Face commit of the embedder; null = built unpinned (or before this
@@ -98,6 +100,8 @@ class EmbeddingIndex(models.Model):
         if row is None:
             return None
         return {
+            "provider": row.provider,
+            "api_provider": row.api_provider,
             "model_name": row.model_name,
             "dimensions": row.dimensions,
             "revision": row.revision,

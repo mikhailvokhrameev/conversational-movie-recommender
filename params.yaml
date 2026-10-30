@@ -211,6 +211,10 @@ embedding:
   # `generate_embeddings --all` rebuilds the catalog and refreshes the record.
   provider: local
   timeout_seconds: 60
+  # Read-only evidence when switching embedding backends; never adopts origin.
+  compatibility:
+    sample_size: 32
+    min_cosine: 0.999
   model: BAAI/bge-m3
   dimensions: 1024
   # Hugging Face commit the weights are downloaded at (SHA of the model repo's
@@ -558,6 +562,7 @@ runtime_profiles:
     embedding:
       provider: openrouter
       api_model: baai/bge-m3
+      api_provider: deepinfra
       base_url: https://openrouter.ai/api/v1
       revision: null
       provider_preferences:
