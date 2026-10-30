@@ -109,7 +109,104 @@ class TestPinnedRevision:
 
         settings.EMBEDDING_MODEL = "org/embedder"
         settings.EMBEDDING_REVISION = "abc123"
-        with patch.object(embedding_service, "_model", None), \
-             patch.object(embedding_service, "SentenceTransformer") as ctor:
-            assert embedding_service.get_model() is ctor.return_value
+        with patch("sentence_transformers.SentenceTransformer") as ctor:
+            adapter = embedding_service.LocalEmbeddingAdapter()
+            assert adapter.get_model() is ctor.return_value
+            assert adapter.get_model() is ctor.return_value
         ctor.assert_called_once_with("org/embedder", revision="abc123")
+
+
+
+class TestEmbeddingAdapters:
+    @pytest.fixture
+    def remote(self, settings):
+        from copy import deepcopy
+        from core import embedding_service as service
+        from core.inference_config import resolve_inference_config
+        settings.EFFECTIVE_PARAMS = resolve_inference_config(deepcopy(settings.EFFECTIVE_PARAMS), 'openrouter')
+        settings.EMBEDDING_BATCH_SIZE = 2
+        return service
+
+    @staticmethod
+    def response(indices):
+        return {'data': [{'index': i, 'embedding': [float(i + 1)] * 1024} for i in indices]}
+
+    def test_reorders_and_splits_batches(self, remote):
+        from unittest.mock import patch
+        with patch('core.openrouter_client.post_json', side_effect=[self.response([1, 0]), self.response([0])]) as post:
+            result = remote.OpenRouterEmbeddingAdapter().encode_texts(['a', 'b', 'c'])
+        assert result.shape == (3, 1024)
+        assert result[:, 0].tolist() == [1, 2, 1]
+        assert [call.args[1]['input'] for call in post.call_args_list] == [['a', 'b'], ['c']]
+        payload = post.call_args_list[0].args[1]
+        assert post.call_args_list[0].args[0] == '/embeddings'
+        assert payload['model'] == 'baai/bge-m3'
+        assert payload['provider'] == {'order': ['DeepInfra'], 'allow_fallbacks': False}
+        assert post.call_args_list[0].kwargs['timeout'] == 60
+
+    @pytest.mark.parametrize('kind', ['missing', 'duplicate', 'range', 'bool_index', 'nan', 'inf', 'dimension', 'zero', 'string', 'malformed'])
+    def test_rejects_invalid_response(self, remote, kind):
+        from unittest.mock import patch
+        from core.openrouter_client import InferenceError
+        body = self.response([0, 1])
+        if kind == 'missing':
+            body['data'].pop()
+        elif kind == 'duplicate':
+            body['data'][1]['index'] = 0
+        elif kind == 'range':
+            body['data'][1]['index'] = 2
+        elif kind == 'bool_index':
+            body['data'][1]['index'] = True
+        elif kind == 'malformed':
+            body = {'data': ['private upstream content']}
+        else:
+            body['data'][0]['embedding'] = {'nan': [float('nan')] * 1024, 'inf': [float('inf')] * 1024,
+                'dimension': [1.0] * 1023, 'zero': [0.0] * 1024, 'string': ['1'] * 1024}[kind]
+        with patch('core.openrouter_client.post_json', return_value=body):
+            with pytest.raises(InferenceError, match='embedding_response') as exc:
+                remote.OpenRouterEmbeddingAdapter().encode_texts(['a', 'b'])
+        assert exc.value.__context__ is None
+
+    def test_empty_input_does_no_work(self, remote):
+        from unittest.mock import patch
+        with patch('core.openrouter_client.post_json') as post:
+            assert remote.OpenRouterEmbeddingAdapter().encode_texts([]).shape == (0, 1024)
+            assert remote.LocalEmbeddingAdapter().encode_texts([]).shape == (0, 1024)
+        post.assert_not_called()
+
+    def test_service_uses_assembled_backend_for_query_and_batch(self, remote):
+        from unittest.mock import Mock, patch
+        import numpy as np
+        backend = Mock()
+        backend.embedder.encode_texts.return_value = np.ones((1, 1024))
+        with patch('core.inference_backends.get_inference_backends', return_value=backend):
+            assert remote.encode_query('unchanged query') == [1.] * 1024
+            remote.encode_texts(['unchanged text'])
+        assert backend.embedder.encode_texts.call_args_list[0].args == (['unchanged query'],)
+        assert backend.embedder.encode_texts.call_args_list[1].args == (['unchanged text'],)
+
+    def test_local_preserves_native_vectors(self, remote):
+        from unittest.mock import Mock, patch
+        import numpy as np
+        adapter = remote.LocalEmbeddingAdapter()
+        vectors = np.full((2, 1024), 3.)
+        model = Mock()
+        model.encode.return_value = vectors
+        with patch.object(adapter, 'get_model', return_value=model):
+            assert adapter.encode_texts(['a', 'b']) is vectors
+        model.encode.assert_called_once_with(['a', 'b'], convert_to_numpy=True)
+
+    def test_cloud_assembly_never_imports_local_models(self, remote, monkeypatch):
+        import builtins
+        from unittest.mock import patch
+        from core.inference_backends import _build_backends
+        original = builtins.__import__
+
+        def guarded(name, *args, **kwargs):
+            if name == 'sentence_transformers' or name.startswith('sentence_transformers.'):
+                raise AssertionError('cloud must not import local models')
+            return original(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, '__import__', guarded)
+        with patch('core.openrouter_client.post_json', return_value=self.response([0])):
+            assert _build_backends().embedder.encode_texts(['query']).shape == (1, 1024)

@@ -25,11 +25,14 @@ def _build_backends() -> InferenceBackends:
 
     from core.llm_transport import OllamaLLMAdapter, OpenRouterLLMAdapter
 
+    from core.embedding_service import LocalEmbeddingAdapter, OpenRouterEmbeddingAdapter
+
     params = settings.EFFECTIVE_PARAMS
     llm_adapters = {"ollama": OllamaLLMAdapter, "openrouter": OpenRouterLLMAdapter}
+    embedding_adapters = {"local": LocalEmbeddingAdapter, "openrouter": OpenRouterEmbeddingAdapter}
     return InferenceBackends(
         llm=llm_adapters[params['llm']['provider']](),
-        embedder=_PendingAdapter(params['embedding']['provider']),
+        embedder=embedding_adapters[params['embedding']['provider']](),
         reranker=_PendingAdapter(params['reranking']['provider']),
     )
 

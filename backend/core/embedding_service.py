@@ -1,15 +1,9 @@
-"""Sentence-transformers embedding service with lazy-loaded singleton model.
-
-Wraps BAAI/bge-m3 (1024-dim, multilingual) at the commit pinned in
-params.yaml (embedding.revision). The model loads on first call and stays in
-memory for the process lifetime.
-"""
+"""Shared embedding interface and provider adapters; local weights load lazily."""
 
 import logging
 
 import numpy as np
 from django.conf import settings
-from sentence_transformers import SentenceTransformer
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +15,6 @@ logger = logging.getLogger(__name__)
 # version -- they live in params.yaml and are recorded separately.
 EMBEDDING_TEXT_VERSION = 1
 
-_model = None
 
 
 def build_movie_embedding_text(
@@ -47,26 +40,96 @@ def build_movie_embedding_text(
     return f"{name}. {genre_str}. {desc_truncated}. Keywords: {keyword_str}"
 
 
-def get_model():
-    global _model
-    if _model is None:
-        logger.info(f"Loading embedding model: {settings.EMBEDDING_MODEL}")
-        _model = SentenceTransformer(settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION)
-        logger.info("Embedding model loaded")
-    return _model
+class LocalEmbeddingAdapter:
+    """Preserve the local model's native output and normalization semantics."""
+
+    provider = "local"
+
+    def __init__(self):
+        self._model = None
+
+    def get_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+
+            logger.info("Loading embedding model: %s", settings.EMBEDDING_MODEL)
+            self._model = SentenceTransformer(
+                settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION,
+            )
+            logger.info("Embedding model loaded")
+        return self._model
+
+    def encode_texts(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.empty((0, settings.EMBEDDING_DIMENSIONS))
+        return self.get_model().encode(texts, convert_to_numpy=True)
+
+
+def _ordered_vectors(body, count):
+    """Validate the entire remote batch before exposing any vectors."""
+    from core.openrouter_client import InferenceError
+
+    result = None
+    try:
+        data = body['data']
+        if not isinstance(data, list) or len(data) != count:
+            raise ValueError
+        ordered = [None] * count
+        for item in data:
+            index = item['index']
+            if type(index) is not int or not 0 <= index < count or ordered[index] is not None:
+                raise ValueError
+            vector = item['embedding']
+            if not isinstance(vector, list) or len(vector) != settings.EMBEDDING_DIMENSIONS:
+                raise ValueError
+            if any(type(value) not in (int, float) for value in vector):
+                raise ValueError
+            vector = np.asarray(vector, dtype=float)
+            if not np.isfinite(vector).all() or not np.any(vector):
+                raise ValueError
+            ordered[index] = vector
+        result = np.asarray(ordered)
+    except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+        pass
+    # Do not retain upstream payloads in exception messages or contexts.
+    if result is None:
+        raise InferenceError("embedding_response")
+    return result
+
+
+class OpenRouterEmbeddingAdapter:
+    provider = "openrouter"
+
+    def encode_texts(self, texts: list[str]) -> np.ndarray:
+        from core import openrouter_client
+
+        if not texts:
+            return np.empty((0, settings.EMBEDDING_DIMENSIONS))
+        config = settings.EFFECTIVE_PARAMS['embedding']
+        batches = []
+        for offset in range(0, len(texts), settings.EMBEDDING_BATCH_SIZE):
+            batch = texts[offset:offset + settings.EMBEDDING_BATCH_SIZE]
+            payload = {"model": config['api_model'], "input": batch,
+                       "provider": config['provider_preferences']}
+            body = openrouter_client.post_json(
+                '/embeddings', payload, timeout=config['timeout_seconds'],
+            )
+            batches.append(_ordered_vectors(body, len(batch)))
+        return np.concatenate(batches)
 
 
 def encode_texts(texts: list[str]) -> np.ndarray:
-    """Batch-encode texts into 1024-dim vectors. Returns numpy array of shape (N, 1024)."""
-    model = get_model()
-    return model.encode(texts, convert_to_numpy=True)
+    """Encode through the process-wide provider selection, in input order."""
+    from core.inference_backends import get_inference_backends
+
+    if not texts:
+        return np.empty((0, settings.EMBEDDING_DIMENSIONS))
+    return get_inference_backends().embedder.encode_texts(texts)
 
 
 def encode_query(query: str) -> list[float]:
-    """Encode a single query string into a 1024-dim vector (as Python list)."""
-    model = get_model()
-    embedding = model.encode([query], convert_to_numpy=True)[0]
-    return embedding.tolist()
+    """Encode the original query without adding provider-specific prefixes."""
+    return encode_texts([query])[0].tolist()
 
 
 def cosine_similarity(vec_a, vec_b) -> float:

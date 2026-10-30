@@ -3,7 +3,6 @@ import logging
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 
 from core.embedding_provenance import (
@@ -12,7 +11,7 @@ from core.embedding_provenance import (
     current_provenance,
     plan_generate,
 )
-from core.embedding_service import build_movie_embedding_text
+from core.embedding_service import build_movie_embedding_text, encode_texts
 from movies.models import EmbeddingIndex, Movie
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class Command(BaseCommand):
     help = (
-        "Generate embeddings for movies using sentence-transformers and store in pgvector, "
+        "Generate embeddings for movies and store in pgvector, "
         "recording which model and text template built the index"
     )
 
@@ -77,8 +76,6 @@ class Command(BaseCommand):
             self.stdout.write(self.style.SUCCESS("All movies already have embeddings"))
             return
 
-        self.stdout.write(f"Loading embedding model: {settings.EMBEDDING_MODEL}...")
-        model = SentenceTransformer(settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION)
         self.stdout.write(f"Generating embeddings for {len(movies)} movies...")
 
         updated_ids = []
@@ -93,7 +90,7 @@ class Command(BaseCommand):
                     for _, name, genres, description, keywords in batch
                 ]
 
-                embeddings = model.encode(texts, convert_to_numpy=True)
+                embeddings = encode_texts(texts)
 
                 for (movie_id, _, _, _, _), embedding in zip(batch, embeddings):
                     updated_ids.append(movie_id)

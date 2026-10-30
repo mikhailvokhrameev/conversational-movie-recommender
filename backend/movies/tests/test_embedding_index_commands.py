@@ -32,12 +32,11 @@ def _movie(tmdb_id, embedding=None):
 
 def _generate(*args):
     """Run generate_embeddings with a fake encoder returning all-ones vectors."""
-    with patch(f"{GENERATE}.SentenceTransformer") as encoder_cls:
-        encoder = encoder_cls.return_value
-        encoder.encode.side_effect = lambda texts, **_: np.ones((len(texts), settings.EMBEDDING_DIMENSIONS))
+    with patch(f"{GENERATE}.encode_texts") as encoder:
+        encoder.side_effect = lambda texts: np.ones((len(texts), settings.EMBEDDING_DIMENSIONS))
         out = StringIO()
         call_command("generate_embeddings", *args, stdout=out)
-    return encoder_cls, encoder, out.getvalue()
+    return encoder, out.getvalue()
 
 
 def _record(**changes):
@@ -85,23 +84,19 @@ class TestGenerateEmbeddings:
         assert Movie.objects.filter(embedding__isnull=False).count() == 2
         assert EmbeddingIndex.stored() == current_provenance()
 
-    def test_embedder_is_loaded_at_the_pinned_revision(self):
+    def test_uses_the_shared_embedding_service(self):
         _movie(1)
-
-        encoder_cls, _, _ = _generate()
-
-        encoder_cls.assert_called_once_with(
-            settings.EMBEDDING_MODEL, revision=settings.EMBEDDING_REVISION
-        )
+        encoder, _ = _generate()
+        encoder.assert_called_once_with(["Film 1. Drama. plot. Keywords: k"])
 
     def test_ok_record_embeds_only_the_null_rows(self):
         _record()
         done = _movie(1, embedding=_vec(0.5))
         _movie(2)
 
-        _, encoder, _ = _generate()
+        encoder, _ = _generate()
 
-        assert len(encoder.encode.call_args.args[0]) == 1
+        assert len(encoder.call_args.args[0]) == 1
         done.refresh_from_db()
         assert list(done.embedding) == pytest.approx(_vec(0.5))
 
@@ -110,7 +105,7 @@ class TestGenerateEmbeddings:
         _movie(1, embedding=_vec(0.5))
         _movie(2)
 
-        with patch(f"{GENERATE}.SentenceTransformer") as encoder_cls:
+        with patch(f"{GENERATE}.encode_texts") as encoder_cls:
             with pytest.raises(CommandError) as exc:
                 call_command("generate_embeddings", stdout=StringIO())
 
@@ -125,9 +120,9 @@ class TestGenerateEmbeddings:
         _movie(1, embedding=_vec(0.5))
         _movie(2)
 
-        _, encoder, _ = _generate("--all")
+        encoder, _ = _generate("--all")
 
-        assert len(encoder.encode.call_args.args[0]) == 2
+        assert len(encoder.call_args.args[0]) == 2
         assert list(Movie.objects.get(tmdb_id=1).embedding) == pytest.approx(_vec(1.0))
         assert EmbeddingIndex.stored() == current_provenance()
 
@@ -135,7 +130,7 @@ class TestGenerateEmbeddings:
         _movie(1, embedding=_vec(0.5))
         _movie(2)
 
-        with patch(f"{GENERATE}.SentenceTransformer") as encoder_cls:
+        with patch(f"{GENERATE}.encode_texts") as encoder_cls:
             with pytest.raises(CommandError, match="--adopt"):
                 call_command("generate_embeddings", stdout=StringIO())
 
@@ -146,9 +141,9 @@ class TestGenerateEmbeddings:
         existing = _movie(1, embedding=_vec(0.5))
         pending = _movie(2)
 
-        encoder_cls, _, _ = _generate("--adopt")
+        encoder, _ = _generate("--adopt")
 
-        encoder_cls.assert_not_called()
+        encoder.assert_not_called()
         assert EmbeddingIndex.stored() == current_provenance()
         existing.refresh_from_db()
         pending.refresh_from_db()
@@ -213,3 +208,31 @@ class TestCheckEmbeddingIndex:
 
         assert "revision" in str(exc.value)
         assert "generate_embeddings --all" in str(exc.value)
+
+
+class TestGenerateEmbeddingsWithoutDatabase:
+    def test_failed_later_cloud_batch_writes_neither_vectors_nor_provenance(self, settings):
+        from copy import deepcopy
+        from types import SimpleNamespace
+        from core.embedding_service import OpenRouterEmbeddingAdapter
+        from core.inference_config import resolve_inference_config
+        from core.openrouter_client import InferenceError
+        from movies.management.commands.generate_embeddings import Command
+
+        settings.EFFECTIVE_PARAMS = resolve_inference_config(deepcopy(settings.EFFECTIVE_PARAMS), 'openrouter')
+        settings.EMBEDDING_BATCH_SIZE = 1
+        rows = [(1, 'One', [], 'plot', []), (2, 'Two', [], 'plot', [])]
+        valid = {'data': [{'index': 0, 'embedding': [1.] * 1024}]}
+        invalid = {'data': [{'index': 0, 'embedding': [0.] * 1024}]}
+        with patch(f'{GENERATE}.Movie') as movie, patch(f'{GENERATE}.EmbeddingIndex') as index, \
+             patch(f'{GENERATE}.plan_generate', return_value='embed_missing'), \
+             patch(f'{GENERATE}.compare_provenance'), \
+             patch('core.inference_backends.get_inference_backends',
+                   return_value=SimpleNamespace(embedder=OpenRouterEmbeddingAdapter())), \
+             patch('core.openrouter_client.post_json', side_effect=[valid, invalid]) as post:
+            movie.objects.filter.return_value.values_list.return_value = rows
+            with pytest.raises(InferenceError, match='embedding_response'):
+                Command(stdout=StringIO()).handle(batch_size=1, all=False, adopt=False)
+            assert post.call_count == 2
+            movie.objects.bulk_update.assert_not_called()
+            index.record.assert_not_called()
