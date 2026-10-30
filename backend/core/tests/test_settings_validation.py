@@ -225,7 +225,7 @@ class TestUncheckedAttributes:
 
     def test_both_texts_render_from_the_configured_list(self):
         from django.conf import settings
-        from core.ollama_client import CLASSIFY_AND_PARSE_SYSTEM_PROMPT
+        from core.llm_client import CLASSIFY_AND_PARSE_SYSTEM_PROMPT
         from movies.views import UNSUPPORTED_MESSAGE
 
         text = settings.CATALOG_UNCHECKED_TEXT
@@ -374,3 +374,20 @@ class TestLabelQueries:
     def test_rejects_bad_values(self, key, value):
         with pytest.raises(ValueError, match="label_queries"):
             _validate_label_queries({**self.GOOD, key: value})
+
+
+@pytest.mark.parametrize('explanation', [None, {}])
+def test_settings_validates_placeholder_before_exporting_it(monkeypatch, explanation):
+    """Malformed sections must raise the actionable validation error at load."""
+    from copy import deepcopy
+    import runpy
+    import yaml
+    from django.conf import settings
+    import recommender.settings as module
+
+    params = deepcopy(settings.PARAMS)
+    params['llm']['explanation'] = explanation
+    monkeypatch.setenv('INFERENCE_MODE', 'local')
+    monkeypatch.setattr(yaml, 'safe_load', lambda source: params)
+    with pytest.raises(ValueError, match=r'llm\.explanation\.placeholder_max_chars'):
+        runpy.run_path(module.__file__)

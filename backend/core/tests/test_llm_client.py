@@ -9,7 +9,7 @@ import pytest
 from django.conf import settings
 from pydantic import ValidationError
 
-from core.ollama_client import (
+from core.llm_client import (
     EXPLANATION_PROMPT,
     EXPLANATION_SYSTEM_PROMPT,
     ExplanationSplitter,
@@ -21,12 +21,7 @@ from core.ollama_client import (
     _classify_and_parse_payload,
     _explanation_payload,
     _intent_payload,
-    _log_call_stats,
-    _log_model_digest_once,
-    _alog_model_digest_once,
-    _StreamStats,
     _build_movies_context,
-    _ollama_options,
     _stream_chat_payload,
     aclassify_and_parse,
     astream_conversational,
@@ -48,6 +43,7 @@ from core.ollama_client import (
     _resolve_fields,
     parse_intent,
 )
+from core.llm_transport import _log_call_stats, _log_model_digest_once, _alog_model_digest_once, _StreamStats, _ollama_options
 from core.entity_resolution import catalog_countries, catalog_languages
 
 
@@ -55,7 +51,7 @@ from core.entity_resolution import catalog_countries, catalog_languages
 def _no_catalog_db():
     """The classify request reads the catalog's year bounds from the DB; no
     test here has one, and the bounds are None-safe (the rule is omitted)."""
-    with patch("core.ollama_client.catalog_year_range", return_value=None):
+    with patch("core.llm_client.catalog_year_range", return_value=None):
         yield
 
 
@@ -128,8 +124,8 @@ class TestStandaloneQuery:
         })
         mock_client = _mock_ollama_responses(content)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("something funny")
 
         assert result.standalone_query == "something funny"
@@ -141,7 +137,7 @@ class TestStandaloneQuery:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection failed"))
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             result = await aclassify_and_parse("a sad drama")
 
         assert result.standalone_query == result.semantic_query == "a sad drama"
@@ -172,8 +168,8 @@ class TestClassifyAndParse:
         })
         mock_client = _mock_ollama_responses(content)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("хочу весёлую комедию")
 
         assert isinstance(result, MessageIntent)
@@ -188,8 +184,8 @@ class TestClassifyAndParse:
         good = json.dumps({"category": "follow_up", "semantic_query": "x"})
         mock_client = _mock_ollama_responses(bad, good)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("расскажи про первый фильм")
 
         assert result.category == "follow_up"
@@ -200,8 +196,8 @@ class TestClassifyAndParse:
         bad = json.dumps({"category": "not_a_real_category"})
         mock_client = _mock_ollama_responses(bad, bad)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("test message")
 
         assert result.category == "new_search"
@@ -216,7 +212,7 @@ class TestClassifyAndParse:
         mock_client.__aexit__ = AsyncMock(return_value=False)
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("connection failed"))
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             result = await aclassify_and_parse("test")
 
         assert result.category == "new_search"
@@ -228,8 +224,8 @@ class TestClassifyAndParse:
         content = json.dumps({"category": "new_search", "semantic_query": ""})
         mock_client = _mock_ollama_responses(content)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("хочу комедию")
 
         assert result.semantic_query == "хочу комедию"
@@ -238,7 +234,7 @@ class TestClassifyAndParse:
     async def test_malformed_json_on_first_request_uses_fallback_without_retry(self):
         mock_client = _mock_ollama_responses("not valid json")
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             result = await aclassify_and_parse("test")
 
         assert result.category == "new_search"
@@ -262,8 +258,8 @@ class TestClassifyAndParse:
             field: [v.upper() for v in values[field]] for field in RESOLVED_FIELDS
         })
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", resolve):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", resolve):
             result = await aclassify_and_parse("q")
 
         resolve.assert_called_once()
@@ -284,8 +280,8 @@ class TestClassifyAndParse:
             {"role": "assistant", "content": "Вот Прибытие", "movies": ["Прибытие"]},
         ]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             await aclassify_and_parse("давай", history)
 
         sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
@@ -299,8 +295,8 @@ class TestClassifyAndParse:
         content = json.dumps({"category": "new_search", "semantic_query": "q"})
         mock_client = _mock_ollama_responses(content)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = await aclassify_and_parse("q")
 
         sent_messages = mock_client.post.call_args.kwargs["json"]["messages"]
@@ -370,7 +366,7 @@ class TestConversationalSystemPrompt:
             sent["messages"] = messages
             raise httpx.ConnectError("no ollama in tests")
 
-        with patch("core.ollama_client._stream_chat_payload", side_effect=_capture):
+        with patch("core.llm_client._stream_chat_payload", side_effect=_capture):
             tokens = [t async for t in astream_conversational("movies", [], **kwargs)]
         assert tokens == []
         return sent["messages"][0]["content"]
@@ -614,7 +610,7 @@ class TestResolveFields:
         fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
         for name, fake in fakes.items():
             fake.resolve.side_effect = lambda raw, field, name=name: [f"{name}:{v}" for v in raw]
-        with patch.dict("core.ollama_client.RESOLVERS", fakes):
+        with patch.dict("core.llm_client.RESOLVERS", fakes):
             result = _resolve_fields({
                 "genres": ["a"], "negations": ["b"], "country_inclusions": ["c"],
                 "country_exclusions": ["d"], "original_languages": ["e"], "mood": "x",
@@ -629,7 +625,7 @@ class TestResolveFields:
         fakes = {name: MagicMock() for name in ("genres", "countries", "languages")}
         for fake in fakes.values():
             fake.resolve.side_effect = lambda raw, field: list(raw)
-        with patch.dict("core.ollama_client.RESOLVERS", fakes):
+        with patch.dict("core.llm_client.RESOLVERS", fakes):
             assert _resolve_fields({"genres": None}) == {field: [] for field in RESOLVED_FIELDS}
 
 
@@ -645,7 +641,7 @@ class TestExtractIntent:
             "min_vote_average": 7.0,
             "min_release_year": 2015,
         }
-        with patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             result = _extract_intent(parsed)
         assert result["genres"] == ["Comedy"]
         assert result["negations"] == ["Horror"]
@@ -658,7 +654,7 @@ class TestExtractIntent:
 
     def test_resolved_fields_come_from_resolution(self):
         resolved = {field: [f"resolved {field}"] for field in RESOLVED_FIELDS}
-        with patch("core.ollama_client._resolve_fields", return_value=resolved) as resolve:
+        with patch("core.llm_client._resolve_fields", return_value=resolved) as resolve:
             result = _extract_intent({"genres": ["sci-fi"], "country_inclusions": ["Korea"]})
         resolve.assert_called_once_with({"genres": ["sci-fi"], "country_inclusions": ["Korea"]})
         for field in RESOLVED_FIELDS:
@@ -1082,7 +1078,7 @@ class TestStreamConversationalHistory:
             {"role": "assistant", "content": "Вот Прибытие", "movies": ["Прибытие"]},
         ]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             tokens = [t async for t in astream_conversational("давай", history)]
 
         assert "".join(tokens) == "Sure thing"
@@ -1097,7 +1093,7 @@ class TestStreamConversationalHistory:
         lines = [json.dumps({"message": {"content": "Hi!"}})]
         mock_client = _mock_streaming_client(lines)
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             tokens = [t async for t in astream_conversational("hi")]
 
         assert "".join(tokens) == "Hi!"
@@ -1113,7 +1109,7 @@ class TestStreamExplanationUnverified:
     async def _last_turn(**kwargs):
         mock_client = _mock_streaming_client([json.dumps({"message": {"content": "x"}})])
         movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             _ = [t async for t in astream_explanation("q", movies, **kwargs)]
         return mock_client.stream.call_args.kwargs["json"]["messages"][-1]["content"]
 
@@ -1146,7 +1142,7 @@ class TestStreamExplanationUnverified:
             seen["unverified"] = unverified
             yield "x"
 
-        with patch("core.ollama_client.astream_explanation", fake):
+        with patch("core.llm_client.astream_explanation", fake):
             _ = [p async for p in astream_explanation_parts("q", [{"serial_name": "A"}], unverified=["silent"])]
         assert seen["unverified"] == ["silent"]
 
@@ -1170,7 +1166,7 @@ class TestStreamExplanationHistory:
         ]
         movies = [{"serial_name": "Семь", "genres": ["Thriller"], "description": "A detective story"}]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             tokens = [t async for t in astream_explanation("хочу еще триллер", movies, history)]
 
         assert "".join(tokens) == "Great pick"
@@ -1187,7 +1183,7 @@ class TestStreamExplanationHistory:
         mock_client = _mock_streaming_client(lines)
         movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             tokens = [t async for t in astream_explanation("q", movies)]
 
         assert "".join(tokens) == "OK"
@@ -1202,7 +1198,7 @@ class TestStreamExplanationHistory:
         mock_client = _mock_streaming_client(lines)
         movies = [{"serial_name": "Test Film", "genres": [], "description": ""}]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             _ = [t async for t in astream_explanation("q", movies)]
 
         sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
@@ -1225,7 +1221,7 @@ class TestStreamExplanationHistory:
         ]
         movies = [{"serial_name": "Семь", "genres": ["Thriller"], "description": "A detective story"}]
 
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             parts = [p async for p in astream_explanation_parts("q", movies, history)]
 
         sent_messages = mock_client.stream.call_args.kwargs["json"]["messages"]
@@ -1295,23 +1291,23 @@ class TestOllamaOptions:
     @staticmethod
     def _structured(settings):
         return {
-            "num_ctx": settings.OLLAMA_NUM_CTX,
-            "seed": settings.OLLAMA_SEED,
-            "temperature": settings.OLLAMA_TEMPERATURE["structured"],
+            "num_ctx": settings.LLM_NUM_CTX,
+            "seed": settings.LLM_SEED,
+            "temperature": settings.LLM_TEMPERATURE["structured"],
         }
 
     @staticmethod
     def _generation(settings):
         return {
-            "num_ctx": settings.OLLAMA_NUM_CTX,
-            "seed": settings.OLLAMA_SEED,
-            "temperature": settings.OLLAMA_TEMPERATURE["generation"],
+            "num_ctx": settings.LLM_NUM_CTX,
+            "seed": settings.LLM_SEED,
+            "temperature": settings.LLM_TEMPERATURE["generation"],
         }
 
     def test_options_by_kind(self, settings):
-        settings.OLLAMA_NUM_CTX = 4096
-        settings.OLLAMA_SEED = 7
-        settings.OLLAMA_TEMPERATURE = {"structured": 0.0, "generation": 0.7}
+        settings.LLM_NUM_CTX = 4096
+        settings.LLM_SEED = 7
+        settings.LLM_TEMPERATURE = {"structured": 0.0, "generation": 0.7}
         assert _ollama_options("structured") == {"num_ctx": 4096, "seed": 7, "temperature": 0.0}
         assert _ollama_options("generation") == {"num_ctx": 4096, "seed": 7, "temperature": 0.7}
 
@@ -1320,25 +1316,24 @@ class TestOllamaOptions:
             _ollama_options("creative")
 
     def test_intent_payload_is_structured(self, settings):
-        assert _intent_payload("a thriller")["options"] == self._structured(settings)
+        assert _intent_payload("a thriller")["kind"] == "structured"
 
     def test_classify_and_parse_payload_is_structured(self, settings):
         payload = _classify_and_parse_payload("hi", [])
-        assert payload["options"] == self._structured(settings)
+        assert payload["kind"] == "structured"
 
     def test_explanation_payload_is_generation(self, settings):
-        for stream in (False, True):
-            payload = _explanation_payload("q", [], stream=stream)
-            assert payload["options"] == self._generation(settings)
+        payload = _explanation_payload("q", [])
+        assert payload["kind"] == "generation"
 
     def test_stream_chat_payload_is_generation(self, settings):
         payload = _stream_chat_payload([{"role": "user", "content": "hi"}])
-        assert payload["options"] == self._generation(settings)
+        assert payload["kind"] == "generation"
 
     def test_chat_sync_picks_kind_from_schema(self, settings):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
-        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+        with patch("core.llm_transport.httpx.post", return_value=response) as post:
             assert _chat_sync([{"role": "user", "content": "hi"}], call_type="explanation") == "ok"
             _chat_sync([{"role": "user", "content": "hi"}], call_type="judge", schema={"type": "object"})
         plain, structured = post.call_args_list
@@ -1391,14 +1386,14 @@ class TestSamplingValidation:
 
 class TestConversationalPromptGrounding:
     def test_prompt_makes_listed_facts_the_source_of_truth_and_flags_missing_details(self):
-        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+        from core.llm_client import CONVERSATIONAL_SYSTEM_PROMPT
 
         assert "Recommended movies" in CONVERSATIONAL_SYSTEM_PROMPT
         assert "source of truth" in CONVERSATIONAL_SYSTEM_PROMPT
         assert "not in your catalog data" in CONVERSATIONAL_SYSTEM_PROMPT
 
     def test_prompt_answers_only_from_the_supplied_catalog_facts(self):
-        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+        from core.llm_client import CONVERSATIONAL_SYSTEM_PROMPT
 
         rule = next(line for line in CONVERSATIONAL_SYSTEM_PROMPT.splitlines() if "only from the catalog facts" in line)
         for field in ("title", "year", "genres", "runtime", "description"):
@@ -1408,7 +1403,7 @@ class TestConversationalPromptGrounding:
         assert "do not add it from general knowledge" in rule
 
     def test_catalog_only_rule_is_scoped_to_movies_with_supplied_facts(self):
-        from core.ollama_client import CONVERSATIONAL_SYSTEM_PROMPT
+        from core.llm_client import CONVERSATIONAL_SYSTEM_PROMPT
 
         rule = next(line for line in CONVERSATIONAL_SYSTEM_PROMPT.splitlines() if "only from the catalog facts" in line)
         # Applies to the listed / selected movies...
@@ -1425,8 +1420,8 @@ class TestStructuredOutputSchema:
 
     def test_classify_payload_carries_the_message_intent_schema(self):
         payload = _classify_and_parse_payload("hi", [])
-        assert payload["format"] is CLASSIFY_PARSE_SCHEMA
-        assert payload["format"] != "json"
+        assert payload["schema"] is CLASSIFY_PARSE_SCHEMA
+        assert payload["schema"] != "json"
 
     def test_schema_has_category_enum_and_every_field_required(self):
         schema = CLASSIFY_PARSE_SCHEMA
@@ -1468,7 +1463,7 @@ class TestStructuredOutputSchema:
 
     def test_intent_payload_schema_matches_what_extract_intent_reads(self):
         payload = _intent_payload("a comedy")
-        assert payload["format"] is INTENT_SCHEMA
+        assert payload["schema"] is INTENT_SCHEMA
         assert "category" not in INTENT_SCHEMA["properties"]
         assert "semantic_query" not in INTENT_SCHEMA["properties"]
         assert set(INTENT_SCHEMA["required"]) == set(_extract_intent({}))
@@ -1489,7 +1484,7 @@ class TestStructuredOutputSchema:
     @pytest.mark.asyncio
     async def test_request_sends_the_schema_on_the_wire(self):
         mock_client = _mock_ollama_responses('{"category": "new_search"}')
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             await aclassify_and_parse("hi")
         assert mock_client.post.call_args.kwargs["json"]["format"] == CLASSIFY_PARSE_SCHEMA
 
@@ -1498,7 +1493,7 @@ class TestStructuredOutputSchema:
         mock_client = _mock_ollama_responses(
             '{"category": "nonsense"}', '{"category": "follow_up", "semantic_query": "x"}'
         )
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             intent = await aclassify_and_parse("tell me about it")
         assert intent.category == "follow_up"
         formats = [c.kwargs["json"]["format"] for c in mock_client.post.call_args_list]
@@ -1508,21 +1503,21 @@ class TestStructuredOutputSchema:
         response = MagicMock()
         response.json.return_value = {"message": {"content": "{}"}}
         schema = {"type": "object", "properties": {"score": {"type": "integer"}}}
-        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+        with patch("core.llm_transport.httpx.post", return_value=response) as post:
             _chat_sync([{"role": "user", "content": "hi"}], call_type="judge", schema=schema)
         assert post.call_args.kwargs["json"]["format"] == schema
 
     def test_chat_sync_without_schema_sends_no_format(self):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}}
-        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+        with patch("core.llm_transport.httpx.post", return_value=response) as post:
             _chat_sync([{"role": "user", "content": "hi"}], call_type="explanation")
         assert "format" not in post.call_args.kwargs["json"]
 
     def test_parse_intent_sends_the_intent_schema(self):
         response = MagicMock()
         response.json.return_value = {"message": {"content": '{"genres": ["Comedy"]}'}}
-        with patch("core.ollama_client.httpx.post", return_value=response) as post:
+        with patch("core.llm_transport.httpx.post", return_value=response) as post:
             parse_intent("a comedy")
         assert post.call_args.kwargs["json"]["format"] == INTENT_SCHEMA
 
@@ -1531,8 +1526,8 @@ class TestStructuredOutputSchema:
         response.json.return_value = {
             "message": {"content": '<think>hmm</think>{"genres": ["Comedy"]}'}
         }
-        with patch("core.ollama_client.httpx.post", return_value=response), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.post", return_value=response), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             assert parse_intent("a comedy")["genres"] == ["Comedy"]
 
 
@@ -1553,7 +1548,7 @@ class TestCallLogging:
     """One INFO line per Ollama call with tokens and Ollama's own timings."""
 
     def test_line_has_call_type_counts_and_durations_in_ms(self, caplog):
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("classify_parse", FINAL_CHUNK)
         (record,) = _call_records(caplog)
         message = record.getMessage()
@@ -1566,47 +1561,47 @@ class TestCallLogging:
         assert "ttft_ms=n/a" in message
 
     def test_ttft_is_reported_when_measured(self, caplog):
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("explanation", FINAL_CHUNK, ttft_ms=250.4)
         assert "ttft_ms=250" in _call_records(caplog)[0].getMessage()
 
     @pytest.mark.parametrize("stats", [{}, None, "garbage", {"prompt_eval_count": None}])
     def test_missing_or_malformed_fields_do_not_crash(self, caplog, stats):
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("judge", stats)
         (record,) = _call_records(caplog)
         assert "prompt_tokens=n/a eval_tokens=n/a prompt_eval_ms=n/a eval_ms=n/a" in record.getMessage()
 
     def test_bool_counts_are_not_mistaken_for_numbers(self, caplog):
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("judge", {"prompt_eval_count": True, "prompt_eval_duration": True})
         assert "prompt_tokens=n/a" in _call_records(caplog)[0].getMessage()
         assert "prompt_eval_ms=n/a" in _call_records(caplog)[0].getMessage()
 
     def test_warns_when_prompt_is_within_ten_percent_of_num_ctx(self, caplog, settings):
-        settings.OLLAMA_NUM_CTX = 1000
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        settings.LLM_NUM_CTX = 1000
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("conversational", {"prompt_eval_count": 900})
         (warning,) = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert "900 of 1000" in warning.getMessage()
         assert "call=conversational" in warning.getMessage()
 
     def test_no_warning_below_the_threshold(self, caplog, settings):
-        settings.OLLAMA_NUM_CTX = 1000
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        settings.LLM_NUM_CTX = 1000
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("conversational", {"prompt_eval_count": 899})
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
     def test_no_warning_without_a_prompt_count(self, caplog):
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_call_stats("conversational", {})
         assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
     def test_chat_sync_logs_with_its_call_type(self, caplog):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "ok"}, **FINAL_CHUNK}
-        with patch("core.ollama_client.httpx.post", return_value=response), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.post", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _chat_sync([{"role": "user", "content": "hi"}], call_type="judge")
         assert "call=judge prompt_tokens=812" in _call_records(caplog)[0].getMessage()
 
@@ -1616,9 +1611,9 @@ class TestCallLogging:
     def test_sync_wrappers_label_their_calls(self, caplog, call, call_type):
         response = MagicMock()
         response.json.return_value = {"message": {"content": "{}"}, **FINAL_CHUNK}
-        with patch("core.ollama_client.httpx.post", return_value=response), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.post", return_value=response), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             call()
         assert f"call={call_type} " in _call_records(caplog)[0].getMessage()
 
@@ -1627,8 +1622,8 @@ class TestCallLogging:
         body = {"message": {"content": '{"category": "new_search"}'}, **FINAL_CHUNK}
         mock_client = _mock_ollama_responses("x")
         mock_client.post.side_effect = [MagicMock(json=MagicMock(return_value=body))]
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             await aclassify_and_parse("hi")
         (record,) = _call_records(caplog)
         assert "call=classify_parse prompt_tokens=812" in record.getMessage()
@@ -1636,8 +1631,8 @@ class TestCallLogging:
     @pytest.mark.asyncio
     async def test_classify_parse_response_without_stats_still_parses(self, caplog):
         mock_client = _mock_ollama_responses('{"category": "general_chat"}')
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             intent = await aclassify_and_parse("hi")
         assert intent.category == "general_chat"
         assert "prompt_tokens=n/a" in _call_records(caplog)[0].getMessage()
@@ -1666,8 +1661,8 @@ class TestStreamCallLogging:
             {"message": {"content": "Sure"}, "done": False},
             {"message": {"content": ""}, **FINAL_CHUNK},
         )
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             tokens = [t async for t in astream_conversational("hi")]
         assert tokens == ["Sure"]
         (record,) = _call_records(caplog)
@@ -1678,24 +1673,27 @@ class TestStreamCallLogging:
     @pytest.mark.asyncio
     async def test_explanation_stream_logs_with_its_call_type(self, caplog):
         lines = self._lines({"message": {"content": "Opening"}, **FINAL_CHUNK})
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _ = [t async for t in astream_explanation("q", [])]
         assert "call=explanation " in _call_records(caplog)[0].getMessage()
 
     @pytest.mark.asyncio
     async def test_stream_without_a_final_chunk_still_streams_and_logs_na(self, caplog):
         lines = self._lines({"message": {"content": "Hello"}})
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=_mock_streaming_client(lines)), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             tokens = [t async for t in astream_conversational("hi")]
         assert tokens == ["Hello"]
         assert "prompt_tokens=n/a eval_tokens=n/a" in _call_records(caplog)[0].getMessage()
 
     def test_sync_stream_logs(self, caplog):
-        from core.ollama_client import stream_explanation
+        from core.llm_client import stream_explanation
 
         class _Response:
+            def raise_for_status(self):
+                pass
+
             def iter_lines(self):
                 yield json.dumps({"message": {"content": "Hi"}, **FINAL_CHUNK})
 
@@ -1705,8 +1703,8 @@ class TestStreamCallLogging:
             def __exit__(self, *args):
                 return False
 
-        with patch("core.ollama_client.httpx.stream", return_value=_Response()), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.stream", return_value=_Response()), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             assert "".join(stream_explanation("q", [])) == "Hi"
         assert "call=explanation prompt_tokens=812" in _call_records(caplog)[0].getMessage()
 
@@ -1722,18 +1720,18 @@ TAGS = {
 class TestModelDigestLogging:
     @pytest.fixture(autouse=True)
     def _lookup_enabled(self, monkeypatch):
-        monkeypatch.setattr("core.ollama_client._digest_lookup_attempted", False)
+        monkeypatch.setattr("core.llm_transport._digest_lookup_attempted", False)
 
     @staticmethod
     def _digest_lines(caplog):
         return [r.getMessage() for r in caplog.records if "digest" in r.getMessage()]
 
     def test_logs_the_digest_of_the_configured_model(self, caplog, settings):
-        settings.OLLAMA_MODEL = "qwen3:8b"
+        settings.LLM_MODEL = "qwen3:8b"
         response = MagicMock()
         response.json.return_value = TAGS
-        with patch("core.ollama_client.httpx.get", return_value=response) as get, \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.get", return_value=response) as get, \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_model_digest_once()
         assert get.call_args.args[0].endswith("/api/tags")
         assert self._digest_lines(caplog) == ["Ollama model qwen3:8b digest sha256:bbb"]
@@ -1741,14 +1739,14 @@ class TestModelDigestLogging:
     def test_only_one_lookup_per_process(self):
         response = MagicMock()
         response.json.return_value = TAGS
-        with patch("core.ollama_client.httpx.get", return_value=response) as get:
+        with patch("core.llm_transport.httpx.get", return_value=response) as get:
             _log_model_digest_once()
             _log_model_digest_once()
         assert get.call_count == 1
 
     def test_failure_is_tolerated_and_not_retried(self, caplog):
-        with patch("core.ollama_client.httpx.get", side_effect=httpx.ConnectError("down")) as get, \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.get", side_effect=httpx.ConnectError("down")) as get, \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_model_digest_once()
             _log_model_digest_once()
         assert get.call_count == 1
@@ -1757,7 +1755,7 @@ class TestModelDigestLogging:
     def test_unexpected_body_is_tolerated(self):
         response = MagicMock()
         response.json.return_value = ["not", "a", "dict"]
-        with patch("core.ollama_client.httpx.get", return_value=response):
+        with patch("core.llm_transport.httpx.get", return_value=response):
             _log_model_digest_once()
 
     @pytest.mark.parametrize(
@@ -1775,39 +1773,39 @@ class TestModelDigestLogging:
     def test_malformed_tags_bodies_never_raise(self, body, caplog):
         response = MagicMock()
         response.json.return_value = body
-        with patch("core.ollama_client.httpx.get", return_value=response), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_model_digest_once()
         assert any("digest unknown" in r.getMessage() for r in caplog.records)
 
     def test_any_exception_in_the_lookup_is_swallowed(self):
-        with patch("core.ollama_client.httpx.get", side_effect=TypeError("boom")):
+        with patch("core.llm_transport.httpx.get", side_effect=TypeError("boom")):
             _log_model_digest_once()
 
     def test_model_missing_from_tags_is_reported(self, caplog, settings):
-        settings.OLLAMA_MODEL = "absent:1b"
+        settings.LLM_MODEL = "absent:1b"
         response = MagicMock()
         response.json.return_value = TAGS
-        with patch("core.ollama_client.httpx.get", return_value=response), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_model_digest_once()
         assert any("digest unknown" in r.getMessage() for r in caplog.records)
 
     def test_untagged_model_name_matches_latest(self, caplog, settings):
-        settings.OLLAMA_MODEL = "llama3"
+        settings.LLM_MODEL = "llama3"
         response = MagicMock()
         response.json.return_value = {"models": [{"name": "llama3:latest", "digest": "sha256:ccc"}]}
-        with patch("core.ollama_client.httpx.get", return_value=response), \
-             caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with patch("core.llm_transport.httpx.get", return_value=response), \
+             caplog.at_level(logging.INFO, logger="core.llm_transport"):
             _log_model_digest_once()
         assert self._digest_lines(caplog) == ["Ollama model llama3 digest sha256:ccc"]
 
     @pytest.mark.asyncio
     async def test_async_variant_logs_and_runs_once(self, caplog, settings):
-        settings.OLLAMA_MODEL = "qwen3:8b"
+        settings.LLM_MODEL = "qwen3:8b"
         client = AsyncMock()
         client.get.return_value = MagicMock(json=MagicMock(return_value=TAGS))
-        with caplog.at_level(logging.INFO, logger="core.ollama_client"):
+        with caplog.at_level(logging.INFO, logger="core.llm_transport"):
             await _alog_model_digest_once(client)
             await _alog_model_digest_once(client)
         assert client.get.await_count == 1
@@ -1831,7 +1829,7 @@ class TestModelDigestLogging:
         mock_client.get = AsyncMock(
             return_value=MagicMock(json=MagicMock(return_value={"models": None}))
         )
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             result = await aclassify_and_parse("hi")
         assert result is not None
         assert mock_client.get.await_count == 1
@@ -1840,7 +1838,7 @@ class TestModelDigestLogging:
     async def test_first_chat_request_triggers_the_lookup(self):
         mock_client = _mock_ollama_responses('{"category": "general_chat"}')
         mock_client.get = AsyncMock(return_value=MagicMock(json=MagicMock(return_value=TAGS)))
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client):
             await aclassify_and_parse("hi")
         assert mock_client.get.await_count == 1
 
@@ -1849,12 +1847,12 @@ class TestExplanationDescriptionCap:
     MOVIES = [{"serial_name": "Alien", "genres": ["Horror"], "description": "x" * 500}]
 
     def test_cap_comes_from_settings(self, settings):
-        settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS = 7
+        settings.LLM_EXPLANATION_DESCRIPTION_CHARS = 7
         context = _build_movies_context(self.MOVIES)
         assert "x" * 7 in context and "x" * 8 not in context
 
     def test_default_cap_is_the_params_value(self, settings):
-        assert settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS == 200
+        assert settings.LLM_EXPLANATION_DESCRIPTION_CHARS == 200
         context = _build_movies_context(self.MOVIES)
         assert "x" * 200 in context and "x" * 201 not in context
 
@@ -1907,8 +1905,8 @@ class TestCatalogYearRule:
         mock_client = _mock_ollama_responses(
             json.dumps({"category": "new_search", "semantic_query": "x", "standalone_query": "x"})
         )
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-                patch("core.ollama_client.catalog_year_range", return_value=self.BOUNDS):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+                patch("core.llm_client.catalog_year_range", return_value=self.BOUNDS):
             await aclassify_and_parse("newest movies")
         sent = mock_client.post.call_args.kwargs["json"]["messages"][0]["content"]
         assert "up to 2023" in sent
@@ -1935,8 +1933,8 @@ class TestSelectionNote:
     async def test_aclassify_passes_the_note_to_the_request(self):
         content = json.dumps({"category": "follow_up", "semantic_query": "is it good?"})
         mock_client = _mock_ollama_responses(content)
-        with patch("core.ollama_client.httpx.AsyncClient", return_value=mock_client), \
-             patch("core.ollama_client._resolve_fields", side_effect=_unresolved):
+        with patch("core.llm_transport.httpx.AsyncClient", return_value=mock_client), \
+             patch("core.llm_client._resolve_fields", side_effect=_unresolved):
             await aclassify_and_parse("is it good?", [], selection_note="[NOTE]")
         sent = mock_client.post.call_args.kwargs["json"]["messages"]
         assert sent[-1]["content"].endswith("[NOTE]")
@@ -1955,7 +1953,7 @@ class TestSelectedMovieBlock:
             sent["messages"] = messages
             raise httpx.ConnectError("no ollama in tests")
 
-        with patch("core.ollama_client._stream_chat_payload", side_effect=_capture):
+        with patch("core.llm_client._stream_chat_payload", side_effect=_capture):
             [t async for t in astream_conversational("is it good?", [], **kwargs)]
         return sent["messages"][-1]["content"]
 

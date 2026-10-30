@@ -15,7 +15,7 @@ from rest_framework.views import APIView
 
 from core.catalog_bounds import catalog_year_range
 from core.embedding_service import encode_query
-from core.ollama_client import (
+from core.llm_client import (
     CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent,
     aclassify_and_parse, check_explanation_titles,
     astream_conversational, astream_explanation_parts,

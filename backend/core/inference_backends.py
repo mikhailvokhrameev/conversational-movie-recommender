@@ -23,9 +23,12 @@ class _PendingAdapter:
 def _build_backends() -> InferenceBackends:
     from django.conf import settings
 
+    from core.llm_transport import OllamaLLMAdapter, OpenRouterLLMAdapter
+
     params = settings.EFFECTIVE_PARAMS
+    llm_adapters = {"ollama": OllamaLLMAdapter, "openrouter": OpenRouterLLMAdapter}
     return InferenceBackends(
-        llm=_PendingAdapter(params['llm']['provider']),
+        llm=llm_adapters[params['llm']['provider']](),
         embedder=_PendingAdapter(params['embedding']['provider']),
         reranker=_PendingAdapter(params['reranking']['provider']),
     )

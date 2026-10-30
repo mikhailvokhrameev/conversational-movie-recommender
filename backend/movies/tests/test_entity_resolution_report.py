@@ -103,7 +103,7 @@ class TestReport:
 
 class TestShippedProbes:
     def test_covers_every_resolver_with_the_planned_probes(self):
-        from core.ollama_client import RESOLVERS
+        from core.llm_client import RESOLVERS
 
         probes = json.loads(default_probes_path().read_text())
         fields = {k: v for k, v in probes.items() if not k.startswith("_")}

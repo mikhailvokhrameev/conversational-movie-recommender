@@ -197,6 +197,7 @@ def _validate_placeholder_max_chars(llm: dict) -> None:
 _validate_num_ctx(_llm)
 _validate_sampling(_llm)
 _validate_explanation_description_chars(_llm)
+_validate_placeholder_max_chars(_llm)
 LLM_PROVIDER = _llm["provider"]
 LLM_BASE_URL = _llm["base_url"]
 LLM_MODEL = _llm["model"]
@@ -217,7 +218,6 @@ OLLAMA_NUM_CTX = _llm["num_ctx"]
 OLLAMA_TEMPERATURE = _llm["temperature"]
 OLLAMA_SEED = _llm["seed"]
 OLLAMA_EXPLANATION_DESCRIPTION_CHARS = _llm["explanation_description_chars"]
-_validate_placeholder_max_chars(_llm)
 OLLAMA_PLACEHOLDER_MAX_CHARS = _llm["explanation"]["placeholder_max_chars"]
 
 def _validate_embedding_text(embedding: dict) -> None:

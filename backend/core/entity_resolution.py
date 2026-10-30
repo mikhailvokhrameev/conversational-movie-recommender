@@ -28,7 +28,12 @@ from typing import Callable
 
 import numpy as np
 
-from core.embedding_service import encode_texts
+
+def encode_texts(texts: list[str]) -> np.ndarray:
+    """Load the embedding service only when resolution needs embeddings."""
+    from core.embedding_service import encode_texts as encode
+    return encode(texts)
+
 
 logger = logging.getLogger(__name__)
 

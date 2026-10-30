@@ -3,7 +3,7 @@ import logging
 import pytest
 
 
-@pytest.mark.parametrize("name", ["core.ollama_client", "movies.views"])
+@pytest.mark.parametrize("name", ["core.llm_client", "core.llm_transport", "movies.views"])
 def test_app_info_lines_reach_a_console_handler(name):
     """The per-call `Ollama call=...` and `turn_latency` lines are INFO. Without
     a LOGGING config only Python's last-resort handler exists, which drops

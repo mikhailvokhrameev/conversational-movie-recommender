@@ -84,7 +84,7 @@ from core.golden_set import (
     resolve_references,
     select_split,
 )
-from core.ollama_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available
+from core.llm_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available
 from core.pipeline import generate_and_score
 from movies.models import Movie
 

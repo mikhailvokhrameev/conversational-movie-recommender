@@ -29,7 +29,8 @@ import numpy as np
 from django.conf import settings
 
 from core.embedding_service import cosine_similarity
-from core.ollama_client import _chat_sync, _parse_json_response
+from core.llm_client import _chat_sync, _parse_json_response
+from core.openrouter_client import InferenceError
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +186,7 @@ def llm_relevance_score(query: str, movie: dict) -> int | None:
         if not JUDGE_MIN_SCORE <= score <= JUDGE_MAX_SCORE:
             raise ValueError(f"score {score} is outside {JUDGE_MIN_SCORE}-{JUDGE_MAX_SCORE}")
         return score
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
         logger.warning(f"LLM judge failed for '{movie.get('serial_name', '')}': {e}")
         return None
 

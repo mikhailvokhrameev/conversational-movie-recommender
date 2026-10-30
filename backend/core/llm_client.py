@@ -1,6 +1,6 @@
-"""Ollama LLM client for intent parsing and recommendation explanations.
+"""Common LLM client for intent parsing and recommendation explanations.
 
-Communicates with a standalone Ollama container via its HTTP API.
+Provider protocols live in llm_transport; dependency assembly selects the adapter.
 Two roles: (1) parse natural language queries into structured intent (JSON-schema-constrained),
 (2) generate English-language explanations for recommended movies (RAG pattern).
 
@@ -8,7 +8,7 @@ The explanation is not one blob: the model is asked for an opening line followed
 by one `[[n]]`-marked description per movie, and `ExplanationSplitter` routes the
 token stream into those slots so the UI can show each description beside the
 movie it belongs to.
-Falls back to empty intent if Ollama is unavailable (semantic search still works).
+Falls back to empty intent if the configured provider is unavailable (semantic search still works).
 
 The async chat view uses a single combined classify+parse call
 (`aclassify_and_parse`, validated against the `MessageIntent` Pydantic schema);
@@ -20,16 +20,13 @@ and async Django views respectively.
 
 Hybrid reasoning models (Qwen3, the configured default) emit
 a <think>...</think> span before their answer unless told not to. Every call
-here sends Ollama's "think" flag from params.yaml, and both the JSON and the
-streaming paths strip any reasoning span that arrives anyway -- so an Ollama
-build that ignores the flag costs latency rather than producing broken JSON
-or leaking reasoning into the user-visible stream.
+uses the adapter's reasoning flag from params.yaml, and both JSON parsing and
+stream filtering strip any reasoning span that arrives anyway.
 """
 
 import json
 import logging
 import re
-import time
 from typing import Generator, Literal, Optional
 
 import httpx
@@ -38,6 +35,8 @@ from django.conf import settings
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from core.catalog_bounds import catalog_year_range
+from core.inference_backends import get_inference_backends
+from core.openrouter_client import InferenceError
 from core.entity_resolution import EntityResolver, catalog_countries, catalog_languages
 
 logger = logging.getLogger(__name__)
@@ -385,7 +384,7 @@ _PARTIAL_MARKER_RE = re.compile(r"\[\[?\d*\]?$")
 # A prompt-shape placeholder the model echoed back, e.g. '<opening line>': short
 # text in angle brackets on one line. A tail that could still close into one
 # is held back, like a partial marker.
-_PLACEHOLDER_MAX_CHARS = settings.OLLAMA_PLACEHOLDER_MAX_CHARS
+_PLACEHOLDER_MAX_CHARS = settings.LLM_PLACEHOLDER_MAX_CHARS
 _PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{1,{_PLACEHOLDER_MAX_CHARS}}}>")
 _PARTIAL_PLACEHOLDER_RE = re.compile(rf"<[^<>\n]{{0,{_PLACEHOLDER_MAX_CHARS - 1}}}$")
 
@@ -482,7 +481,7 @@ def _build_movies_context(movies: list[dict]) -> str:
     """Prefix each entry with the same [[n]] marker the model must echo back, so a
     streamed description can be routed to the movie it describes."""
     return "\n".join(
-        f"[[{i}]] {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:settings.OLLAMA_EXPLANATION_DESCRIPTION_CHARS]}"
+        f"[[{i}]] {m.get('serial_name', m.get('title', ''))} ({', '.join(m.get('genres', []))}): {m.get('description', '')[:settings.LLM_EXPLANATION_DESCRIPTION_CHARS]}"
         for i, m in enumerate(movies, 1)
     )
 
@@ -716,24 +715,8 @@ def _extract_intent(parsed: dict) -> dict:
     }
 
 
-def _ollama_options(kind: Literal["structured", "generation"]) -> dict:
-    """Ollama `options` sent with EVERY request. All calls must use the same
-    num_ctx: a differing value makes Ollama reload the model.
-
-    `kind` picks the temperature: "structured" for schema-constrained calls whose output
-    is parsed (deterministic, so intent parsing and the eval judge are
-    reproducible), "generation" for user-facing free text. The seed is fixed
-    for both.
-    """
-    return {
-        "num_ctx": settings.OLLAMA_NUM_CTX,
-        "seed": settings.OLLAMA_SEED,
-        "temperature": settings.OLLAMA_TEMPERATURE[kind],
-    }
-
-
-def _ollama_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dict:
-    """A Pydantic model's JSON schema, shaped for Ollama's `format` field.
+def _llm_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dict:
+    """A Pydantic model's common JSON schema, shared by both adapters.
 
     Ollama turns the schema into a decoding grammar, so the model cannot emit
     an off-schema category or a wrong-typed filter. Two adjustments to what
@@ -756,28 +739,25 @@ def _ollama_schema(model: type[BaseModel], exclude: tuple[str, ...] = ()) -> dic
 
 
 # Built once: both are constant for the process.
-CLASSIFY_PARSE_SCHEMA = _ollama_schema(MessageIntent)
+CLASSIFY_PARSE_SCHEMA = _llm_schema(MessageIntent)
 # The MessageIntent fields that are not search filters: only the combined call
 # produces them, and every caller drops them before handing the intent to the
 # pipeline. What is left is what `_extract_intent` reads.
 NON_FILTER_FIELDS = (
     "category", "semantic_query", "standalone_query", "unsupported_constraints", "result_count",
 )
-INTENT_SCHEMA = _ollama_schema(MessageIntent, exclude=NON_FILTER_FIELDS)
+INTENT_SCHEMA = _llm_schema(MessageIntent, exclude=NON_FILTER_FIELDS)
 
 
 def _intent_payload(query: str) -> dict:
     return {
-        "model": settings.OLLAMA_MODEL,
         "messages": [
             {"role": "user", "content": INTENT_PROMPT.format(
                 query=query, genres=", ".join(CATALOG_GENRES)
             )},
         ],
-        "format": INTENT_SCHEMA,
-        "stream": False,
-        "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("structured"),
+        "schema": INTENT_SCHEMA,
+        "kind": "structured",
     }
 
 
@@ -823,18 +803,14 @@ def _classify_and_parse_payload(
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     return {
-        "model": settings.OLLAMA_MODEL,
         "messages": messages,
-        "format": CLASSIFY_PARSE_SCHEMA,
-        "stream": False,
-        "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("structured"),
+        "schema": CLASSIFY_PARSE_SCHEMA,
+        "kind": "structured",
     }
 
 
-def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -> dict:
+def _explanation_payload(query: str, movies: list[dict]) -> dict:
     return {
-        "model": settings.OLLAMA_MODEL,
         "messages": [
             {
                 "role": "user",
@@ -843,216 +819,48 @@ def _explanation_payload(query: str, movies: list[dict], stream: bool = False) -
                 ),
             },
         ],
-        "stream": stream,
-        "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("generation"),
+        "kind": "generation",
+        "schema": None,
     }
 
 
-# --- Call logging: tokens, latency, model identity ---
-
-# Warn when a prompt fills this share of llm.num_ctx or more. History is capped
-# by characters, not tokens (see session.history_max_*), so this is the only
-# signal that a prompt is close to being truncated by Ollama.
-_NUM_CTX_WARN_SHARE = 0.9
-
-
-def _ns_to_ms(value) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    return value / 1_000_000
-
-
-def _fmt(value, spec: str = "") -> str:
-    return "n/a" if value is None else format(value, spec)
-
-
-def _log_call_stats(call_type: str, stats, ttft_ms: float | None = None) -> None:
-    """One INFO line per Ollama call: token counts and Ollama's own timings.
-
-    `stats` is the non-streamed response body, or the final `done: true` chunk
-    of a stream; any field may be missing and shows as n/a. `ttft_ms` is the
-    client-side time to first token and only exists for streamed calls. Never
-    raises: logging must not be able to fail a request.
-    """
-    if not isinstance(stats, dict):
-        stats = {}
-    # prompt_eval_count may cover only the newly evaluated tokens when Ollama
-    # reuses a cached prompt prefix, so read it from a cold call.
-    prompt_tokens = stats.get("prompt_eval_count")
-    if isinstance(prompt_tokens, bool) or not isinstance(prompt_tokens, int):
-        prompt_tokens = None
-    eval_tokens = stats.get("eval_count")
-    if isinstance(eval_tokens, bool) or not isinstance(eval_tokens, int):
-        eval_tokens = None
-    logger.info(
-        "Ollama call=%s prompt_tokens=%s eval_tokens=%s prompt_eval_ms=%s eval_ms=%s ttft_ms=%s",
-        call_type,
-        _fmt(prompt_tokens),
-        _fmt(eval_tokens),
-        _fmt(_ns_to_ms(stats.get("prompt_eval_duration")), ".0f"),
-        _fmt(_ns_to_ms(stats.get("eval_duration")), ".0f"),
-        _fmt(ttft_ms, ".0f"),
-    )
-    if prompt_tokens is not None and prompt_tokens >= _NUM_CTX_WARN_SHARE * settings.OLLAMA_NUM_CTX:
-        logger.warning(
-            "Ollama call=%s prompt used %d of %d context tokens (llm.num_ctx); "
-            "Ollama truncates beyond it. Lower session.history_max_turns or raise llm.num_ctx.",
-            call_type, prompt_tokens, settings.OLLAMA_NUM_CTX,
-        )
-
-
-class _StreamStats:
-    """Collects what a streamed call reports: the final `done: true` chunk
-    carries the token counts, and the first non-empty content chunk gives the
-    client-side time to first token (measured from construction, so create it
-    just before sending the request)."""
-
-    def __init__(self) -> None:
-        self._started = time.perf_counter()
-        self.ttft_ms: float | None = None
-        self.final: dict = {}
-
-    def observe(self, data: dict) -> None:
-        if self.ttft_ms is None and data.get("message", {}).get("content"):
-            self.ttft_ms = (time.perf_counter() - self._started) * 1000
-        if data.get("done"):
-            self.final = data
-
-    def log(self, call_type: str) -> None:
-        _log_call_stats(call_type, self.final, self.ttft_ms)
-
-
-# The tag behind settings.OLLAMA_MODEL (e.g. "qwen3:8b") is mutable and cannot
-# be pinned by digest in `ollama pull`, so the digest actually serving requests
-# is logged once per process to make a run traceable. One attempt only: a
-# failed lookup costs at most one short timeout, never one per request.
-_digest_lookup_attempted = False
-_DIGEST_LOOKUP_TIMEOUT_SECONDS = 5.0
-
-
-def _model_digest(tags) -> str | None:
-    """The digest of the configured model in an `/api/tags` body, if listed.
-
-    Type-defensive: the body comes from the network, and this runs on the first
-    request of a process, so a malformed shape must yield None, not an exception.
-    """
-    if not isinstance(tags, dict):
-        return None
-    models = tags.get("models")
-    if not isinstance(models, list):
-        return None
-    wanted = {settings.OLLAMA_MODEL, f"{settings.OLLAMA_MODEL}:latest"}
-    for entry in models:
-        if not isinstance(entry, dict):
-            continue
-        name = entry.get("name")
-        if isinstance(name, str) and name in wanted:
-            digest = entry.get("digest")
-            return digest if isinstance(digest, str) else None
-    return None
-
-
-def _report_model_digest(tags) -> None:
-    digest = _model_digest(tags)
-    if digest:
-        logger.info("Ollama model %s digest %s", settings.OLLAMA_MODEL, digest)
-    else:
-        logger.warning("Ollama model %s not listed by /api/tags; digest unknown", settings.OLLAMA_MODEL)
-
-
-def _log_model_digest_once() -> None:
-    global _digest_lookup_attempted
-    if _digest_lookup_attempted:
-        return
-    _digest_lookup_attempted = True
-    try:
-        response = httpx.get(
-            f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=_DIGEST_LOOKUP_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-        _report_model_digest(response.json())
-    except Exception as e:  # logging must never fail a request
-        logger.warning("Could not read the Ollama model digest: %s", e)
-
-
-async def _alog_model_digest_once(client: httpx.AsyncClient) -> None:
-    """Async variant of `_log_model_digest_once`, reusing the caller's client."""
-    global _digest_lookup_attempted
-    if _digest_lookup_attempted:
-        return
-    _digest_lookup_attempted = True
-    try:
-        response = await client.get(
-            f"{settings.OLLAMA_BASE_URL}/api/tags", timeout=_DIGEST_LOOKUP_TIMEOUT_SECONDS
-        )
-        response.raise_for_status()
-        _report_model_digest(response.json())
-    except Exception as e:  # logging must never fail a request
-        logger.warning("Could not read the Ollama model digest: %s", e)
-
-
-# --- Low-level Ollama call (shared by ollama_client and evaluation) ---
+# --- Low-level completion (shared by llm_client and evaluation) ---
 
 
 def _stream_chat_payload(messages: list[dict]) -> dict:
     return {
-        "model": settings.OLLAMA_MODEL,
         "messages": messages,
-        "stream": True,
-        "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("generation"),
+        "kind": "generation",
+        "schema": None,
     }
 
 
 def _chat_sync(
-    messages: list[dict],
-    *,
-    call_type: str,
-    schema: dict | None = None,
+    messages: list[dict], *, call_type: str, schema: dict | None = None,
     timeout: float = 60.0,
 ) -> str:
-    """Send a chat request to Ollama and return the response content string.
-
-    `schema` is a JSON schema constraining the reply (Ollama `format`); passing
-    one also selects the structured sampling kind. `call_type` labels the
-    token/latency log line.
-    """
-    payload = {
-        "model": settings.OLLAMA_MODEL,
-        "messages": messages,
-        "stream": False,
-        "think": settings.OLLAMA_THINKING,
-        "options": _ollama_options("structured" if schema else "generation"),
-    }
-    if schema:
-        payload["format"] = schema
-    _log_model_digest_once()
-    response = httpx.post(
-        f"{settings.OLLAMA_BASE_URL}/api/chat",
-        json=payload,
-        timeout=timeout,
+    """Return a completion from the configured adapter using common messages."""
+    return get_inference_backends().llm.complete(
+        messages=messages, schema=schema,
+        kind="structured" if schema is not None else "generation",
+        timeout=timeout, call_type=call_type,
     )
-    response.raise_for_status()
-    body = response.json()
-    _log_call_stats(call_type, body)
-    return body["message"]["content"]
 
 
 # --- Sync API (for management commands) ---
 
 
 def parse_intent(query: str) -> dict:
-    """Extract structured intent from a natural language movie query via an Ollama JSON-schema call."""
+    """Extract structured intent from a natural language movie query via a schema-constrained call."""
     try:
         content = _chat_sync(
             _intent_payload(query)["messages"],
             call_type="intent",
             schema=INTENT_SCHEMA,
-            timeout=settings.OLLAMA_TIMEOUTS["intent"],
+            timeout=settings.LLM_TIMEOUTS["intent"],
         )
         return _extract_intent(_parse_json_response(content))
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Intent parsing failed, using fallback: {e}")
         return _fallback_intent(query)
 
@@ -1066,9 +874,9 @@ def generate_explanation(query: str, movies: list[dict]) -> str:
         return _chat_sync(
             _explanation_payload(query, movies)["messages"],
             call_type="explanation",
-            timeout=settings.OLLAMA_TIMEOUTS["explanation"],
+            timeout=settings.LLM_TIMEOUTS["explanation"],
         )
-    except (httpx.HTTPError, KeyError) as e:
+    except (httpx.HTTPError, InferenceError, KeyError) as e:
         logger.warning(f"Explanation generation failed: {e}")
         return ""
 
@@ -1079,37 +887,23 @@ def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, N
     The token stream is marker-delimited: an opening line, then a `[[n]]` line per movie.
     """
     try:
-        stats = _StreamStats()
-        with httpx.stream(
-            "POST",
-            f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json=_explanation_payload(query, movies, stream=True),
-            timeout=settings.OLLAMA_TIMEOUTS["explanation"],
-        ) as response:
-            think_filter = _ThinkStreamFilter()
-            for line in response.iter_lines():
-                if line:
-                    data = json.loads(line)
-                    stats.observe(data)
-                    content = data.get("message", {}).get("content", "")
-                    if content:
-                        visible = think_filter.feed(content)
-                        if visible:
-                            yield visible
-            stats.log("explanation")
-            tail = think_filter.flush()
-            if tail:
-                yield tail
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
-        logger.warning(f"Explanation streaming failed: {e}")
+        think_filter = _ThinkStreamFilter()
+        for content in get_inference_backends().llm.stream(
+            **_explanation_payload(query, movies),
+            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
+        ):
+            visible = think_filter.feed(content)
+            if visible:
+                yield visible
+        tail = think_filter.flush()
+        if tail:
+            yield tail
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
+        logger.warning("Explanation streaming failed: %s", e)
 
 
 def is_available() -> bool:
-    try:
-        response = httpx.get(f"{settings.OLLAMA_BASE_URL}/", timeout=5.0)
-        return response.status_code == 200
-    except httpx.HTTPError:
-        return False
+    return get_inference_backends().llm.is_available()
 
 
 # --- Async API (for Django async views) ---
@@ -1119,19 +913,13 @@ async def _request_classify_and_parse(
     message: str, history: list[dict], repair_note: str | None = None, selection_note: str | None = None
 ) -> dict:
     year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
-    async with httpx.AsyncClient() as client:
-        await _alog_model_digest_once(client)
-        response = await client.post(
-            f"{settings.OLLAMA_BASE_URL}/api/chat",
-            json=_classify_and_parse_payload(
-                message, history, repair_note=repair_note, year_bounds=year_bounds, selection_note=selection_note,
-            ),
-            timeout=settings.OLLAMA_TIMEOUTS["classify_parse"],
-        )
-        response.raise_for_status()
-        body = response.json()
-        _log_call_stats("classify_parse", body)
-        return _parse_json_response(body["message"]["content"])
+    content = await get_inference_backends().llm.acomplete(
+        **_classify_and_parse_payload(
+            message, history, repair_note=repair_note, year_bounds=year_bounds,
+            selection_note=selection_note,
+        ), timeout=settings.LLM_TIMEOUTS["classify_parse"], call_type="classify_parse",
+    )
+    return _parse_json_response(content)
 
 
 def _fallback_message_intent(message: str) -> MessageIntent:
@@ -1158,7 +946,7 @@ async def aclassify_and_parse(
     history = history or []
     try:
         raw = await _request_classify_and_parse(message, history, selection_note=selection_note)
-    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError) as e:
         logger.warning(f"Classify+parse request failed, using fallback: {e}")
         return _fallback_message_intent(message)
 
@@ -1171,7 +959,7 @@ async def aclassify_and_parse(
                 message, history, repair_note=str(e), selection_note=selection_note,
             )
             intent = MessageIntent.model_validate(repaired)
-        except (httpx.HTTPError, json.JSONDecodeError, KeyError, ValidationError) as e2:
+        except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError, ValidationError) as e2:
             logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
             return _fallback_message_intent(message)
 
@@ -1227,31 +1015,19 @@ async def astream_conversational(
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
-        stats = _StreamStats()
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "POST",
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json=_stream_chat_payload(messages),
-                timeout=settings.OLLAMA_TIMEOUTS["explanation"],
-            ) as response:
-                response.raise_for_status()
-                think_filter = _ThinkStreamFilter()
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        stats.observe(data)
-                        content = data.get("message", {}).get("content", "")
-                        if content:
-                            visible = think_filter.feed(content)
-                            if visible:
-                                yield visible
-                stats.log("conversational")
-                tail = think_filter.flush()
-                if tail:
-                    yield tail
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
-        logger.warning(f"Conversational streaming failed: {e}")
+        think_filter = _ThinkStreamFilter()
+        async for content in get_inference_backends().llm.astream(
+            **_stream_chat_payload(messages),
+            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="conversational",
+        ):
+            visible = think_filter.feed(content)
+            if visible:
+                yield visible
+        tail = think_filter.flush()
+        if tail:
+            yield tail
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
+        logger.warning("Conversational streaming failed: %s", e)
 
 
 async def astream_explanation(
@@ -1276,31 +1052,19 @@ async def astream_explanation(
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
-        stats = _StreamStats()
-        async with httpx.AsyncClient() as client:
-            async with client.stream(
-                "POST",
-                f"{settings.OLLAMA_BASE_URL}/api/chat",
-                json=_stream_chat_payload(messages),
-                timeout=settings.OLLAMA_TIMEOUTS["explanation"],
-            ) as response:
-                response.raise_for_status()
-                think_filter = _ThinkStreamFilter()
-                async for line in response.aiter_lines():
-                    if line:
-                        data = json.loads(line)
-                        stats.observe(data)
-                        content = data.get("message", {}).get("content", "")
-                        if content:
-                            visible = think_filter.feed(content)
-                            if visible:
-                                yield visible
-                stats.log("explanation")
-                tail = think_filter.flush()
-                if tail:
-                    yield tail
-    except (httpx.HTTPError, json.JSONDecodeError) as e:
-        logger.warning(f"Async explanation streaming failed: {e}")
+        think_filter = _ThinkStreamFilter()
+        async for content in get_inference_backends().llm.astream(
+            **_stream_chat_payload(messages),
+            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
+        ):
+            visible = think_filter.feed(content)
+            if visible:
+                yield visible
+        tail = think_filter.flush()
+        if tail:
+            yield tail
+    except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
+        logger.warning("Explanation streaming failed: %s", e)
 
 
 async def astream_explanation_parts(
@@ -1324,16 +1088,11 @@ async def astream_explanation_parts(
 
 async def ais_available() -> bool:
     """Async variant of is_available."""
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"{settings.OLLAMA_BASE_URL}/", timeout=5.0)
-            return response.status_code == 200
-    except httpx.HTTPError:
-        return False
+    return await get_inference_backends().llm.ais_available()
 
 
 def _fallback_intent(_query: str) -> dict:
-    """Return empty intent when Ollama is unavailable.
+    """Return empty intent when the configured LLM is unavailable.
 
     Semantic search via embeddings still works without parsed intent --
     it just loses metadata filtering. This is preferable to broken

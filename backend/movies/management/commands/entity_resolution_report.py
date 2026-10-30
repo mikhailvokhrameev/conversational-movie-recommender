@@ -20,7 +20,7 @@ from pathlib import Path
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
-from core.ollama_client import RESOLVERS
+from core.llm_client import RESOLVERS
 
 
 def default_probes_path() -> Path:

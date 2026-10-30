@@ -14,7 +14,7 @@ import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
 
-from core.ollama_client import NON_FILTER_FIELDS, MessageIntent
+from core.llm_client import NON_FILTER_FIELDS, MessageIntent
 from movies.management.commands import evaluate_scoring as cmd
 
 MODULE = "movies.management.commands.evaluate_scoring"

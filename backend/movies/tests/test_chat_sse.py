@@ -8,7 +8,7 @@ import pytest
 from django.conf import settings
 from django.test import AsyncRequestFactory
 
-from core.ollama_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
+from core.llm_client import CLARIFY_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, astream_explanation_parts
 from movies.views import (
     NO_MATCH_MESSAGE, ChatView, _assistant_turn_text, _describe_filters, _first_line, _generate_and_score,
     _no_match_message, _result_top_n, _unchecked_constraints,
@@ -129,7 +129,7 @@ class TestMockContracts:
         real = inspect.signature(aclassify_and_parse)
         mock = inspect.signature(_mock_classify_and_parse("new_search"))
         assert list(mock.parameters) == list(real.parameters), (
-            "_mock_classify_and_parse is out of sync with core.ollama_client."
+            "_mock_classify_and_parse is out of sync with core.llm_client."
             "aclassify_and_parse — update the mock to match the real signature"
         )
 
@@ -137,7 +137,7 @@ class TestMockContracts:
     def test_explanation_parts_mocks_match_real_signature(self, mock):
         real = inspect.signature(astream_explanation_parts)
         assert list(inspect.signature(mock).parameters) == list(real.parameters), (
-            "an explanation-parts stub is out of sync with core.ollama_client."
+            "an explanation-parts stub is out of sync with core.llm_client."
             "astream_explanation_parts — update the stub to match the real signature"
         )
 

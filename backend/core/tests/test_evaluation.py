@@ -6,6 +6,8 @@ from unittest.mock import patch
 import httpx
 import pytest
 
+from core.openrouter_client import InferenceError
+
 from core.evaluation import (
     aggregate_metrics,
     evaluate_query,
@@ -114,6 +116,16 @@ class TestLlmRelevanceScore:
     def test_request_failure_returns_none(self, failure):
         with patch("core.evaluation._chat_sync", side_effect=failure):
             assert llm_relevance_score("scary", self.MOVIE) is None
+
+    @pytest.mark.parametrize("failure", [
+        InferenceError("post_json", status_code=503, retryable=True),
+        InferenceError("post_json", retryable=True),
+        InferenceError("chat_response"),
+    ])
+    def test_cloud_request_failure_returns_none_and_logs_degradation(self, failure, caplog):
+        with patch("core.evaluation._chat_sync", side_effect=failure):
+            assert llm_relevance_score("scary", self.MOVIE) is None
+        assert "LLM judge failed for 'Alien'" in caplog.text
 
     @pytest.mark.parametrize("content", [
         "not json", '{"rating": 4}', '{"score": "high"}', '{"score": 9}', '{"score": 0}', "[4]",
