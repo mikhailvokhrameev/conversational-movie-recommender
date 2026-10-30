@@ -49,7 +49,7 @@ function: bump it on any template change.
 
 **Index provenance**: the single-row `EmbeddingIndex` table records what built the
 vectors -- `embedding.model`, `embedding.dimensions`, `EMBEDDING_TEXT_VERSION` and the
-`embedding.text.*` values. `generate_embeddings` writes it;
+`embedding.text.*` values, provider and API provider. `generate_embeddings` writes it;
 `check_embedding_index` (a step of the backend start-up chain) compares it with
 `params.yaml` and stops the container on a mismatch, because same-width vectors from a
 different model or text are not comparable with query vectors and nothing else notices.
@@ -72,26 +72,17 @@ configured revision.
 > vectors are not convertible between models or dimensions -- skipping the
 > re-run leaves stale vectors in place that fail comparisons silently rather
 > than raising an error. The provenance record above catches the model, dimensions and
-> text settings, but the dimension change itself still needs the migration. See `CLAUDE.md`.
+> text settings, but the dimension change itself still needs the migration. See `AGENTS.md`.
 
-## LLM (Ollama)
+## LLM (local or OpenRouter)
 
-**Choice**: Ollama running `qwen3:8b` (Q4_K_M, pulled from Ollama's own model
-library), set by `llm.model` in `params.yaml`
-
-**Why**: Runs locally (no API costs). Plain Qwen3 8B rather than a
-Russian-adapted variant, because the product moved to English along with the
-TMDB catalog swap -- there's no longer a reason to pay for a Russian-specialized
-tokenizer. ~5.0GB at Q4_K_M, which fits the 11GB card alongside the reranker
-and embedder (~10.4-10.9GB total; see `params.yaml`'s VRAM budget comment --
-noticeably tighter than the old mpnet embedder's footprint, since BGE-M3 is
-in the same XLM-RoBERTa-large size class as the reranker).
+Local uses Ollama `qwen3.5:9b-q4_K_M`; cloud uses OpenRouter `qwen/qwen3.5-9b`. Common `llm_client` owns prompts, schema validation, repair retry, reasoning stripping and explanation splitting; protocol details live in adapters. Local memory fit and pinned-Ollama compatibility remain unverified. Previous Qwen3 8B measurements do not establish Qwen3.5 9B performance. See [manual acceptance](infrastructure.md#reproducibility-and-pending-manual-acceptance).
 
 **Reasoning mode is disabled** (`llm.thinking: false`). This is a hybrid
 reasoning model: left alone it emits a `<think>...</think>` span before every
 answer. That breaks JSON intent parsing and adds seconds to each of the
 two sequential LLM calls per turn (classify+parse, then explanation). The
-flag is sent to Ollama on every request, and `ollama_client` additionally
+flag is sent to Ollama on every request, and `llm_client` additionally
 strips reasoning spans from both parsed JSON and the streamed output, so an
 Ollama build that ignores the flag degrades to slower rather than broken.
 
@@ -124,12 +115,12 @@ top-2 scores so they can be set from measurements.
 
 **Observability**: each Ollama call logs token counts, Ollama's own prompt/eval
 timings and (streamed calls) the client-side time to first token, and the digest of
-the served model is logged once per process -- the `qwen3:8b` tag is mutable and cannot
+the served model is logged once per process -- the `qwen3.5:9b-q4_K_M` tag is mutable and cannot
 be pinned by digest in `ollama pull`. A warning fires when a prompt reaches 90% of
 `llm.num_ctx`. Details in [core.md](core.md); what is and is not pinned in
-[infrastructure.md](infrastructure.md#reproducibility).
+[infrastructure.md](infrastructure.md#reproducibility-and-pending-manual-acceptance).
 
-**Fallback**: When Ollama is unavailable, `aclassify_and_parse` falls back to
+**Fallback**: When the active LLM is unavailable, `aclassify_and_parse` falls back to
 an empty intent. Semantic search via embeddings still works without parsed
 intent -- it just loses metadata filtering. This is preferable to broken
 keyword parsing that silently produces wrong results.
@@ -270,7 +261,7 @@ must sum to 1.0. That file is the only place they can be changed.
 
 ## Cross-Encoder Reranking
 
-**Choice**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 50 scored
+**Choice (local)**: `BAAI/bge-reranker-v2-m3` on the GPU, applied to the top 50 scored
 candidates, blended 50/50 with the scorer total. The weights are downloaded at the
 commit pinned in `reranking.revision`, so a re-download cannot change the scores the
 blend and the `min_score` gate were calibrated on.
@@ -291,17 +282,9 @@ or completely unusable depending on where it runs, so `reranking.device: auto`
 (cuda when present) is not an optimisation here, it is what makes the choice
 viable at all.
 
-On a machine without a usable GPU, do not simply move this model to CPU.
-Either switch `reranking.model` to a small multilingual cross-encoder such as
-`cross-encoder/mmarco-mMiniLMv2-L12-H384-v1` (~21M body parameters, ~14x less
-compute), or set `reranking.enabled: false`.
+Cloud uses `voyageai/rerank-3-lite` with top_k 50, blend weight 0.5 and uncalibrated min_score null through the same normalization/blending/gate pipeline. Without a usable GPU select cloud; do not simply move the local model to CPU.
 
-**VRAM**: ~2.2GB at fp32 (sentence-transformers does not downcast this model
-to fp16 automatically -- budget for the larger figure), on top of ~5.0GB for
-the LLM and ~2.2GB for the BGE-M3 embedder -- roughly 10.4-10.9GB of the 11GB
-card including CUDA context and activations. Noticeably tighter than the old
-mpnet embedder's footprint; see `params.yaml`'s VRAM budget comment for the
-current breakdown.
+**VRAM**: local reranker and BGE-M3 each require roughly 2.2GB at fp32. Previous total estimates used Qwen3 8B; Qwen3.5 9B plus context 6144 must be measured with all three models resident. Do not assume it fits or automatically shrink the model/context; see the pending acceptance checklist.
 
 **Why blend rather than replace**: the cross-encoder judges query-document
 relevance and knows nothing about the extracted genre intent or popularity.
@@ -577,7 +560,7 @@ only, so `empty`/`ask` entries do not inflate them.
 
 `aclassify_and_parse` never raises: on a failed request or an invalid reply
 it falls back to `new_search` with the raw message and no filters. So `e2e`
-refuses to start when Ollama is unreachable (`ais_available()`), and any
+refuses to start when the active LLM adapter is unreachable (`ais_available()`), and any
 parsed intent with exactly that fallback shape is flagged
 `possible_parse_fallback` and counted in `possible_parse_fallbacks` -- a
 vague query can genuinely parse that way, but a run where many do is a run
@@ -747,3 +730,9 @@ Documented here for completeness. A production system would add:
   real user engagement metrics (click-through, watch completion).
 - **Cross-model evaluation**: Using a stronger LLM (14B+) or different model
   family for judging relevance, eliminating the circularity limitation.
+
+## Two-mode provenance and evaluation
+
+Origin changes trigger a deterministic read-only compatibility sample using the active embedder, which may contact real APIs and is user-only. A pass preserves original provenance and permits reads only; partial generation cannot mix origins. Canonical BAAI/bge-m3 stays separate from API baai/bge-m3; unknown API revision is null. Test full cloud generation on a separate database; never auto-rebuild the working catalog.
+
+Run the same dev dataset in each mode with separate run records. Records include mode, providers/models, effective-config SHA256 and failed-provider diagnostics. Compare intent errors, fallbacks, empty results, latency and user-labelled relevance. Existing evaluation flags and recommendation-quality tasks 5–8 remain unchanged. Voyage's gate remains null until user-label calibration; the LLM judge is circular evidence, never ground truth. Real API/GPU/memory/latency/quality validation is pending; see [infrastructure.md](infrastructure.md).

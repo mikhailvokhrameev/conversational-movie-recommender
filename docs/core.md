@@ -11,7 +11,7 @@ which queries the Movie model via Django ORM + pgvector).
 User query (natural language)
   |
   v
-ollama_client.aclassify_and_parse()   ──> category + structured intent (one JSON call)
+llm_client.aclassify_and_parse()   ──> category + structured intent (one JSON call)
   |                                        (includes mood detection and standalone_query,
   |                                        the context-aware query text for lexical + rerank)
   |                                        fallback: empty intent (semantic search still works)
@@ -51,11 +51,11 @@ scoring.mmr_diversify(scored, top_n=5, lambda=0.7)
 Top-5 diverse recommendations
   |
   v
-ollama_client.astream_explanation()       ──> streamed RAG explanation (raw tokens):
+llm_client.astream_explanation()       ──> streamed RAG explanation (raw tokens):
   |                                             opening line, then a [[n]]-marked
   |                                             description per movie
   v
-ollama_client.astream_explanation_parts() ──> same stream split into (slot, text) pairs
+llm_client.astream_explanation_parts() ──> same stream split into (slot, text) pairs
   |                                             slot None = intro, 0..N-1 = movie index
   v
 session_manager.track_explicit_preferences() ──> accumulate liked/disliked genres
@@ -80,7 +80,7 @@ The model is loaded lazily on first call and cached as a module-level singleton.
 `EntityResolver(field, catalog_values, config).resolve(raw)` maps parsed
 intent values onto exact catalog values: exact (casefold, collapsed
 whitespace) -> synonyms -> embedding nearest value (threshold + margin over
-the runner-up) -> drop with an INFO log. `ollama_client.RESOLVERS` holds one
+the runner-up) -> drop with an INFO log. `llm_client.RESOLVERS` holds one
 per catalog (`genres` for genres/negations from `CATALOG_GENRES`; `countries`
 and `languages` from distinct `Movie.country` / `Movie.original_language`,
 loaded on first use and cached per process; `languages` has no embedding
@@ -89,9 +89,11 @@ and `nearest` expose the layer and top-2 scores for
 `manage.py entity_resolution_report`. ORM-backed, so the async path calls it
 inside `sync_to_async`.
 
-### `ollama_client.py` -- LLM Integration
+### `llm_client.py` -- Shared LLM Integration
 
-Calls the Ollama container's HTTP API (`/api/chat`) for classification+intent
+The cached adapter factory selects local Ollama or OpenRouter once. Shared prompts, validation, repair retries, stripping and stream splitting remain here; protocol-specific handling lives in adapters. Detailed Ollama timing/options below apply only to local mode. Cloud embeds and reranks remotely without local loads. See [deployment and pending real acceptance](infrastructure.md).
+
+Calls the selected LLM adapter for classification+intent
 parsing and explanation generation. The request path uses the async variants
 below; sync counterparts exist for code that runs outside the ASGI event loop
 (the `evaluate_scoring` judge uses `_chat_sync`; its intent parsing runs the async
@@ -177,7 +179,7 @@ the logged `prompt_tokens` (below) is the measured figure (it may count only new
 tokens when Ollama reuses a cached prompt prefix, so read it from a cold call). This is a budget, not a guard -- if a
 prompt ever did exceed `num_ctx`, Ollama silently truncates it from the start (dropping the system prompt and oldest turns
 first) with no error. All calls must use the same `num_ctx` (one helper,
-`_ollama_options(kind)`, feeds every payload), because a differing value makes Ollama
+the local adapter options builder, feeds every payload), because a differing value makes Ollama
 reload the model. The same helper adds the fixed `llm.seed` and the temperature for the
 call's kind: `llm.temperature.structured` (0.0) for every schema-constrained call
 (classify+parse, `parse_intent`, the eval judge) so their output should repeat on the
@@ -206,8 +208,8 @@ streamed calls only. A field Ollama does not send shows as `n/a`. A WARNING is
 logged when `prompt_eval_count` reaches 90% of `llm.num_ctx`: history is capped in
 characters (`session.history_max_*`), not tokens, so this is the signal that a prompt
 is close to being truncated. The digest of the served model is logged once per
-process, on the first LLM call (`Ollama model qwen3:8b digest sha256:..`, from
-`/api/tags`; one attempt, a failure only logs a warning), because the `qwen3:8b` tag
+process, on the first LLM call (`Ollama model qwen3.5:9b-q4_K_M digest sha256:..`, from
+`/api/tags`; one attempt, a failure only logs a warning), because the `qwen3.5:9b-q4_K_M` tag
 is mutable.
 
 ### `candidate_generation.py` -- Hard Filters + Hybrid Retrieval
@@ -302,9 +304,7 @@ two incompatible `total` scales in one list.
 an XLM-RoBERTa-large backbone: ~302M body parameters. Measured on this GPU
 (GTX 1080 Ti): 20 pairs ~0.26s, 50 pairs ~0.64s, 100 pairs ~1.22s -- versus
 ~5.6s for 20 pairs on CPU. `reranking.device: auto` picks cuda when present,
-which is what makes this model viable; without a GPU, switch
-`reranking.model` to a small cross-encoder or set `reranking.enabled: false`
-rather than just moving this one to CPU.
+which is what makes this local model viable. Without a GPU select the OpenRouter mode, whose Voyage reranker returns through the same shared blending pipeline.
 
 **Fail-safe**: a model that will not load or a prediction that raises logs and
 returns the candidates in scorer order. Reranking is a quality improvement,
@@ -397,7 +397,7 @@ Godfather" gives lexical search and the cross-encoder something to match. Stopwo
 director, silent/black-and-white, awards or studio data, so there is nothing to filter
 on. Classify+parse lists such conditions in `unsupported_constraints`; `ChatView` asks
 whether to search without them instead of silently ignoring them. The field is in
-`ollama_client.NON_FILTER_FIELDS` with `category`, `semantic_query` and
+`llm_client.NON_FILTER_FIELDS` with `category`, `semantic_query` and
 `standalone_query`: every caller drops those before the intent reaches the pipeline,
 and `INTENT_SCHEMA` leaves them out.
 

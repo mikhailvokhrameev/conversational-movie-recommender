@@ -16,34 +16,25 @@ Most movie recommendation systems are either keyword-based search (fragile, no u
 - **Metadata matching** via LLM-powered intent parsing that extracts genres, mood, themes, negations, and hard filters (rating floor, release year, runtime, language, country) from natural language
 - **Session-based preference learning** via exponential moving average on the user's query embeddings
 
-The LLM layer (Ollama with qwen3:8b, running locally on GPU) handles intent parsing, message classification, and explanation generation. Everything runs locally via Docker, no external API calls.
+The shared LLM layer handles intent parsing, classification and explanations through local Ollama or OpenRouter adapters. The same retrieval/scoring pipeline runs in both modes; cloud mode includes catalog embeddings and reranking without GPU or local ML loads.
 
 ## Architecture
 
+```text
+React/Vite :3000 -> Django/uvicorn :8000 -> PostgreSQL/pgvector :5433 (host)
+                            |
+                   cached adapter factory
+                    /
+    local: Ollama + BGE models      cloud: OpenRouter (all three components)
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                      Docker Compose                          │
-│                                                              │
-│  ┌───────────┐  ┌──────────────┐  ┌────────────────────┐   │
-│  │ PostgreSQL │  │    Ollama    │  │     Frontend       │   │
-│  │ + pgvector │  │   qwen3:8b   │  │  React + Vite      │   │
-│  │   :5432    │  │   :11434    │  │     :3000           │   │
-│  └─────┬──────┘  └──────┬──────┘  └──────────┬─────────┘   │
-│        │                │                     │ proxy /api   │
-│        │         ┌──────┴──────────┐          │             │
-│        └─────────┤    Backend      ├──────────┘             │
-│                  │ Django + uvicorn │                        │
-│                  │     :8000       │                         │
-│                  └─────────────────┘                         │
-└─────────────────────────────────────────────────────────────┘
-```
+
 
 **Request flow:**
 
 ```
 User message
   │
-  ├── Classify + parse intent (Ollama, JSON schema, one call) → category + genres/mood/themes/filters
+  ├── Classify + parse intent (selected LLM adapter, JSON schema, one call) → category + genres/mood/themes/filters
   │
   ├── [new_search / refinement]
   │     ├── Encode query (BGE-M3)
@@ -61,18 +52,18 @@ User message
 
 | Layer | Technology |
 |-------|-----------|
-| LLM | Ollama + qwen3:8b (local, GPU-accelerated) |
+| LLM | Local Ollama `qwen3.5:9b-q4_K_M` or OpenRouter `qwen/qwen3.5-9b` |
 | Embeddings | BAAI/bge-m3 (1024-dim) |
-| Reranker | BAAI/bge-reranker-v2-m3 (cross-encoder) |
+| Reranker | Local BAAI/bge-reranker-v2-m3 or cloud voyageai/rerank-3-lite |
 | Vector DB | PostgreSQL 16 + pgvector (exact cosine distance) + full-text (tsvector/RRF) |
 | Backend | Django 4.2, async views, uvicorn ASGI, httpx |
 | Frontend | React 19, Vite, Tailwind CSS 4, OKLCH dark/light theme |
-| Infrastructure | Docker Compose (4 services) |
+| Infrastructure | Docker Compose (4 local services; 3 cloud services) |
 | Tests | pytest, pytest-django, pytest-asyncio |
 
 ## How to run
 
-**Requirements:** Docker, Docker Compose, NVIDIA GPU (for Ollama).
+**Requirements:** Docker and Docker Compose; NVIDIA GPU for local mode, or an OpenRouter API key for cloud mode. Real hardware/API acceptance remains pending; see [deployment and manual acceptance](docs/infrastructure.md).
 
 ```bash
 git clone https://github.com/mikhailvokhrameev/hybrid-movie-recommender.git
@@ -86,7 +77,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-On first start, Ollama will automatically pull the qwen3:8b model (~5.0 GB). The backend will run migrations and import the TMDB movie catalog (~50K movies -- the first import + embedding pass takes a while).
+For cloud instead run `docker compose -f docker-compose.yml -f docker-compose.openrouter.yml up --build` with `OPENROUTER_API_KEY` configured. Before switching, run the current mode’s Compose command with `down` without `-v` to preserve volumes. Local startup pulls `qwen3.5:9b-q4_K_M`; its VRAM fit and compatibility with the pinned Ollama image need user validation. The backend will run migrations and import the TMDB movie catalog (~50K movies -- the first import + embedding pass takes a while).
 
 Once everything is up, open http://localhost:3000 and start chatting.
 
@@ -102,7 +93,7 @@ curl http://localhost:8000/api/health/
 # View session history (requires session token from SSE response)
 curl -H "X-Session-Token: <token>" http://localhost:3000/api/sessions/<uuid>/
 
-# Generate embeddings for the catalog (runs on first import)
+# Generate missing catalog embeddings (explicit separate step)
 docker compose exec backend python manage.py generate_embeddings
 
 # Evaluate against the golden set (test split; run record in eval_runs/)
@@ -117,7 +108,7 @@ docker compose exec backend python manage.py evaluate_scoring --sweep
 ```
 backend/
 ├── core/                       # ML pipeline
-│   ├── ollama_client.py            # LLM: classify+parse intent, explain, chat
+│   ├── llm_client.py            # LLM: classify+parse intent, explain, chat
 │   ├── embedding_service.py        # BGE-M3 wrapper
 │   ├── candidate_generation.py     # hard filters + semantic/lexical RRF fusion
 │   ├── reranking.py                # cross-encoder reranking stage

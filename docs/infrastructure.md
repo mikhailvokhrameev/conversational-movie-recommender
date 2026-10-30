@@ -1,234 +1,95 @@
 # Infrastructure and Deployment
 
-## Docker Services
+## Modes and configuration
 
-The system runs as 4 Docker services via `docker compose up`:
+Both modes use Django/uvicorn, PostgreSQL 16/pgvector and React/Vite with the same public HTTP/SSE contract. Prompts, intent validation, retrieval, scoring, normalization, blending, relevance gate, MMR, explanations, history and stream splitting are shared. The cached adapter factory selects providers once per process. Restart after changing configuration; there is no automatic provider fallback.
 
-```
-┌──────────────────────────────────────────────────────────┐
-│                     docker compose                        │
-├────────────┬────────────┬───────────────┬────────────────┤
-│  frontend  │  backend   │    ollama     │      db        │
-│  (React)   │  (Django)  │ (params.yaml) │ (PostgreSQL 16)│
-│  :3000     │  :8000     │  :11434       │  :5433         │
-│            │            │               │                │
-│  Vite dev  │  uvicorn   │  auto-pulls   │  pgvector ext  │
-│  server    │  ASGI      │  model on     │  exact vector  │
-│            │            │  first start  │                │
-│  proxies   │  sentence- │               │  catalog +     │
-│  /api/*    │  transformers│              │  sessions      │
-└────────────┴─────┬──────┴───────┬───────┴────────────────┘
-                   │              │
-                   │  httpx calls │
-                   └──────────────┘
-```
+| Component | local (default) | openrouter |
+|---|---|---|
+| LLM | Ollama `qwen3.5:9b-q4_K_M` | `qwen/qwen3.5-9b` |
+| Embedding | pinned `BAAI/bge-m3` | `baai/bge-m3`, DeepInfra routing with fallback disabled |
+| Reranking | pinned `BAAI/bge-reranker-v2-m3` | `voyageai/rerank-3-lite` |
 
-### db (PostgreSQL 16 + pgvector)
+`params.yaml` is the single source of truth for models, revisions, dimensions, timeouts, retries, limits and scoring weights. `runtime_profiles.openrouter` overlays the shared settings. The canonical embedding identity remains `BAAI/bge-m3`, dimensions 1024; API model ID is separate and unknown API revision is null. Cloud reranking starts at top_k 50, weight 0.5, min_score null: these are uncalibrated starting values.
 
-- **Image**: `pgvector/pgvector:pg16`
-- **Port**: 5433 on host (5432 internal, remapped to avoid conflicts with local PostgreSQL)
-- **Data**: persisted in `pgdata` Docker volume
-- **Health check**: `pg_isready -U recommender`
+Environment variables are secrets/wiring only: `DB_PASSWORD`, `SECRET_KEY`, `DEBUG`, `INFERENCE_MODE` (local/openrouter), `OPENROUTER_API_KEY`, `PARAMS_PATH`. See `.env.example`; users manage their own `.env`. Compose selects the mode in its launch files, so changing only `.env` does not switch a Compose deployment. `PARAMS_PATH` defaults to `/app/params.yaml` in Compose and must point to an accessible file (mount a custom file explicitly if needed). Host management commands use `DATABASE_URL` for database wiring; Compose builds that URL for its own DB. `ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are literal Compose settings.
 
-### ollama (LLM inference)
+## User launch and switching commands
 
-- **Image**: custom, built from `ollama/Dockerfile` on top of `ollama/ollama:0.34.2`
-  (pinned; the server version decides which API features exist -- `think`, JSON-schema
-  `format` -- see Reproducibility)
-- **Port**: 11434 (Ollama default)
-- **Auto-pull**: custom `entrypoint.sh` starts the Ollama server, waits for
-  readiness, reads `llm.model` from the mounted `params.yaml`, and pulls it if
-  not cached (checked with `ollama show`, the same exact-name test the health check
-  uses, so a cached `qwen3:8b-q4` does not count as `qwen3:8b`)
-- **Model cache**: persisted in `ollama_data` Docker volume (~5.0GB for the
-  default qwen3:8b, Q4_K_M)
-- **GPU**: reserves an NVIDIA device in `docker-compose.yml`; see Hardware
-  Profiles for running without one
-- **Health check**: `ollama/healthcheck.sh` -- healthy only once `ollama show` finds the
-  model named by `llm.model` (read from the mounted `params.yaml` by the same
-  `llm_model.sh` helper the entrypoint uses), not merely once the server answers. The
-  backend waits for `healthy`, so it no longer starts while the first pull is still
-  running. `start_period` is 900s so a slow first download does not exhaust the retries;
-  a warm model volume turns healthy on the first passing check.
-- **CRLF fix**: Dockerfile runs `sed -i 's/\r$//'` on the shell scripts for Windows compatibility
+**Only the user runs the commands in this document.** They can download models, load GPU weights, contact real providers and incur API costs. Agents must never execute real API calls, preflight, application startup, downloads or Docker integration checks; offline tests mock HTTP and block networking.
 
-### backend (Django REST Framework)
-
-- **Image**: custom, built from `backend/Dockerfile` (Python 3.11-slim)
-- **Port**: 8000
-- **Startup sequence**: `migrate -> import_catalog -> check_embedding_index -> uvicorn`; `check_embedding_index` exits non-zero when the embedding index was built with a different model or text config than `params.yaml`, so the container stops instead of serving incomparable vectors (a missing record only warns)
-- **Dependencies**: waits for `db` (healthy) and `ollama` (healthy) before starting
-- **Volumes**:
-  - `./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro` (catalog data)
-  - `./data:/app/data:ro` (test queries for evaluation)
-  - `model_cache:/root/.cache` (sentence-transformers model cache)
-
-### frontend (React + Tailwind)
-
-- **Image**: custom, built from `frontend/Dockerfile`
-- **Port**: 3000 (Vite dev server)
-- **Proxies** `/api/*` to the backend service
-
-## Security Tradeoffs
-
-`db` (`:5433`) and `ollama` (`:11434`) are published to the host with no
-authentication — anyone who can reach those ports can read/write the
-catalog and session data directly, or drive the LLM. Not a real risk for a
-local pet project on a trusted machine, but before any deployment reachable
-outside localhost: drop the host port mappings for `db`/`ollama` in
-`docker-compose.yml` (keep them on the internal Docker network only, where
-`backend` already reaches them by service name) or put them behind a
-firewall/VPN.
-Source: external audit, 2026-09-04.
-
-## Configuration
-
-### params.yaml (all model and tuning values)
-
-`params.yaml` at the repo root is the single source of truth for every model
-name and tuning parameter. It is mounted read-only into the backend
-(`/app/params.yaml`) and the ollama container (`/params.yaml`, whose entrypoint
-reads `llm.model` from it to decide what to pull). Nothing in it is
-overridable by an environment variable -- change the file and restart.
-
-| Section | Covers |
-|---------|--------|
-| `llm` | Ollama model, base URL, context window (`num_ctx`), sampling (`temperature`, `seed`), explanation description cap, per-call timeouts |
-| `embedding` | Embedding model, its Hugging Face revision, and vector dimensions |
-| `retrieval` | Candidate count, RRF constants, lexical search settings |
-| `scoring` | Signal weights (non-negative, sum to 1.0, checked at load), neutral score |
-| `diversification` | Default top_n, `max_n` (cap on a requested result count) and MMR lambda |
-| `reranking` | Cross-encoder model and revision, enable flag, top_k, blend weight, relevance-gate threshold (`min_score`, off) |
-| `session` | session TTL, LLM history replay caps |
-| `evaluation` | LLM-judge description cap and timeout (`evaluate_scoring --llm-judge`) |
-| `intent` | Entity resolution (genres, countries, languages), `recent_years` for "newest" requests |
-| `catalog` | Import and embedding batch sizes, the import vote-count floor, poster URL parts |
-
-Changing `embedding.model` or `embedding.dimensions` additionally requires a
-schema migration and a full re-run of `generate_embeddings --all` -- existing vectors
-are not convertible. The same re-run is needed after changing `embedding.text.*`.
-`check_embedding_index` fails the start-up until it has been done.
-
-### Environment variables (secrets and wiring only)
-
-Configurable via `.env` (all three appear in `.env.example`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DB_PASSWORD` | `changeme` | PostgreSQL password |
-| `SECRET_KEY` | insecure dev default | Django secret key |
-| `DEBUG` | `0` | Django debug mode |
-
-Not settable via `.env` (listed for reference only -- neither appears in `.env.example`):
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | compose-provided | Postgres connection string, built by `docker-compose.yml` from `DB_PASSWORD`; not read from `.env` |
-| `PARAMS_PATH` | auto-discovered | Override the params.yaml location; read directly by Django's `settings.py` when present in the container's environment, but not wired up in `docker-compose.yml` |
-
-`ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are **not** environment variables at
-all, despite looking like ones -- `docker-compose.yml` hardcodes them as
-literal values on the `backend` service (`localhost,127.0.0.1,backend` and
-`http://localhost:3000,http://127.0.0.1:3000` respectively), with no `${VAR}`
-substitution like `DB_PASSWORD`/`SECRET_KEY`/`DEBUG` use. Setting either in
-`.env` currently has no effect; changing them requires editing
-`docker-compose.yml` directly.
-
-Copy `.env.example` to `.env` and set a real `SECRET_KEY` before first run.
-
-### Reproducibility
-
-What is pinned, and what is not:
-
-| Piece | Pinned how |
-|-------|-----------|
-| Ollama server | Exact image tag in `ollama/Dockerfile` (`ollama/ollama:0.34.2`, the newest stable release more than four weeks old on 2026-10-15). Bump deliberately and re-run the eval |
-| Embedder weights | `embedding.revision` -- a Hugging Face commit SHA passed as `revision=` on every load. Recorded in the `EmbeddingIndex` row (see ML.md, Index provenance) |
-| Reranker weights | `reranking.revision`, same mechanism; nothing is stored in the DB for it |
-| LLM weights | **Not pinnable.** The `qwen3:8b` tag is mutable and `ollama pull` cannot take a digest. The digest actually served is logged once per backend process (`Ollama model qwen3:8b digest sha256:..`), so a run can be traced afterwards |
-| Python packages | `backend/uv.lock`, installed with `uv sync --frozen` in the backend `Dockerfile`, so a rebuild gets the locked versions. `pyproject.toml` holds the ranges. `torch` is exact (2.5.1) and comes from the PyTorch cu121 index on Linux, because newer CUDA builds dropped Pascal (sm_61); on macOS the lock falls back to PyPI. Change dependencies with `uv lock`, never by editing the lock |
-| Sampling | `llm.temperature.*` and `llm.seed` in `params.yaml`; reproducible on the same Ollama build and hardware |
-
-A `revision` of `null` means unpinned (the model's default branch at download time). To
-move a pin, look up the new commit SHA at
-`https://huggingface.co/api/models/<model>` (`sha`), put it in `params.yaml`, and for the
-embedder re-run `generate_embeddings --all`.
-
-## Hardware Requirements and Manual Configuration
-
-There is no pre-built alternate deployment mode here -- no
-`docker-compose.cpu.yml`, no Compose `profiles:` key, just the one
-`docker-compose.yml`. Running on hardware other than what's committed means
-hand-editing `docker-compose.yml` and `params.yaml` yourself, as described in
-this section.
-
-The committed `params.yaml` targets a discrete NVIDIA GPU with ~11GB of VRAM,
-and `docker-compose.yml` reserves the card for both the `ollama` and the
-`backend` service, so the normal command is all you need:
+Shared `docker-compose.yml` defines db, backend and frontend. Automatic `docker-compose.override.yml` adds Ollama and NVIDIA reservations to Ollama/backend. Explicit cloud `-f` selection excludes the automatic override, starts no Ollama, requests no GPU and loads no local ML models. Cloud retains the common backend image, including local dependencies.
 
 ```bash
+# Local: NVIDIA driver/container toolkit required; first start pulls models.
+docker compose up --build
+# In another terminal:
+docker compose exec backend python manage.py check_inference
+docker compose exec backend python manage.py generate_embeddings
+
+# Before local -> cloud: preserve all volumes (NO -v).
+docker compose down
+# Set OPENROUTER_API_KEY yourself in .env, then:
+docker compose -f docker-compose.yml -f docker-compose.openrouter.yml up --build
+docker compose -f docker-compose.yml -f docker-compose.openrouter.yml exec backend python manage.py check_inference
+
+# Before cloud -> local: use the CURRENT mode's files, again NO -v.
+docker compose -f docker-compose.yml -f docker-compose.openrouter.yml down
 docker compose up --build
 ```
 
-If the NVIDIA driver is missing, Compose fails at startup with a device-driver
-error. That is intentional: this profile on CPU is not interactively usable, so
-failing loudly beats silently degrading.
+Backend startup is `migrate -> import_catalog --skip-existing -> check_embedding_index -> uvicorn`. Embedding generation is always explicit, never automatic. An empty index warns; startup never silently rebuilds it. Backend waits for healthy DB in both modes and healthy Ollama only locally. Ollama health requires the exact `llm.model` to be present; its startup grace period is 900s.
 
-VRAM with everything resident:
+Host ports: frontend 3000, backend 8000, PostgreSQL **5433** (internal 5432), local-only Ollama 11434. `pgdata`, `ollama_data` and `model_cache` persist across `down`; eval records persist under `./eval_runs`. Published DB/Ollama ports assume a trusted local machine; restrict exposure before deploying elsewhere.
 
-```
-qwen3:8b, Q4_K_M                 ~5.0 GB
-LLM KV cache (llm.num_ctx 6144)  ~0.9 GB
-bge-reranker-v2-m3, fp32         ~2.2 GB
-bge-m3 embedder, fp32            ~2.2 GB
-CUDA context + activations       ~1.0-1.5 GB
-                                 --------
-                                 ~11.3-11.8 GB of 11 GB
-```
+## Embedding lifecycle and recovery
 
-On this estimate the budget is **exceeded**. The figure was already at the
-limit (~10.4-10.9 GB) before `llm.num_ctx` was set explicitly; the 6144-token
-KV cache (~0.147 MB/token for qwen3:8b) adds ~0.9 GB. These are estimates, not
-measurements -- check `nvidia-smi` with all three models loaded. The reranker
-also loads fp32, not fp16 (sentence-transformers does not downcast it
-automatically). If it doesn't fit, in order of preference: a smaller
-`llm.num_ctx` (lower `session.history_max_turns` with it so the prompt still
-fits), or a smaller `llm.model`. `reranking.device: cpu` is not an acceptable
-mitigation -- the reranker on CPU takes seconds per request, which misses the
-latency goals.
+`EmbeddingIndex` records canonical model, dimensions, text template version/settings, revision, provider and API provider. Migration 0010 preserves old local provenance. Model/dimensions changes require a schema migration and explicit full regeneration; text changes require a template-version bump and full regeneration. Different non-null revisions fail; a null on either side only warns, never inventing API weight provenance.
 
-### Running without a GPU (manual hand-edit)
+After an origin change, `check_embedding_index` re-embeds a deterministic sample in tmdb_id order and checks the configured compatibility threshold. This is read-only for the database but may make real embedding API calls at startup. A pass permits reading that index only; it neither proves every vector identical nor changes its origin. Partial generation still refuses to mix origins, even after a passing check.
 
-The committed profile does **not** fit an 8GB Apple Silicon Mac, and Docker
-Desktop on macOS cannot reach the Apple GPU at all (there is no Metal
-passthrough into its Linux VM). Requesting the `nvidia` driver also fails
-there, so **both** GPU `deploy:` blocks in `docker-compose.yml` have to go:
-the one under the `ollama` service and the one under the `backend` service.
-Removing only one still leaves the other service requesting a GPU, and Compose
-will fail to start on a machine without one.
+If compatibility fails or is unavailable, startup stops. Restore the original mode/configuration to recover service. Alternatively, after an explicit user decision and backup, run `generate_embeddings --all` against the intended catalog to replace every vector and provenance; never run it automatically or merely to test cloud. `--adopt` applies only to legacy vectors without provenance whose origin the user knows; it cannot relabel an existing tracked index.
 
-Alongside that, change `params.yaml`:
+### Separate cloud test database (user only)
 
-| Key | Value | Why |
-|-----|-------|-----|
-| `llm.model` | `qwen2.5:3b` | ~1.9GB; an 8B model does not fit beside Docker |
-| `reranking.enabled` | `false` | bge-v2-m3 on CPU costs ~15s per request |
-
-and run Ollama natively on the host for Metal acceleration, which also keeps
-the model out of the Docker VM's memory budget:
+Use an isolated Compose project with its own volumes; stop the main project first to avoid host-port conflicts. This exercises the complete cloud lifecycle without rebuilding the working local catalog:
 
 ```bash
-brew install ollama
-ollama serve             # in its own terminal
-ollama pull qwen2.5:3b
+docker compose down
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml up --build
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml exec backend python manage.py check_inference
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml exec backend python manage.py generate_embeddings
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml exec backend python manage.py check_embedding_index
+# Also check a second generation run only fills missing rows and preserves origin.
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml exec backend python manage.py generate_embeddings
+docker compose -p movie-cloud-test -f docker-compose.yml -f docker-compose.openrouter.yml down
 ```
 
-Then set `llm.base_url` to `http://host.docker.internal:11434` and start only
-the remaining services:
+Separately start cloud on the original project to read-check its existing local index using the startup compatibility check; do not run generation there. Record pass/failure and confirm vector count/provenance unchanged. Restore local mode after stopping cloud without `-v`. Keep test and working catalogs separate.
+
+## Reproducibility and pending manual acceptance
+
+**Real validation is pending. Offline tests do not establish API availability, provider semantics, GPU compatibility, memory fit, speed or recommendation quality.**
+
+Local weights keep their pinned HF revisions, `torch==2.5.1`, CUDA 12.1 and transformers constraints. Python dependencies remain locked in `backend/uv.lock`. The Ollama server image is pinned in `ollama/Dockerfile` to `ollama/ollama:0.34.2`; compatibility of that pin with the new Qwen3.5 tag and required API behavior is not yet confirmed. Tags are mutable; record the installed server version and served model digest. API routing/model revisions can differ from local weights even under the same canonical name.
+
+The user must record:
+
+- GTX 1080 Ti: all three models resident together at context **6144**, peak VRAM (`nvidia-smi`), GPU offload, Ollama version/model digest, cold/warm TTFT and end-to-end latency. Test a long conversation, top-10 results, schema-valid JSON, think suppression and complete explanations. Historical Qwen3 8B memory/timing estimates do not validate Qwen3.5 9B. Insufficient VRAM is a blocking result; do not automatically reduce the agreed model or context.
+- Without GPU: real cloud preflight, full initial embedding lifecycle on the separate test DB, SSE search/refinement/follow-up, public API/history behavior, and embedding failure returning 503. Confirm no local model loads/Ollama/GPU reservations. Separately test compatibility reading the existing local index.
+- Quality: dev evaluations in both modes on identical data, separate run records, mode/provider/config-hash metadata and failed-run diagnostics. Compare intent errors, parse fallbacks, empty results and latency; inspect recommendation/explanation quality manually. Preserve existing evaluation flags and recommendation-quality tasks 5–8. Voyage gate stays null until calibrated from user relevance labels; LLM judge is circular and never ground truth.
+
+Use the selected mode's Compose prefix for these user commands:
 
 ```bash
-docker compose up db backend frontend
+docker compose exec backend python manage.py evaluate_scoring --split dev
+docker compose exec backend python manage.py evaluate_scoring --split dev --intent oracle
+docker compose exec backend python manage.py evaluate_scoring --intent oracle --k 10 --label-export eval_runs/labels.csv
+# Offline labelled curves, after user hand-labelling:
+cd backend && python manage.py evaluate_scoring --label-report ../eval_runs/labels.csv
 ```
+
+Do not interpret failed provider calls as a successful quality run. Keep mode-specific label-export filenames to avoid overwriting labels; run JSON records carry mode, providers and effective-config hash.
 
 ## Management Commands
 
@@ -240,7 +101,8 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | `generate_embeddings` | Embed movies that have no embedding (batch size from params.yaml) and record the index provenance; refuses under a config mismatch |
 | `generate_embeddings --all` | Re-embed every movie and refresh the provenance record (required after changing the embedding model or `embedding.text.*`) |
 | `generate_embeddings --adopt` | Record the current config for an index built before provenance tracking, without re-embedding |
-| `check_embedding_index` | Compare the recorded provenance with `params.yaml`; exit non-zero on a mismatch (runs at backend start-up) |
+| `check_embedding_index` | Check provenance; origin changes probe a deterministic sample through the active embedder (may incur API costs), without writing vectors |
+| `check_inference` | User-only real probes through the active LLM, embedder and reranker; not automatic startup |
 | `evaluate_scoring` | Golden-set evaluation on the test split, intent parsed by the production LLM call; writes a run record to `eval_runs/` |
 | `evaluate_scoring --intent oracle` | Same, with each entry's labelled intent instead of the LLM parse |
 | `evaluate_scoring --llm-judge` | Also score results with the LLM judge (slow, secondary signal) |
@@ -250,52 +112,3 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | `evaluate_scoring --intent oracle --k 10 --label-export eval_runs/labels.csv` | CSV of ungated dev results for hand-labelling relevance (dev split only; `eval_runs/` is the container's writable mount, `./eval_runs` on the host) |
 | `evaluate_scoring --label-report ../eval_runs/labels.csv` | Threshold/margin curves from the labelled CSV, run on the host from `backend/` (no DB, Ollama or models) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
-
-## First Run
-
-```bash
-# Start everything (pulls images, builds containers, downloads models)
-docker compose up backend
-
-# This automatically:
-# 1. Starts PostgreSQL, waits for health check
-# 2. Starts Ollama, pulls the model named in params.yaml (first time only)
-# 3. Starts backend: runs migrations, imports ~50K movies from the TMDB CSV,
-#    checks the embedding index (none yet on a first run is fine)
-# 4. Starts uvicorn on port 8000
-
-# Generate embeddings (separate step, ~5 min on GPU)
-docker compose exec backend python manage.py generate_embeddings
-
-# Verify everything works
-docker compose exec backend python manage.py shell -c "
-from movies.models import Movie
-print(f'{Movie.objects.filter(embedding__isnull=False).count()}/{Movie.objects.count()} movies have embeddings')
-"
-```
-
-## Troubleshooting
-
-**Port 5432 already in use**: Local PostgreSQL running. The db service uses
-port 5433 on the host to avoid conflicts.
-
-**Ollama entrypoint fails on Windows**: CRLF line endings. The Dockerfile
-runs `sed -i 's/\r$//'` on the entrypoint script. If it still fails,
-rebuild: `docker compose build ollama --no-cache`
-
-**"No migrations to apply" but tables don't exist**: Migration files
-weren't in the Docker image. Rebuild: `docker compose build backend --no-cache`
-
-**Embedding generation slow**: At the old 18K-item catalog this took ~5 minutes
-on GPU / ~30-60 minutes on CPU with the mpnet embedder. The current ~50K-item
-TMDB catalog with BGE-M3 (a larger model) will take proportionally longer on
-both -- re-measure and update this line after running it. Check GPU
-availability:
-`docker compose exec backend python -c "import torch; print(torch.cuda.is_available())"`
-
-**Ollama model not pulling**: Check logs: `docker compose logs ollama`.
-The entrypoint waits for the server to be ready before pulling. The container stays
-`starting` (and the backend waits) until the model is present; if the pull takes
-longer than the health check's 900s `start_period` plus its ten 10s retries, the
-service is marked unhealthy -- re-run `docker compose up` (Ollama resumes an
-interrupted pull).

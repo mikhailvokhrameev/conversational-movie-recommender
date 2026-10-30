@@ -50,6 +50,8 @@ The row's pk is always 1 (`save()` forces it and a check constraint enforces it)
 | Field | Type | Notes |
 |-------|------|-------|
 | `model_name` | CharField(255) | `embedding.model` at embed time |
+| `provider` | CharField(32) | Embedding origin: local or openrouter |
+| `api_provider` | CharField(64) | Nullable upstream API origin, e.g. deepinfra |
 | `dimensions` | PositiveIntegerField | `embedding.dimensions` at embed time |
 | `revision` | CharField(64) | nullable; `embedding.revision` (Hugging Face commit) at embed time. Null = built unpinned or before this was recorded; a null on either side of the comparison is a warning, not a mismatch |
 | `text_version` | PositiveIntegerField | `EMBEDDING_TEXT_VERSION` of the text template |
@@ -128,3 +130,7 @@ Connection configured via `DATABASE_URL` environment variable:
 - [API Reference](api.md) for HTTP endpoints and session lifecycle
 - [Core ML Pipeline](core.md) for how models are used in scoring
 - [Infrastructure](infrastructure.md) for Docker and database setup
+
+### Embedding origin across inference modes
+
+`EmbeddingIndex` also records `provider` and `api_provider` (migration 0010 backfills local origin). Canonical `BAAI/bge-m3` stays separate from API `baai/bge-m3`; unknown API revision is null. Origin changes require deterministic read-only compatibility sampling. Passing preserves origin and permits reads only, never partial mixed-origin generation. Restore original mode after failure or explicitly choose a full rebuild; startup never regenerates vectors. See [embedding lifecycle](infrastructure.md#embedding-lifecycle-and-recovery).

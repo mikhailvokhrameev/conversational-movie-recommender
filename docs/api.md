@@ -1,3 +1,5 @@
+> Inference adapters select local Ollama or OpenRouter once; public HTTP/SSE contracts are shared. Ollama-specific options/timings below apply only locally. Embedding-provider failure returns HTTP 503 before SSE starts; existing LLM/reranker fallbacks remain. See [deployment and pending acceptance](infrastructure.md).
+
 # API Reference (`backend/movies/views.py`)
 
 The Django REST Framework API layer exposes three HTTP endpoints. All views
@@ -109,7 +111,7 @@ returns movies. See ADR 0011.
 **Phase 2 (streaming)**: One LLM call produces the whole explanation, but it is no
 longer one blob. `EXPLANATION_PROMPT` asks for an opening line that names no titles,
 followed by one `[[n]]`-marked description per movie; `ExplanationSplitter` in
-`ollama_client.py` routes that single token stream into slots, and `_handle_search_like`
+`llm_client.py` routes that single token stream into slots, and `_handle_search_like`
 maps each slot onto a wire event:
 
 - text before the first marker is the **intro**, emitted as `token` events -- the wire
@@ -407,9 +409,9 @@ these can be changed -- no environment variable overrides them.
 | params.yaml path | Default | Effect |
 |------------------|---------|--------|
 | `llm.base_url` | `http://ollama:11434` | Ollama server URL |
-| `llm.model` | `qwen3:8b` | Model for classification, intent parsing, explanations |
+| `llm.model` | `qwen3.5:9b-q4_K_M` | Model for classification, intent parsing, explanations |
 | `llm.thinking` | `false` | Suppress hybrid-reasoning `<think>` spans |
-| `llm.num_ctx` | `6144` | Context window sent as `options.num_ctx` on every LLM call (one value for all calls -- a change between requests makes Ollama reload the model); costs ~0.9 GB of KV-cache VRAM |
+| `llm.num_ctx` | `6144` | Context window sent as `options.num_ctx` on every LLM call (one value for all calls -- a change between requests makes Ollama reload the model); Qwen3.5 VRAM still requires user measurement |
 | `llm.temperature.*` | 0.0 / 0.7 | Sampling temperature (structured / generation): 0.0 for every schema-constrained call (classify+parse, intent, eval judge) so parsing is reproducible; 0.7 for explanations and conversational replies. Validated in [0, 2] at settings load |
 | `llm.seed` | `42` | Fixed `options.seed` on every LLM call, for reproducible outputs. Must be an int |
 | `llm.explanation_description_chars` | `200` | Description chars per movie in the explanation prompt (`_build_movies_context`). Minimum 1 |
