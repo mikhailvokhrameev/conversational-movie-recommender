@@ -1,17 +1,5 @@
-# Model and tuning values are NOT set here. They live in params.yaml, which is
-# mounted read-only into the containers that need it. Environment variables in
-# this file are limited to secrets and deployment wiring.
-#
-# GPU: the ollama service reserves an NVIDIA device. That is deliberate rather
-# than optional -- params.yaml is tuned for an 8B model plus a large reranker,
-# and on CPU that combination is not interactively usable. If the driver is
-# missing, Compose fails here with a clear error, which beats silently falling
-# back to CPU and looking merely broken.
-#
-# Running without an NVIDIA GPU means changing params.yaml too (a smaller
-# llm.model, reranking disabled) -- see docs/infrastructure.md, "Smaller
-# machines". Delete the deploy block below when you do.
-
+# Shared services; automatic override adds local GPU inference.
+# Cloud: docker compose -f docker-compose.yml -f docker-compose.openrouter.yml up --build
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -29,50 +17,11 @@ services:
       timeout: 5s
       retries: 5
 
-  ollama:
-    build: ./ollama
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    volumes:
-      - ollama_data:/root/.ollama
-      # The entrypoint reads llm.model from here to decide what to pull.
-      - ./params.yaml:/params.yaml:ro
-    ports:
-      - "11434:11434"
-    healthcheck:
-      # Healthy means the model from params.yaml is pulled, not just that the
-      # binary runs: the backend waits on this, and the first start downloads
-      # several GB before the model exists. See ollama/healthcheck.sh.
-      test: ["CMD", "/healthcheck.sh"]
-      interval: 10s
-      timeout: 10s
-      retries: 10
-      # Failures inside this window do not count against `retries`. It has to
-      # cover the first pull of the model (~5GB for qwen3:8b), which on a slow
-      # link takes many minutes; a pass during it still marks the container
-      # healthy at once, so a warm volume is not delayed.
-      start_period: 900s
-
   backend:
     build: ./backend
-    # The reranker (bge-reranker-v2-m3) runs in this container, not in ollama.
-    # Without the card it falls back to CPU, where a 20-pair rerank costs tens
-    # of seconds instead of ~0.15s. Both services reserve the same GPU; the
-    # LLM takes ~5.0GB and the reranker + embedder ~2.2GB, which fits 11GB.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
     environment:
       DATABASE_URL: postgres://recommender:${DB_PASSWORD:-changeme}@db:5432/recommender
+      PARAMS_PATH: ${PARAMS_PATH:-/app/params.yaml}
       DJANGO_SETTINGS_MODULE: recommender.settings
       SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-key-do-not-use-in-prod}
       DEBUG: ${DEBUG:-0}
@@ -90,8 +39,6 @@ services:
       - "8000:8000"
     depends_on:
       db:
-        condition: service_healthy
-      ollama:
         condition: service_healthy
     command: >
       sh -c "

@@ -1,0 +1,45 @@
+# Automatically loaded by docker compose up --build for local NVIDIA inference.
+services:
+  ollama:
+    build: ./ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ollama_data:/root/.ollama
+      # The entrypoint reads llm.model from here to decide what to pull.
+      - ./params.yaml:/params.yaml:ro
+    ports:
+      - "11434:11434"
+    healthcheck:
+      # Healthy means the model from params.yaml is pulled, not just that the
+      # binary runs: the backend waits on this, and the first start downloads
+      # several GB before the model exists. See ollama/healthcheck.sh.
+      test: ["CMD", "/healthcheck.sh"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      # Failures inside this window do not count against `retries`. It has to
+      # cover the first pull of the model (several GB), which on a slow
+      # link takes many minutes; a pass during it still marks the container
+      # healthy at once, so a warm volume is not delayed.
+      start_period: 900s
+
+  backend:
+    # Local embedder and reranker share the NVIDIA GPU with Ollama.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      INFERENCE_MODE: local
+    depends_on:
+      ollama:
+        condition: service_healthy

@@ -1,0 +1,6 @@
+# Explicit -f selection excludes the automatic local GPU/Ollama override.
+services:
+  backend:
+    environment:
+      INFERENCE_MODE: openrouter
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
