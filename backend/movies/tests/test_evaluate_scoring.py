@@ -68,7 +68,7 @@ class _Run:
         self.encode = MagicMock(side_effect=_vec)
         self.resolve = _resolver(grades, unresolved)
         self.judge = MagicMock(side_effect=judge) if judge is not None else MagicMock(return_value=3)
-        self.available = AsyncMock(return_value=True)
+        self.available = MagicMock()
 
     def __call__(self, *args):
         out = StringIO()
@@ -78,7 +78,7 @@ class _Run:
              patch(f"{MODULE}.aclassify_and_parse", self.classify), \
              patch(f"{MODULE}.generate_and_score", self.pipeline), \
              patch(f"{MODULE}.llm_relevance_score", self.judge), \
-             patch(f"{MODULE}.ais_available", self.available):
+             patch(f"{MODULE}.check_inference", self.available):
             call_command(
                 "evaluate_scoring", "--golden-set", str(self.golden),
                 "--output", str(self.output), *args, stdout=out,
@@ -180,17 +180,17 @@ class TestParseFallbackDetection:
 
     def test_unreachable_ollama_refuses_e2e(self, tmp_path):
         run = _Run(tmp_path, [_entry()])
-        run.available.return_value = False
-        with pytest.raises(CommandError, match="Ollama"):
+        run.available.side_effect = CommandError("Inference preflight failed")
+        with pytest.raises(CommandError, match="preflight"):
             run()
         run.classify.assert_not_awaited()
         run.pipeline.assert_not_called()
 
     def test_oracle_does_not_need_ollama(self, tmp_path):
         run = _Run(tmp_path, [_entry()])
-        run.available.return_value = False
+        run.available.side_effect = AssertionError("oracle needs no LLM preflight")
         run("--intent", "oracle")
-        run.available.assert_not_awaited()
+        run.available.assert_not_called()
 
     def test_fallback_shaped_intent_is_counted(self, tmp_path):
         fallback = MessageIntent(
@@ -298,11 +298,11 @@ class TestUnresolvedReferences:
 class TestJudge:
     def test_failures_are_counted_and_not_averaged(self, tmp_path):
         run = _Run(tmp_path, [_entry()], judge=[5, None])
-        record = run("--llm-judge", "--k", "2")
-        assert record["counters"]["judge_failures"] == 1
-        assert record["queries"][0]["judge_scores"] == [5, None]
-        assert record["aggregate"]["llm_relevance"] == 5.0
-        assert "judge_ndcg" not in record["aggregate"]
+        with pytest.raises(CommandError, match="judge"):
+            run("--llm-judge", "--k", "2")
+        record = json.loads(run.output.read_text())
+        assert record["status"] == "failed"
+        assert record["inference"]["failures"][0]["operation"] == "judge"
 
     def test_judge_sees_history_turns(self, tmp_path):
         history = [{"role": "user", "content": "a heist movie"}, {"role": "assistant", "content": "Heat."}]
@@ -808,7 +808,7 @@ class TestRunRecord:
              patch(f"{MODULE}.encode_query", side_effect=_vec), \
              patch(f"{MODULE}.aclassify_and_parse", AsyncMock(return_value=MessageIntent(category="new_search"))), \
              patch(f"{MODULE}.generate_and_score", return_value=(movies, movies)), \
-             patch(f"{MODULE}.ais_available", AsyncMock(return_value=True)):
+             patch(f"{MODULE}.check_inference"):
             call_command("evaluate_scoring", "--golden-set", str(golden), stdout=StringIO())
         written = list((tmp_path / "eval_runs").glob("*.json"))
         assert len(written) == 1

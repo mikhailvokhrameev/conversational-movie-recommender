@@ -187,7 +187,8 @@ def llm_relevance_score(query: str, movie: dict) -> int | None:
             raise ValueError(f"score {score} is outside {JUDGE_MIN_SCORE}-{JUDGE_MAX_SCORE}")
         return score
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-        logger.warning(f"LLM judge failed for '{movie.get('serial_name', '')}': {e}")
+        from core.inference_diagnostics import record_failure
+        record_failure("llm", "judge", e)
         return None
 
 

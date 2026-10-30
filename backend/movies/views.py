@@ -553,7 +553,12 @@ class ChatView(View):
         top_n = _result_top_n(intent.result_count)
         try:
             t_embed = time.perf_counter()
-            query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
+            try:
+                query_embedding = await sync_to_async(encode_query)(intent.semantic_query)
+            except Exception:
+                return JsonResponse(
+                    {"error": "Recommendation service is temporarily unavailable."}, status=503,
+                )
             embed_ms = (time.perf_counter() - t_embed) * 1000
 
             t_score = time.perf_counter()

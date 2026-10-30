@@ -125,7 +125,8 @@ class TestLlmRelevanceScore:
     def test_cloud_request_failure_returns_none_and_logs_degradation(self, failure, caplog):
         with patch("core.evaluation._chat_sync", side_effect=failure):
             assert llm_relevance_score("scary", self.MOVIE) is None
-        assert "LLM judge failed for 'Alien'" in caplog.text
+        assert "operation=judge" in caplog.text
+        assert "category=InferenceError" in caplog.text
 
     @pytest.mark.parametrize("content", [
         "not json", '{"rating": 4}', '{"score": "high"}', '{"score": 9}', '{"score": 0}', "[4]",

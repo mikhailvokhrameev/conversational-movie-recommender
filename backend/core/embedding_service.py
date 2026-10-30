@@ -2,6 +2,8 @@
 
 import logging
 
+from core.inference_diagnostics import inference_operation, log_usage
+
 import numpy as np
 from django.conf import settings
 
@@ -114,6 +116,7 @@ class OpenRouterEmbeddingAdapter:
             body = openrouter_client.post_json(
                 '/embeddings', payload, timeout=config['timeout_seconds'],
             )
+            log_usage("embedding", body)
             batches.append(_ordered_vectors(body, len(batch)))
         return np.concatenate(batches)
 
@@ -124,7 +127,8 @@ def encode_texts(texts: list[str]) -> np.ndarray:
 
     if not texts:
         return np.empty((0, settings.EMBEDDING_DIMENSIONS))
-    return get_inference_backends().embedder.encode_texts(texts)
+    with inference_operation("embedding", "encode_texts"):
+        return get_inference_backends().embedder.encode_texts(texts)
 
 
 def encode_query(query: str) -> list[float]:

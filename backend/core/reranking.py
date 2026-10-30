@@ -39,6 +39,7 @@ import time
 
 from django.conf import settings
 
+from core.inference_diagnostics import inference_operation, log_usage, record_failure
 from core.scoring import normalize_scores
 from core.inference_backends import get_inference_backends
 from core.openrouter_client import InferenceError
@@ -63,6 +64,7 @@ class LocalRerankingAdapter:
         with self._load_lock:
             if self._model is not None or self._load_failed:
                 return self._model
+            started = time.perf_counter()
             try:
                 from sentence_transformers import CrossEncoder
 
@@ -78,11 +80,11 @@ class LocalRerankingAdapter:
                     device=None if device == "auto" else device,
                 )
                 logger.info(f"Reranker loaded in {time.perf_counter() - started:.1f}s")
-            except Exception:
+            except Exception as error:
                 # Most likely a failed model download. Degrade to no reranking
                 # rather than failing every subsequent request.
                 self._load_failed = True
-                logger.exception("Reranker unavailable, continuing without it")
+                record_failure("reranking", "load_model", error, started)
 
         return self._model
 
@@ -107,6 +109,7 @@ class OpenRouterRerankingAdapter:
             'model': config['model'], 'query': query, 'documents': documents,
             'top_n': len(documents),
         }, timeout=config['timeout_seconds'])
+        log_usage("reranking", body)
         ordered = None
         try:
             results = body['results']
@@ -167,14 +170,14 @@ def rerank_candidates(
 
     try:
         started = time.perf_counter()
-        raw_scores = get_inference_backends().reranker.predict_scores(
-            query, [_movie_text(candidate) for candidate in head],
-        )
-        if len(raw_scores) != len(head) or any(not math.isfinite(score) for score in raw_scores):
-            raise InferenceError("rerank_response")
+        with inference_operation("reranking", "rerank"):
+            raw_scores = get_inference_backends().reranker.predict_scores(
+                query, [_movie_text(candidate) for candidate in head],
+            )
+            if len(raw_scores) != len(head) or any(not math.isfinite(score) for score in raw_scores):
+                raise InferenceError("rerank_response")
         logger.info("Reranked %d candidates in %.2fs", len(head), time.perf_counter() - started)
     except Exception:
-        logger.warning("Reranking failed, falling back to scorer order")
         return ordered
 
     rerank_norm = normalize_scores([float(score) for score in raw_scores])

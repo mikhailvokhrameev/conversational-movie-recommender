@@ -15,6 +15,8 @@ from django.conf import settings
 from core import openrouter_client
 from core.openrouter_client import InferenceError
 
+from core.inference_diagnostics import log_usage
+
 logger = logging.getLogger(__name__)
 
 def _ollama_options(kind: Literal["structured", "generation"]) -> dict:
@@ -360,6 +362,7 @@ class OpenRouterLLMAdapter:
 
     @staticmethod
     def _log(call_type, body):
+        log_usage("llm", body)
         usage = body.get("usage")
         if not isinstance(usage, dict):
             usage = {}

@@ -63,6 +63,10 @@ from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
 
 from core.embedding_service import encode_query
+from core.inference_diagnostics import (
+    capture_failures, check_inference, inference_metadata, inference_operation,
+    record_failure, require_healthy,
+)
 from core.evaluation import (
     aggregate_metrics,
     compute_genre_frequency,
@@ -84,7 +88,7 @@ from core.golden_set import (
     resolve_references,
     select_split,
 )
-from core.llm_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse, ais_available
+from core.llm_client import NON_FILTER_FIELDS, MessageIntent, aclassify_and_parse
 from core.pipeline import generate_and_score
 from movies.models import Movie
 
@@ -282,6 +286,31 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        # This branch must not assemble providers or require credentials/DB.
+        if options["label_report"] is not None:
+            return self._handle(*args, **options)
+        with capture_failures() as failures:
+            self.inference = {**inference_metadata(), "failures": failures}
+            self.started = datetime.now(timezone.utc)
+            self.record = {"timestamp": self.started.isoformat(), "inference": self.inference}
+            try:
+                return self._handle(*args, **options)
+            except Exception:
+                if failures:
+                    self.record["status"] = "failed"
+                    self._write_record(options)
+                    require_healthy()
+                raise
+
+    def _write_record(self, options):
+        output = Path(options["output"]) if options["output"] else (
+            Path("eval_runs") / f"{self.record.get('mode', 'eval')}-{self.started.strftime('%Y%m%dT%H%M%SZ')}.json"
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(self.record, indent=2, ensure_ascii=False, default=_json_default))
+        self.stdout.write(f"\nRun record written to {output}")
+
+    def _handle(self, *args, **options):
         sweep = options["sweep"]
         report_gate = options["gate_report"]
         label_export = options["label_export"]
@@ -291,7 +320,7 @@ class Command(BaseCommand):
                 "--sweep, --gate-report, --label-export and --label-report are separate runs; pick one."
             )
         if label_report_path is not None:
-            # Before anything that needs the database, Ollama or the golden set.
+            # Before anything that needs the database, inference providers or the golden set.
             ignored = [
                 flag for flag, given in (
                     ("--split", options["split"] is not None),
@@ -328,15 +357,8 @@ class Command(BaseCommand):
                 "the test split is held out for the final report."
             )
         intent_mode = options["intent"]
-        if intent_mode == "e2e" and not asyncio.run(ais_available()):
-            # aclassify_and_parse never raises -- on a failed request it returns
-            # the raw message with no filters -- so without this check an
-            # unreachable Ollama would produce a plausible-looking "e2e" run
-            # that never parsed anything.
-            raise CommandError(
-                f"--intent e2e needs Ollama, which is not reachable at {settings.OLLAMA_BASE_URL}. "
-                "Start it, or run --intent oracle to evaluate retrieval alone."
-            )
+        if intent_mode == "e2e" or options["llm_judge"]:
+            check_inference()
         use_llm = options["llm_judge"]
         weights = self._parse_weights(options["weights"])
 
@@ -365,13 +387,15 @@ class Command(BaseCommand):
             self.stdout.write("LLM-as-judge enabled (this will be slow)")
 
         self.genre_freq, self.catalog_size = _catalog_stats()
-        started = datetime.now(timezone.utc)
+        started = self.started
 
         prepared = [self._prepare(entry, intent_mode) for entry in entries]
         self._report_unresolved(prepared)
 
-        record = {
+        record = self.record
+        record.update({
             "timestamp": started.isoformat(),
+            "status": "ok",
             "mode": (
                 "sweep" if sweep else "gate_report" if report_gate
                 else "label_export" if label_export is not None else "eval"
@@ -387,7 +411,7 @@ class Command(BaseCommand):
             "k": k,
             "llm_judge": use_llm,
             "catalog_size": self.catalog_size,
-        }
+        })
         if sweep:
             record["configs"] = self._run_sweep(prepared, k, use_llm)
             record["best_weights"] = record["configs"][0]["weights"]
@@ -404,12 +428,8 @@ class Command(BaseCommand):
             if label_export is not None:
                 self._write_label_export(Path(label_export), record["queries"])
 
-        output = Path(options["output"]) if options["output"] else (
-            Path("eval_runs") / f"{record['mode']}-{started.strftime('%Y%m%dT%H%M%SZ')}.json"
-        )
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(record, indent=2, ensure_ascii=False, default=_json_default))
-        self.stdout.write(f"\nRun record written to {output}")
+        require_healthy()
+        self._write_record(options)
 
     def _parse_weights(self, weights_str):
         if not weights_str:
@@ -434,11 +454,14 @@ class Command(BaseCommand):
             # Mirrors ChatView: the combined classify+parse call with the prior
             # turns as history, then embed its rewritten semantic_query. Only
             # the text is replayed, not the session state stored beside it.
-            message_intent = asyncio.run(aclassify_and_parse(query, prior_turns(entry)))
+            with inference_operation("llm", "classify_parse"):
+                message_intent = asyncio.run(aclassify_and_parse(query, prior_turns(entry)))
+            require_healthy()
             possible_fallback = self._is_fallback_shape(message_intent, query)
             predicted = message_intent.category
             category = predicted
-            query_embedding = encode_query(message_intent.semantic_query)
+            with inference_operation("embedding", "encode_query"):
+                query_embedding = encode_query(message_intent.semantic_query)
             query_text = message_intent.standalone_query
             semantic_query = message_intent.semantic_query
             unsupported = message_intent.unsupported_constraints
@@ -452,7 +475,8 @@ class Command(BaseCommand):
             # hand-written equivalent. No labelled semantic_query exists, so
             # the embedder gets the same text.
             query_text = entry.get("oracle_standalone_query", query)
-            query_embedding = encode_query(query_text)
+            with inference_operation("embedding", "encode_query"):
+                query_embedding = encode_query(query_text)
             semantic_query = None
             unsupported = None
             intent = dict(entry.get("oracle_intent", {}))
@@ -517,6 +541,7 @@ class Command(BaseCommand):
             p.query_embedding, p.intent,
             query_text=p.query_text, weights=weights, top_n=k, apply_gate=apply_gate,
         )
+        require_healthy()
         recommended_ids = [m["tmdb_id"] for m in top]
 
         negated = set(entry.get("negated_genres", []))
@@ -528,6 +553,9 @@ class Command(BaseCommand):
         if use_llm and p.expected == "results":
             judge_query = self._judge_query(entry)
             judge_scores = [llm_relevance_score(judge_query, m) for m in top]
+            if any(score is None for score in judge_scores):
+                record_failure("llm", "judge", ValueError("unavailable judge score"))
+            require_healthy()
 
         metrics = evaluate_query(
             recommended_ids,
@@ -650,7 +678,7 @@ class Command(BaseCommand):
         if counters["possible_parse_fallbacks"]:
             self.stdout.write(self.style.WARNING(
                 f"{counters['possible_parse_fallbacks']}/{counters['queries']} e2e intents match the "
-                "classify+parse failure fallback (raw query, no filters) -- check the Ollama logs "
+                "classify+parse failure fallback (raw query, no filters) -- check the inference logs "
                 "before trusting this as an e2e result."
             ))
 

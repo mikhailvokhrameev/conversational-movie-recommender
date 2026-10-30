@@ -37,6 +37,7 @@ from pydantic import BaseModel, Field, ValidationError, field_validator
 from core.catalog_bounds import catalog_year_range
 from core.inference_backends import get_inference_backends
 from core.openrouter_client import InferenceError
+from core.inference_diagnostics import inference_operation, record_failure
 from core.entity_resolution import EntityResolver, catalog_countries, catalog_languages
 
 logger = logging.getLogger(__name__)
@@ -840,11 +841,12 @@ def _chat_sync(
     timeout: float = 60.0,
 ) -> str:
     """Return a completion from the configured adapter using common messages."""
-    return get_inference_backends().llm.complete(
-        messages=messages, schema=schema,
-        kind="structured" if schema is not None else "generation",
-        timeout=timeout, call_type=call_type,
-    )
+    with inference_operation("llm", call_type):
+        return get_inference_backends().llm.complete(
+            messages=messages, schema=schema,
+            kind="structured" if schema is not None else "generation",
+            timeout=timeout, call_type=call_type,
+        )
 
 
 # --- Sync API (for management commands) ---
@@ -861,7 +863,7 @@ def parse_intent(query: str) -> dict:
         )
         return _extract_intent(_parse_json_response(content))
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Intent parsing failed, using fallback: {e}")
+        record_failure("llm", "intent", e)
         return _fallback_intent(query)
 
 
@@ -877,7 +879,7 @@ def generate_explanation(query: str, movies: list[dict]) -> str:
             timeout=settings.LLM_TIMEOUTS["explanation"],
         )
     except (httpx.HTTPError, InferenceError, KeyError) as e:
-        logger.warning(f"Explanation generation failed: {e}")
+        record_failure("llm", "explanation", e)
         return ""
 
 
@@ -887,19 +889,20 @@ def stream_explanation(query: str, movies: list[dict]) -> Generator[str, None, N
     The token stream is marker-delimited: an opening line, then a `[[n]]` line per movie.
     """
     try:
-        think_filter = _ThinkStreamFilter()
-        for content in get_inference_backends().llm.stream(
-            **_explanation_payload(query, movies),
-            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
-        ):
-            visible = think_filter.feed(content)
-            if visible:
-                yield visible
-        tail = think_filter.flush()
-        if tail:
-            yield tail
+        with inference_operation("llm", "explanation"):
+            think_filter = _ThinkStreamFilter()
+            for content in get_inference_backends().llm.stream(
+                **_explanation_payload(query, movies),
+                timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
+            ):
+                visible = think_filter.feed(content)
+                if visible:
+                    yield visible
+            tail = think_filter.flush()
+            if tail:
+                yield tail
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
-        logger.warning("Explanation streaming failed: %s", e)
+        record_failure("llm", "explanation", e)
 
 
 def is_available() -> bool:
@@ -913,13 +916,14 @@ async def _request_classify_and_parse(
     message: str, history: list[dict], repair_note: str | None = None, selection_note: str | None = None
 ) -> dict:
     year_bounds = await sync_to_async(catalog_year_range, thread_sensitive=False)()
-    content = await get_inference_backends().llm.acomplete(
-        **_classify_and_parse_payload(
-            message, history, repair_note=repair_note, year_bounds=year_bounds,
-            selection_note=selection_note,
-        ), timeout=settings.LLM_TIMEOUTS["classify_parse"], call_type="classify_parse",
-    )
-    return _parse_json_response(content)
+    with inference_operation("llm", "classify_parse"):
+        content = await get_inference_backends().llm.acomplete(
+            **_classify_and_parse_payload(
+                message, history, repair_note=repair_note, year_bounds=year_bounds,
+                selection_note=selection_note,
+            ), timeout=settings.LLM_TIMEOUTS["classify_parse"], call_type="classify_parse",
+        )
+        return _parse_json_response(content)
 
 
 def _fallback_message_intent(message: str) -> MessageIntent:
@@ -947,20 +951,22 @@ async def aclassify_and_parse(
     try:
         raw = await _request_classify_and_parse(message, history, selection_note=selection_note)
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError) as e:
-        logger.warning(f"Classify+parse request failed, using fallback: {e}")
+        record_failure("llm", "classify_parse", e)
+        logger.warning("Classify+parse request failed, using fallback")
         return _fallback_message_intent(message)
 
     try:
         intent = MessageIntent.model_validate(raw)
     except ValidationError as e:
-        logger.warning(f"Classify+parse validation failed, retrying with repair: {e}")
+        logger.warning("Classify+parse validation failed, retrying with repair")
         try:
             repaired = await _request_classify_and_parse(
                 message, history, repair_note=str(e), selection_note=selection_note,
             )
             intent = MessageIntent.model_validate(repaired)
         except (httpx.HTTPError, InferenceError, json.JSONDecodeError, KeyError, ValidationError) as e2:
-            logger.warning(f"Classify+parse repair failed, using fallback: {e2}")
+            record_failure("llm", "classify_parse", e2)
+            logger.warning("Classify+parse repair failed, using fallback")
             return _fallback_message_intent(message)
 
     resolved = await sync_to_async(
@@ -1015,19 +1021,20 @@ async def astream_conversational(
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
-        think_filter = _ThinkStreamFilter()
-        async for content in get_inference_backends().llm.astream(
-            **_stream_chat_payload(messages),
-            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="conversational",
-        ):
-            visible = think_filter.feed(content)
-            if visible:
-                yield visible
-        tail = think_filter.flush()
-        if tail:
-            yield tail
+        with inference_operation("llm", "conversational"):
+            think_filter = _ThinkStreamFilter()
+            async for content in get_inference_backends().llm.astream(
+                **_stream_chat_payload(messages),
+                timeout=settings.LLM_TIMEOUTS["explanation"], call_type="conversational",
+            ):
+                visible = think_filter.feed(content)
+                if visible:
+                    yield visible
+            tail = think_filter.flush()
+            if tail:
+                yield tail
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
-        logger.warning("Conversational streaming failed: %s", e)
+        record_failure("llm", "conversational", e)
 
 
 async def astream_explanation(
@@ -1052,19 +1059,20 @@ async def astream_explanation(
         max_chars=settings.SESSION_HISTORY_MAX_CHARS_PER_ENTRY,
     )
     try:
-        think_filter = _ThinkStreamFilter()
-        async for content in get_inference_backends().llm.astream(
-            **_stream_chat_payload(messages),
-            timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
-        ):
-            visible = think_filter.feed(content)
-            if visible:
-                yield visible
-        tail = think_filter.flush()
-        if tail:
-            yield tail
+        with inference_operation("llm", "explanation"):
+            think_filter = _ThinkStreamFilter()
+            async for content in get_inference_backends().llm.astream(
+                **_stream_chat_payload(messages),
+                timeout=settings.LLM_TIMEOUTS["explanation"], call_type="explanation",
+            ):
+                visible = think_filter.feed(content)
+                if visible:
+                    yield visible
+            tail = think_filter.flush()
+            if tail:
+                yield tail
     except (httpx.HTTPError, InferenceError, json.JSONDecodeError) as e:
-        logger.warning("Explanation streaming failed: %s", e)
+        record_failure("llm", "explanation", e)
 
 
 async def astream_explanation_parts(
