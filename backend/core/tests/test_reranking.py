@@ -31,12 +31,15 @@ def _mock_model(scores):
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
-    """Each test starts with no cached model and no sticky load failure."""
-    reranking._model = None
-    reranking._load_failed = False
-    yield
-    reranking._model = None
-    reranking._load_failed = False
+    from core.inference_backends import get_inference_backends
+    import sys
+    from types import ModuleType
+    module = ModuleType('sentence_transformers')
+    module.CrossEncoder = MagicMock()
+    get_inference_backends.cache_clear()
+    with patch.dict(sys.modules, {'sentence_transformers': module}):
+        yield
+    get_inference_backends.cache_clear()
 
 
 class TestDisabledOrNoop:
@@ -57,7 +60,7 @@ class TestDisabledOrNoop:
     def test_single_candidate_skips_model(self, settings):
         """Nothing to reorder, so do not pay for a model load."""
         settings.RERANKER_ENABLED = True
-        with patch.object(reranking, "get_model") as get_model:
+        with patch.object(reranking.LocalRerankingAdapter, "get_model") as get_model:
             result = rerank_candidates("запрос", [_candidate(1, 0.9)])
         get_model.assert_not_called()
         assert len(result) == 1
@@ -79,7 +82,7 @@ class TestReranking:
         """
         settings.RERANK_WEIGHT = 0.7
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([0.0, 5.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([0.0, 5.0])):
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [2, 1]
 
@@ -88,14 +91,14 @@ class TestReranking:
         at 0.5 neither signal can override the other outright."""
         settings.RERANK_WEIGHT = 0.5
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([0.0, 5.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([0.0, 5.0])):
             result = rerank_candidates("запрос", candidates)
         assert result[0]["total"] == result[1]["total"]
 
     def test_truncates_to_top_k(self, settings):
         settings.RERANK_TOP_K = 2
         candidates = [_candidate(i, 1.0 - i / 10) for i in range(5)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([1.0, 2.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([1.0, 2.0])):
             result = rerank_candidates("запрос", candidates)
         assert len(result) == 2
 
@@ -104,7 +107,7 @@ class TestReranking:
         settings.RERANK_TOP_K = 2
         candidates = [_candidate(1, 0.1), _candidate(2, 0.9), _candidate(3, 0.8)]
         model = _mock_model([1.0, 2.0])
-        with patch.object(reranking, "get_model", return_value=model):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=model):
             result = rerank_candidates("запрос", candidates)
         assert {c["id"] for c in result} == {2, 3}
 
@@ -112,20 +115,20 @@ class TestReranking:
         """With no cross-encoder weight the scorer's ranking must survive."""
         settings.RERANK_WEIGHT = 0.0
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([0.0, 5.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([0.0, 5.0])):
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [1, 2]
 
     def test_weight_one_ignores_scorer_order(self, settings):
         settings.RERANK_WEIGHT = 1.0
         candidates = [_candidate(1, 0.9), _candidate(2, 0.1)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([0.0, 5.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([0.0, 5.0])):
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [2, 1]
 
     def test_records_provenance_fields(self, settings):
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([3.0, 1.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([3.0, 1.0])):
             result = rerank_candidates("запрос", candidates)
         top = result[0]
         assert top["rerank_score"] == 3.0
@@ -134,7 +137,7 @@ class TestReranking:
 
     def test_does_not_mutate_input(self, settings):
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=_mock_model([0.0, 5.0])):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=_mock_model([0.0, 5.0])):
             rerank_candidates("запрос", candidates)
         assert candidates[0]["total"] == 0.9
         assert "rerank_score" not in candidates[0]
@@ -142,7 +145,7 @@ class TestReranking:
     def test_query_is_paired_with_each_movie(self, settings):
         candidates = [_candidate(1, 0.9, name="Солярис"), _candidate(2, 0.8, name="Сталкер")]
         model = _mock_model([1.0, 2.0])
-        with patch.object(reranking, "get_model", return_value=model):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=model):
             rerank_candidates("научная фантастика", candidates)
         pairs = model.predict.call_args[0][0]
         assert [p[0] for p in pairs] == ["научная фантастика"] * 2
@@ -156,7 +159,7 @@ class TestFailSafe:
 
     def test_unavailable_model_returns_candidates(self, settings):
         candidates = [_candidate(1, 0.9), _candidate(2, 0.8)]
-        with patch.object(reranking, "get_model", return_value=None):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=None):
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [1, 2]
 
@@ -166,7 +169,7 @@ class TestFailSafe:
         candidates it would otherwise have had for downstream diversification."""
         settings.RERANK_TOP_K = 2
         candidates = [_candidate(i, 1.0 - i / 10) for i in range(5)]
-        with patch.object(reranking, "get_model", return_value=None):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=None):
             result = rerank_candidates("запрос", candidates)
         assert len(result) == 5
 
@@ -174,12 +177,13 @@ class TestFailSafe:
         model = MagicMock()
         model.predict.side_effect = RuntimeError("inference exploded")
         candidates = [_candidate(1, 0.8), _candidate(2, 0.9)]
-        with patch.object(reranking, "get_model", return_value=model):
+        with patch.object(reranking.LocalRerankingAdapter, "get_model", return_value=model):
             result = rerank_candidates("запрос", candidates)
         assert [c["id"] for c in result] == [2, 1]
 
     def test_load_failure_is_not_retried(self, settings):
         """A failed download must not be re-attempted on every request."""
+        adapter = reranking.LocalRerankingAdapter()
         with patch.object(reranking, "settings") as mock_settings:
             mock_settings.RERANKER_MODEL = "does-not-exist"
             mock_settings.RERANK_MAX_LENGTH = 256
@@ -188,18 +192,19 @@ class TestFailSafe:
             with patch(
                 "sentence_transformers.CrossEncoder", side_effect=OSError("no such model")
             ) as ctor:
-                assert reranking.get_model() is None
-                assert reranking.get_model() is None
+                assert adapter.get_model() is None
+                assert adapter.get_model() is None
         assert ctor.call_count == 1
 
     def test_model_is_loaded_at_the_pinned_revision(self):
+        adapter = reranking.LocalRerankingAdapter()
         with patch.object(reranking, "settings") as mock_settings:
             mock_settings.RERANKER_MODEL = "org/reranker"
             mock_settings.RERANKER_REVISION = "abc123"
             mock_settings.RERANKER_DEVICE = "auto"
             mock_settings.RERANK_MAX_LENGTH = 256
             with patch("sentence_transformers.CrossEncoder") as ctor:
-                assert reranking.get_model() is ctor.return_value
+                assert adapter.get_model() is ctor.return_value
         assert ctor.call_args.args == ("org/reranker",)
         assert ctor.call_args.kwargs["revision"] == "abc123"
 
@@ -241,3 +246,37 @@ class TestMinScoreValidation:
         from django.conf import settings
 
         assert settings.RERANK_MIN_SCORE == 0.005
+
+
+class TestOpenRouterReranker:
+    def test_maps_indexes_without_sigmoid_or_local_model(self, settings):
+        settings.EFFECTIVE_PARAMS = {'reranking': {'model': 'voyageai/rerank-3-lite', 'timeout_seconds': 60}}
+        body = {'results': [{'index': 1, 'relevance_score': 9.0}, {'index': 0, 'relevance_score': -2.0}]}
+        with patch('core.openrouter_client.post_json', return_value=body) as post, patch('sentence_transformers.CrossEncoder') as ctor:
+            assert reranking.OpenRouterRerankingAdapter().predict_scores('q', ['a', 'b']) == [-2.0, 9.0]
+        post.assert_called_once_with('/rerank', {'model': 'voyageai/rerank-3-lite', 'query': 'q', 'documents': ['a', 'b'], 'top_n': 2}, timeout=60)
+        ctor.assert_not_called()
+
+    @pytest.mark.parametrize('results', [[], [{'index': 0, 'relevance_score': 1}],
+        [{'index': i, 'relevance_score': s} for i, s in [(0, 1), (0, 2)]],
+        [{'index': i, 'relevance_score': s} for i, s in [(0, float('nan')), (1, 2)]],
+        [{'index': i, 'relevance_score': s} for i, s in [(True, 1), (0, 2)]],
+        [{'index': i, 'relevance_score': s} for i, s in [(-1, 1), (0, 2)]],
+        [{'index': i, 'relevance_score': s} for i, s in [(2, 1), (0, 2)]],
+        [{'index': i, 'relevance_score': s} for i, s in [(0, True), (1, 2)]],
+    ])
+    def test_invalid_response_is_safe_error(self, results):
+        from core.openrouter_client import InferenceError
+        with patch('core.openrouter_client.post_json', return_value={'results': results}):
+            with pytest.raises(InferenceError, match='rerank_response'):
+                reranking.OpenRouterRerankingAdapter().predict_scores('q', ['a', 'b'])
+
+    def test_http_failure_preserves_full_scorer_order(self, settings):
+        from core.openrouter_client import InferenceError
+        from types import SimpleNamespace
+        settings.RERANKER_ENABLED = True
+        adapter = reranking.OpenRouterRerankingAdapter()
+        with patch('core.reranking.get_inference_backends', return_value=SimpleNamespace(reranker=adapter)), patch('core.openrouter_client.post_json', side_effect=InferenceError('http', 503)):
+            result = rerank_candidates('q', [_candidate(1, .1), _candidate(2, .9), _candidate(3, .5)], top_k=2)
+        assert [c['id'] for c in result] == [2, 3, 1]
+        assert all('rerank_score' not in c for c in result)

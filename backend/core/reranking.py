@@ -32,6 +32,7 @@ candidates untouched. A reranker is a quality improvement, never a
 correctness dependency, so it must not be able to break a request.
 """
 
+import math
 import logging
 import threading
 import time
@@ -39,52 +40,92 @@ import time
 from django.conf import settings
 
 from core.scoring import normalize_scores
+from core.inference_backends import get_inference_backends
+from core.openrouter_client import InferenceError
 
 logger = logging.getLogger(__name__)
 
-_model = None
-_load_failed = False
-_load_lock = threading.Lock()
+class LocalRerankingAdapter:
+    provider = "local"
 
-# Serializes inference. A predict() call already uses the whole device -- all
-# cores on CPU, or a full batch on GPU -- so concurrent calls contend rather
-# than overlap, and on GPU they also stack VRAM for no throughput gain.
-_predict_lock = threading.Lock()
+    def __init__(self):
+        self._model = None
+        self._load_failed = False
+        self._load_lock = threading.Lock()
+        self._predict_lock = threading.Lock()
+
+    def get_model(self):
+        """Load the cross-encoder once per process. Returns None if unavailable."""
+
+        if self._model is not None or self._load_failed:
+            return self._model
+
+        with self._load_lock:
+            if self._model is not None or self._load_failed:
+                return self._model
+            try:
+                from sentence_transformers import CrossEncoder
+
+                logger.info(f"Loading reranker model: {settings.RERANKER_MODEL}")
+                started = time.perf_counter()
+                # "auto" hands device choice to sentence-transformers, which
+                # prefers cuda, then mps, then cpu. Explicit values pin it.
+                device = settings.RERANKER_DEVICE
+                self._model = CrossEncoder(
+                    settings.RERANKER_MODEL,
+                    revision=settings.RERANKER_REVISION,
+                    max_length=settings.RERANK_MAX_LENGTH,
+                    device=None if device == "auto" else device,
+                )
+                logger.info(f"Reranker loaded in {time.perf_counter() - started:.1f}s")
+            except Exception:
+                # Most likely a failed model download. Degrade to no reranking
+                # rather than failing every subsequent request.
+                self._load_failed = True
+                logger.exception("Reranker unavailable, continuing without it")
+
+        return self._model
 
 
+    def predict_scores(self, query: str, documents: list[str]) -> list[float]:
+        model = self.get_model()
+        if model is None:
+            raise InferenceError("reranker_unavailable")
+        # CrossEncoder's native Sigmoid behavior remains local to BGE.
+        with self._predict_lock:
+            return [float(score) for score in model.predict([(query, doc) for doc in documents])]
 
-def get_model():
-    """Load the cross-encoder once per process. Returns None if unavailable."""
-    global _model, _load_failed
 
-    if _model is not None or _load_failed:
-        return _model
+class OpenRouterRerankingAdapter:
+    provider = "openrouter"
 
-    with _load_lock:
-        if _model is not None or _load_failed:
-            return _model
+    def predict_scores(self, query: str, documents: list[str]) -> list[float]:
+        from core import openrouter_client
+
+        config = settings.EFFECTIVE_PARAMS['reranking']
+        body = openrouter_client.post_json('/rerank', {
+            'model': config['model'], 'query': query, 'documents': documents,
+            'top_n': len(documents),
+        }, timeout=config['timeout_seconds'])
+        ordered = None
         try:
-            from sentence_transformers import CrossEncoder
-
-            logger.info(f"Loading reranker model: {settings.RERANKER_MODEL}")
-            started = time.perf_counter()
-            # "auto" hands device choice to sentence-transformers, which
-            # prefers cuda, then mps, then cpu. Explicit values pin it.
-            device = settings.RERANKER_DEVICE
-            _model = CrossEncoder(
-                settings.RERANKER_MODEL,
-                revision=settings.RERANKER_REVISION,
-                max_length=settings.RERANK_MAX_LENGTH,
-                device=None if device == "auto" else device,
-            )
-            logger.info(f"Reranker loaded in {time.perf_counter() - started:.1f}s")
-        except Exception:
-            # Most likely a failed model download. Degrade to no reranking
-            # rather than failing every subsequent request.
-            _load_failed = True
-            logger.exception("Reranker unavailable, continuing without it")
-
-    return _model
+            results = body['results']
+            if not isinstance(results, list) or len(results) != len(documents):
+                raise ValueError
+            scores = [None] * len(documents)
+            for item in results:
+                index, score = item['index'], item['relevance_score']
+                if type(index) is not int or not 0 <= index < len(scores) or scores[index] is not None:
+                    raise ValueError
+                if type(score) not in (int, float) or not math.isfinite(score):
+                    raise ValueError
+                scores[index] = float(score)
+            ordered = scores
+        except (KeyError, TypeError, ValueError, IndexError, OverflowError):
+            pass
+        if ordered is None:
+            raise InferenceError("rerank_response")
+        return ordered
 
 
 def rerank_candidates(
@@ -124,19 +165,16 @@ def rerank_candidates(
     if len(head) < 2:
         return head
 
-    model = get_model()
-    if model is None:
-        return ordered
-
-    pairs = [(query, _movie_text(candidate)) for candidate in head]
     try:
         started = time.perf_counter()
-        with _predict_lock:
-            raw_scores = model.predict(pairs)
-        elapsed = time.perf_counter() - started
-        logger.info(f"Reranked {len(pairs)} candidates in {elapsed:.2f}s")
+        raw_scores = get_inference_backends().reranker.predict_scores(
+            query, [_movie_text(candidate) for candidate in head],
+        )
+        if len(raw_scores) != len(head) or any(not math.isfinite(score) for score in raw_scores):
+            raise InferenceError("rerank_response")
+        logger.info("Reranked %d candidates in %.2fs", len(head), time.perf_counter() - started)
     except Exception:
-        logger.exception("Reranking failed, falling back to scorer order")
+        logger.warning("Reranking failed, falling back to scorer order")
         return ordered
 
     rerank_norm = normalize_scores([float(score) for score in raw_scores])

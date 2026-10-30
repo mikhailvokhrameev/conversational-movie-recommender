@@ -1,7 +1,9 @@
 """Tests for core.pipeline.generate_and_score -- the stage wiring only; each
 stage has its own tests. No DB: every stage is patched."""
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from core.pipeline import generate_and_score
 
@@ -101,7 +103,7 @@ class TestRelevanceGate:
         pool = [{"id": 1, "total": 0.9}, {"id": 2, "total": 0.8}]
         with patch("core.pipeline.generate_candidates", return_value=pool), \
              patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c), \
-             patch("core.reranking.get_model", return_value=None), \
+             patch("core.reranking.LocalRerankingAdapter.get_model", return_value=None), \
              patch("core.pipeline.mmr_diversify", side_effect=lambda c, top_n: c[:top_n]), \
              caplog.at_level("WARNING", logger="core.pipeline"):
             top, _ = generate_and_score([0.1], {}, query_text="q", top_n=5)
@@ -165,3 +167,52 @@ class TestExclusion:
         pool = [_film(i, f"Film {i}") for i in range(1, 6)]
         top, _ = self._run(pool, exclude_ids={1, 2}, top_n=3)
         assert [c["tmdb_id"] for c in top] == [3, 4, 5]
+
+
+@pytest.mark.parametrize("provider", ["local", "openrouter"])
+def test_shared_pipeline_adapter_contract(provider, settings):
+    from types import SimpleNamespace
+    from core.reranking import LocalRerankingAdapter, OpenRouterRerankingAdapter
+
+    settings.RERANKER_ENABLED = True
+    settings.RERANK_TOP_K = 3
+    settings.RERANK_WEIGHT = 1.0
+    settings.RERANK_MIN_SCORE = None
+    pool = [dict(_film(i, f"Film {i}"), total=1 - i / 10,
+                 embedding=[1.0, 0.0]) for i in range(1, 5)]
+    adapter = {"local": LocalRerankingAdapter, "openrouter": OpenRouterRerankingAdapter}[provider]()
+    model = MagicMock()
+    model.predict.return_value = [.1, .9, .5]
+    body = {'results': [{'index': i, 'relevance_score': s} for i, s in [(2, .5), (0, .1), (1, .9)]]}
+    with patch("core.pipeline.generate_candidates", return_value=pool), \
+         patch("core.pipeline.score_candidates", side_effect=lambda c, *a, **kw: c), \
+         patch("core.reranking.get_inference_backends", return_value=SimpleNamespace(reranker=adapter)), \
+         patch.object(LocalRerankingAdapter, "get_model", return_value=model), \
+         patch("core.openrouter_client.post_json", return_value=body):
+        top, reranked = generate_and_score([1.0, 0.0], {}, query_text="q", top_n=2)
+    assert [c['id'] for c in reranked] == [2, 3, 1]
+    assert [c['rerank_score'] for c in reranked] == [.9, .5, .1]
+    assert [c['id'] for c in top] == [2, 3]
+
+
+@pytest.mark.parametrize('failure', ['http', 'incomplete'])
+def test_cloud_reranking_failure_keeps_full_pool_and_gate_open(failure, settings, caplog):
+    from types import SimpleNamespace
+    from core.reranking import OpenRouterRerankingAdapter
+    from core.openrouter_client import InferenceError
+
+    settings.RERANKER_ENABLED = True
+    settings.RERANK_TOP_K = 2
+    settings.RERANK_MIN_SCORE = .5
+    pool = [dict(_film(i, f'Film {i}'), total=i / 10) for i in range(1, 4)]
+    kwargs = {'side_effect': InferenceError('http', 503)} if failure == 'http' else {'return_value': {'results': [{'index': 0, 'relevance_score': .9}]}}
+    with patch('core.pipeline.generate_candidates', return_value=pool), \
+         patch('core.pipeline.score_candidates', side_effect=lambda c, *a, **kw: c), \
+         patch('core.reranking.get_inference_backends', return_value=SimpleNamespace(reranker=OpenRouterRerankingAdapter())), \
+         patch('core.openrouter_client.post_json', **kwargs), \
+         patch('core.pipeline.mmr_diversify', side_effect=lambda c, top_n: c[:top_n]):
+        top, reranked = generate_and_score([.1], {}, query_text='q', top_n=5)
+    assert [c['id'] for c in top] == [3, 2, 1]
+    assert top == reranked
+    assert all('rerank_score' not in c for c in reranked)
+    assert any('gate skipped' in record.getMessage() for record in caplog.records)

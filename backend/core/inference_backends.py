@@ -14,12 +14,6 @@ class InferenceBackends:
     reranker: object
 
 
-@dataclass(frozen=True)
-class _PendingAdapter:
-    """Configuration-only placeholder until the concrete adapter is wired."""
-    provider: str
-
-
 def _build_backends() -> InferenceBackends:
     from django.conf import settings
 
@@ -27,13 +21,16 @@ def _build_backends() -> InferenceBackends:
 
     from core.embedding_service import LocalEmbeddingAdapter, OpenRouterEmbeddingAdapter
 
+    from core.reranking import LocalRerankingAdapter, OpenRouterRerankingAdapter
+
     params = settings.EFFECTIVE_PARAMS
     llm_adapters = {"ollama": OllamaLLMAdapter, "openrouter": OpenRouterLLMAdapter}
     embedding_adapters = {"local": LocalEmbeddingAdapter, "openrouter": OpenRouterEmbeddingAdapter}
+    reranking_adapters = {"local": LocalRerankingAdapter, "openrouter": OpenRouterRerankingAdapter}
     return InferenceBackends(
         llm=llm_adapters[params['llm']['provider']](),
         embedder=embedding_adapters[params['embedding']['provider']](),
-        reranker=_PendingAdapter(params['reranking']['provider']),
+        reranker=reranking_adapters[params['reranking']['provider']](),
     )
 
 
