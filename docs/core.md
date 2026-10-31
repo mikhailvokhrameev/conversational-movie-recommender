@@ -418,3 +418,11 @@ and returns a mood field -- the separate module was doing the same job worse.
 - [API Reference](api.md) for HTTP endpoints that call the core pipeline
 - [Data Models](models.md) for Movie and ChatSession schemas
 - [ML Decisions](ML.md) for evaluation methodology and parameter tuning
+
+### Saved-pool graded replay
+
+`core.graded_pool` captures candidate evidence and provenance; `core.graded_evaluation`
+replays ranking, fitting and frozen test proposals without inference or DB access.
+See the [graded workflow](ML.md#graded-saved-pool-workflow-quality-calibration-pending)
+for separate dev/test artifacts, missing grades and test-access locks. This workflow
+does not establish accepted production settings or replace legacy evaluation flags.

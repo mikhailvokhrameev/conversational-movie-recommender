@@ -678,6 +678,55 @@ cd backend && python manage.py evaluate_scoring --label-report ../eval_runs/labe
 docker compose exec backend python manage.py evaluate_scoring --weights 0.6,0.2,0.2 --output eval_runs/custom.json
 ```
 
+### Graded saved-pool workflow (quality calibration pending)
+
+The new `--pool-export` workflow saves e2e intent and candidate evidence once;
+`--grade-report` replays those saved pools on CPU without DB or inference. It
+coexists with the golden-set, binary gate-label, sweep and session-ablation
+commands above. Grades are 0–3; blank means unjudged, never irrelevant. See
+[ADR 0012](adr/0012-mode-specific-quality-calibration.md) for acceptance limits.
+
+Only the user runs pool exports: local needs the GPU; OpenRouter may incur paid
+inference requests. Use separate dev and test CSVs for each mode. The query JSON
+requires unique `id`, exact `query`, and `split` (`dev` or `test`). For example,
+in the already selected mode's backend container:
+
+```bash
+# USER ONLY: capture dev evidence (use unique paths per mode)
+python manage.py evaluate_scoring --queries data/queries.json --split dev --pool-export eval_runs/local-dev.csv
+# Offline host commands, from backend/: grade CSV first, then report/fit
+python manage.py evaluate_scoring --grade-report ../eval_runs/local-dev.csv --split dev
+python manage.py evaluate_scoring --grade-report ../eval_runs/local-dev.csv --split dev --fit
+# USER ONLY: separate held-out test capture, with the same frozen baseline
+python manage.py evaluate_scoring --queries data/queries.json --split test --pool-export eval_runs/local-test.csv
+# Offline: inspect held-out grades only after freezing the dev proposal
+python manage.py evaluate_scoring --grade-report ../eval_runs/local-test.csv --split test --frozen-proposal ../eval_runs/local-dev.run/frozen-fit.json
+```
+
+Keep each CSV and its adjacent `.run` directory together, and retain the source
+dev manifest at its recorded path. Test compatibility checks mode, provider/model
+metadata, catalog/index provenance and baseline settings. Do not apply proposed
+parameters before capturing the test pool: replay compares baseline and proposal
+on that same frozen evidence. Test access locks further dev fitting even if
+grades are incomplete or invalid. Combined CSVs containing populated test grades
+cannot be fitted. These local artifact locks are not tamper-resistant.
+
+Use `--reuse-grades PATH` during a second export to reuse matching query/movie
+grades (including across modes); grade only new pairs and review pool coverage.
+An export can be resumed with `--resume` and matching identity. Missing judgments
+are exported to `.missing.csv`; complete compared top-five judgments are required
+for fitting. Dev fitting requires at least five eligible queries and records
+five-fold grouped query CV. Its bootstrap interval covers ranking selection at
+the baseline gate, not subsequent dev gate calibration. Gate calibration needs
+fully judged head evidence and remains separate for local BGE and cloud Voyage.
+
+Fitting writes a proposal, never `params.yaml`. Current weights and gates remain
+unaccepted by this graded workflow: no real graded dev/test sample, fitted values
+or quality acceptance has been recorded. Existing local binary-label gate evidence
+does not calibrate Voyage. Review paired test nDCG@5, junk@5, coverage, empty rate,
+query-bootstrap uncertainty and sample size before applying any proposal; golden
+behaviour and interactive provider checks remain user-run requirements.
+
 ### Evaluation Results
 
 **Golden-set metrics: none recorded yet.** The

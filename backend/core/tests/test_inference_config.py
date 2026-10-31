@@ -90,3 +90,32 @@ def test_cloud_settings_import_without_key(monkeypatch):
     assert loaded['EMBEDDING_MODEL'] == 'BAAI/bge-m3'
     assert loaded['EMBEDDING_REVISION'] is None
     assert loaded['RERANK_MIN_SCORE'] is None
+
+
+def test_effective_scoring_profiles_validate_and_cloud_override_is_isolated():
+    from recommender.settings import (
+        _validate_quality, _validate_rerank_weight, _validate_score_weights,
+    )
+
+    original = deepcopy(settings.PARAMS)
+    for mode in ('local', 'openrouter'):
+        effective = resolve_inference_config(original, mode)
+        _validate_score_weights(effective['scoring']['weights'])
+        _validate_quality(effective['scoring']['quality'])
+        _validate_rerank_weight(effective['reranking'])
+        assert sum(effective['scoring']['weights'].values()) == pytest.approx(1.0)
+
+    changed = deepcopy(original)
+    changed['runtime_profiles']['openrouter']['scoring'] = {
+        'weights': {'semantic': 0.4, 'metadata': 0.3, 'popularity': 0.2, 'quality': 0.1},
+    }
+    cloud = resolve_inference_config(changed, 'openrouter')
+    _validate_score_weights(cloud['scoring']['weights'])
+    assert cloud['scoring']['weights']['quality'] == 0.1
+    local_before = resolve_inference_config(original, 'local')
+    local_after = resolve_inference_config(changed, 'local')
+    # The resolver retains profile definitions as metadata, not active settings.
+    local_before.pop('runtime_profiles')
+    local_after.pop('runtime_profiles')
+    assert local_after == local_before
+    assert settings.PARAMS == original

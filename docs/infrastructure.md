@@ -112,3 +112,13 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | `evaluate_scoring --intent oracle --k 10 --label-export eval_runs/labels.csv` | CSV of ungated dev results for hand-labelling relevance (dev split only; `eval_runs/` is the container's writable mount, `./eval_runs` on the host) |
 | `evaluate_scoring --label-report ../eval_runs/labels.csv` | Threshold/margin curves from the labelled CSV, run on the host from `backend/` (no DB, Ollama or models) |
 | `cleanup_sessions` | Delete expired chat sessions (>24h) |
+
+### Quality calibration operations
+
+Only the user runs `evaluate_scoring --pool-export`: local capture requires models/GPU;
+OpenRouter capture can incur paid calls. Offline `--grade-report`, `--fit` and
+`--frozen-proposal` replay saved evidence without providers or DB. Preserve each CSV,
+its adjacent `.run` directory and the source dev manifest at its recorded path. Use
+separate mode-specific dev/test exports and freeze the dev proposal before test grades
+are read; see the [workflow](ML.md#graded-saved-pool-workflow-quality-calibration-pending).
+No graded quality acceptance or new calibrated settings are established yet.

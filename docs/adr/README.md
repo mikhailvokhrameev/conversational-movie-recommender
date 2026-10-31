@@ -25,5 +25,7 @@ supersedes the old one; the old one is kept with status `Superseded by NNNN`.
 | [0010](0010-drop-session-vector-contextual-query-text.md) | Drop the session vector; rank on a context-aware standalone query | Accepted |
 | [0011](0011-unverifiable-constraints-ask-before-recommending.md) | Ask before dropping constraints the catalog cannot check | Accepted |
 
+| [0012](0012-mode-specific-quality-calibration.md) | Mode-specific quality calibration on saved human-graded pools | Proposed |
+
 To add one: copy the shape of an existing record, take the next number, add a row
 above.
