@@ -852,3 +852,15 @@ def test_grade_report_offline_dispatch(tmp_path):
         call_command('evaluate_scoring', '--grade-report', 'pool.csv', '--split', 'dev', stdout=out)
     report.assert_called_once_with('pool.csv', 'dev', False)
     assert json.loads(out.getvalue())['mode'] == 'recorded'
+
+
+
+def test_grade_report_accepts_explicit_proposal_and_rejects_test_without_one(tmp_path):
+    out = StringIO()
+    with patch('core.graded_evaluation.offline_report', return_value={'frozen_choice': True}) as report:
+        call_command('evaluate_scoring', '--grade-report', 'test.csv', '--split', 'test',
+                     '--frozen-proposal', 'dev.run/frozen-fit.json', stdout=out)
+    report.assert_called_once_with('test.csv', 'test', False, frozen_proposal='dev.run/frozen-fit.json')
+    with patch('core.graded_evaluation.read_grades', side_effect=AssertionError('grades inspected')):
+        with pytest.raises(CommandError, match='frozen proposal'):
+            call_command('evaluate_scoring', '--grade-report', str(tmp_path/'absent.csv'), '--split', 'test')

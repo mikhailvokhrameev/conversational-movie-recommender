@@ -209,6 +209,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument("--grade-report", type=str)
         parser.add_argument("--fit", action="store_true")
+        parser.add_argument("--frozen-proposal", type=str)
         parser.add_argument("--queries", type=str)
         parser.add_argument("--pool-export", type=str)
         parser.add_argument("--limit-queries", type=int)
@@ -295,8 +296,8 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         if options.get("grade_report"):
             return self._grade_report(options)
-        if options.get("fit"):
-            raise CommandError("--fit requires --grade-report")
+        if options.get("fit") or options.get("frozen_proposal"):
+            raise CommandError("--fit/--frozen-proposal require --grade-report")
         if options.get("pool_export"):
             return self._pool_export(options)
         if any(options.get(key) for key in ("queries", "limit_queries", "resume", "reuse_grades")):
@@ -328,7 +329,8 @@ class Command(BaseCommand):
         if any(options.get(key) for key in incompatible):
             raise CommandError("--grade-report cannot combine evaluation modes")
         try:
-            report = offline_report(options["grade_report"], options.get("split") or "dev", options.get("fit", False))
+            proposal_options = {"frozen_proposal": options["frozen_proposal"]} if options.get("frozen_proposal") else {}
+            report = offline_report(options["grade_report"], options.get("split") or "dev", options.get("fit", False), **proposal_options)
         except (ValueError, KeyError, OSError) as exc:
             raise CommandError(str(exc)) from exc
         destination = options.get("output")

@@ -150,31 +150,108 @@ def test_fit_missing_grades_and_gate_evidence():
     assert result['calibrated'] and result['threshold'] == 1.
 
 
-def test_offline_report_mode_snapshot_and_frozen_test(tmp_path):
+def write_run(tmp_path, name, split, grade='3', **overrides):
     import json
     from core.graded_pool import RunStore, COLUMNS
-    from core.graded_evaluation import offline_report
-    p = config()
-    ss = [snapshot(str(i)) for i in range(5)] + [snapshot('t', 'test')]
-    path = tmp_path / 'pool.csv'
-    run = RunStore(path, {'inference': {'mode': 'openrouter'}, 'baseline_params': p,
-                          'queries': [s['entry'] for s in ss]})
-    for s in ss:
-        run.save(s['entry']['id'], s)
+    ss = [snapshot(str(i), split) for i in range(5 if split == 'dev' else 1)]
+    path = tmp_path / (name + '.csv')
+    identity = {'inference': {'mode': 'local', 'components': {'reranking': {'model': 'bge'}}},
+                'baseline_params': config(), 'catalog_sha256': 'catalog', 'index': {'model': 'embed'},
+                'queries': [s['entry'] for s in ss]}
+    identity.update(overrides)
+    run = RunStore(path, identity)
+    for item in ss:
+        run.save(item['entry']['id'], item)
     run.manifest['status'] = 'complete'
     run.manifest_path.write_text(json.dumps(run.manifest))
     path.write_text(','.join(COLUMNS)+'\n'+''.join(
-        f"{s['entry']['id']},{s['entry']['query']},{s['entry']['split']},{i},{i},,,3\n"
-        for s in ss for i in range(1, 8)))
-    r = offline_report(path, 'dev', True)
-    assert r['mode'] == 'openrouter'
-    assert r['fit']['applied']
-    test = offline_report(path, 'test', False)
-    assert test['frozen_choice']
-    assert test['comparison_complete']
-    with pytest.raises(ValueError, match='test'):
-        offline_report(path, 'test', True)
+        f"{item['entry']['id']},{item['entry']['query']},{split},{i},{i},,,{grade}\n"
+        for item in ss for i in range(1, 8)))
+    return path
 
+
+def test_independent_dev_test_proposal_and_freeze(tmp_path):
+    from core.graded_evaluation import offline_report
+    dev = write_run(tmp_path, 'dev', 'dev')
+    test = write_run(tmp_path, 'test', 'test')
+    result = offline_report(dev, 'dev', True)
+    assert result['fit']['applied']
+    assert 'baseline gate' in result['fit']['cross_validation']['scope']
+    proposal = dev.with_suffix('.run')/'frozen-fit.json'
+    report = offline_report(test, 'test', frozen_proposal=proposal)
+    assert report['frozen_choice'] and report['comparison_complete']
+    assert report['source_dev_identity_sha256']
+    with pytest.raises(ValueError, match='test access'):
+        offline_report(dev, 'dev', True)
+
+
+def test_test_requires_choice_before_reading_grades(tmp_path, monkeypatch):
+    from core.graded_evaluation import offline_report
+    path = write_run(tmp_path, 'test', 'test')
+    monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
+    with pytest.raises(ValueError, match='frozen proposal'):
+        offline_report(path, 'test')
+
+
+@pytest.mark.parametrize('change', ['mode', 'provider', 'catalog', 'index', 'baseline'])
+def test_proposal_compatibility_before_grades(tmp_path, monkeypatch, change):
+    from core.graded_evaluation import offline_report
+    dev = write_run(tmp_path, 'dev', 'dev')
+    offline_report(dev, 'dev', True)
+    overrides = {}
+    if change in ('mode', 'provider'):
+        overrides['inference'] = {'mode': 'openrouter' if change == 'mode' else 'local',
+                                 'components': {'reranking': {'model': 'voyage'}}}
+    elif change == 'catalog':
+        overrides['catalog_sha256'] = 'different'
+    elif change == 'index':
+        overrides['index'] = {'model': 'other'}
+    else:
+        overrides['baseline_params'] = config()
+        overrides['baseline_params']['reranking']['weight'] = .9
+    test = write_run(tmp_path, 'test', 'test', **overrides)
+    monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
+    with pytest.raises(ValueError, match='incompatible'):
+        offline_report(test, 'test', frozen_proposal=dev.with_suffix('.run')/'frozen-fit.json')
+
+
+@pytest.mark.parametrize('grade', ['', '4'])
+def test_first_test_access_locks_even_incomplete_or_invalid_grades(tmp_path, monkeypatch, grade):
+    from core.graded_evaluation import offline_report
+    dev = write_run(tmp_path, 'dev', 'dev')
+    offline_report(dev, 'dev', True)
+    proposal = dev.with_suffix('.run')/'frozen-fit.json'
+    test = write_run(tmp_path, 'test', 'test', grade=grade)
+    original = __import__('core.graded_evaluation', fromlist=['read_grades']).read_grades
+    def checked(*args, **kw):
+        assert (proposal.parent/'test-access.json').exists()
+        return original(*args, **kw)
+    monkeypatch.setattr('core.graded_evaluation.read_grades', checked)
+    if grade == '4':
+        with pytest.raises(ValueError, match='line 2'):
+            offline_report(test, 'test', frozen_proposal=proposal)
+    else:
+        report = offline_report(test, 'test', frozen_proposal=proposal)
+        assert not report['comparison_complete']
+    with pytest.raises(ValueError, match='test access'):
+        offline_report(dev, 'dev', True)
+
+
+def test_dev_fit_rejects_populated_combined_test_grades(tmp_path):
+    import json
+    from core.graded_evaluation import offline_report
+    from core.graded_pool import digest, atomic_json
+    dev = write_run(tmp_path, 'dev', 'dev')
+    directory = dev.with_suffix('.run')
+    manifest = json.loads((directory/'manifest.json').read_text())
+    test = snapshot('t', 'test')
+    manifest['identity']['queries'].append(test['entry'])
+    atomic_json(directory/'manifest.json', manifest)
+    atomic_json(directory/(digest('t')+'.json'), test)
+    with dev.open('a') as stream:
+        stream.write('t,t,test,1,1,,,3\n')
+    with pytest.raises(ValueError, match='held-out test grades'):
+        offline_report(dev, 'dev', True)
 
 
 def test_mmr_and_stable_ties():
@@ -190,3 +267,41 @@ def test_mmr_and_stable_ties():
     assert [c['id'] for c in top] == [1, 3]
     p['diversification']['lambda'] = 1.
     assert [c['id'] for c in replay_ranking(s, p, 2)] == [1, 2]
+
+
+@pytest.mark.parametrize('change', ['identity', 'choice'])
+def test_copied_proposal_preserves_source_dev_binding(tmp_path, monkeypatch, change):
+    import json
+    from core.graded_evaluation import offline_report
+    from core.graded_pool import atomic_json
+    dev = write_run(tmp_path, 'dev', 'dev')
+    offline_report(dev, 'dev', True)
+    directory = dev.with_suffix('.run')
+    proposal = directory/'frozen-fit.json'
+    copied = tmp_path/'copied-proposal.json'
+    copied.write_bytes(proposal.read_bytes())
+    if change == 'identity':
+        manifest = json.loads((directory/'manifest.json').read_text())
+        manifest['identity']['catalog_sha256'] = 'changed'
+        atomic_json(directory/'manifest.json', manifest)
+    else:
+        choice = json.loads(proposal.read_text())
+        choice['params']['reranking']['weight'] = .99
+        atomic_json(proposal, choice)
+    test = write_run(tmp_path, 'test', 'test')
+    monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
+    with pytest.raises(ValueError, match='source dev'):
+        offline_report(test, 'test', frozen_proposal=copied)
+
+
+def test_test_access_cannot_switch_to_another_dev_proposal(tmp_path, monkeypatch):
+    from core.graded_evaluation import offline_report
+    dev = write_run(tmp_path, 'dev', 'dev')
+    other = write_run(tmp_path, 'other-dev', 'dev')
+    offline_report(dev, 'dev', True)
+    offline_report(other, 'dev', True)
+    test = write_run(tmp_path, 'test', 'test', grade='')
+    offline_report(test, 'test', frozen_proposal=dev.with_suffix('.run')/'frozen-fit.json')
+    monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
+    with pytest.raises(ValueError, match='different frozen proposal'):
+        offline_report(test, 'test', frozen_proposal=other.with_suffix('.run')/'frozen-fit.json')

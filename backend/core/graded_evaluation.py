@@ -60,7 +60,7 @@ def replay_ranking(snapshot: dict, params: dict, k: int) -> list[dict]:
     return mmr_diversify(gated, top_n=k, lambda_param=params['diversification']['lambda'])
 
 
-def read_grades(path, snapshots, split=None):
+def read_grades(path, snapshots, split=None, reject_heldout_grades=False):
     known = {(str(s['entry']['id']), str(c['tmdb_id']))
              for s in snapshots for cs in s['variants'].values() for c in cs}
     grades = {}
@@ -77,6 +77,8 @@ def read_grades(path, snapshots, split=None):
             if any(field in row and row[field] != entry[field] for field in ('query', 'split')):
                 raise ValueError(f'CSV line {line}: query identity mismatch')
             if split is not None and entry['split'] != split:
+                if reject_heldout_grades and entry['split'] == 'test' and row['grade'].strip():
+                    raise ValueError(f'CSV line {line}: dev fitting cannot consume a CSV with held-out test grades; use separate runs')
                 continue
             value = row['grade'].strip()
             if value == '':
@@ -263,15 +265,46 @@ def fit_ranking_params(snapshots: list[dict], grades: dict, config: dict) -> dic
     return dict(applied=True, complete_coverage=True, missing_pairs=[], configurations_evaluated=len(configs),
                 skipped_queries=len(snapshots)-len(eligible), selected_params=selected, baseline=base, selected=selected_report, gate=gate,
                 cross_validation=dict(folds=fold_rows, **summary, seed=7,
+                                      scope='Held-out ranking-weight selection at the recorded baseline gate; excludes subsequent final dev gate calibration',
                                       paired_query_bootstrap_delta_95=np.quantile(bootstrap, [.025, .975]).tolist()),
                 pool_bias=base['pool_bias'], scope='dev only; freeze this proposal before test evaluation')
 
 
-def offline_report(path, split='dev', fit=False):
-    """Read companion evidence without consulting active inference mode or DB.
+def _proposal_compatibility(identity):
+    """Compatibility intentionally excludes query lists and split assignment."""
+    from core.graded_pool import digest
+    required = ('catalog_sha256', 'index', 'baseline_params', 'inference')
+    if any(key not in identity or identity[key] is None for key in required):
+        raise ValueError('incompatible proposal: missing catalog/index/baseline provenance; export a new pool')
+    inference = identity['inference']
+    if not inference.get('mode') or not inference.get('components'):
+        raise ValueError('incompatible proposal: missing mode/provider/model provenance')
+    return {'mode': inference['mode'], 'components': inference['components'],
+            'catalog_sha256': identity['catalog_sha256'], 'index': identity['index'],
+            'baseline_sha256': digest(identity['baseline_params'])}
 
-    The dev choice is persisted separately. Once a complete test comparison has
-    been recorded, that choice cannot be overwritten by another fitting run.
+
+def _load_frozen_proposal(proposal_path, identity):
+    import json
+    from core.graded_pool import digest
+    frozen = json.loads(proposal_path.read_text())
+    if frozen.get('compatibility') != _proposal_compatibility(identity):
+        raise ValueError('incompatible frozen proposal: mode/provider, catalog/index provenance or baseline differs')
+    source_manifest = Path(frozen['source_dev_manifest'])
+    source = json.loads(source_manifest.read_text())
+    if digest(source['identity']) != frozen['source_dev_identity_sha256']:
+        raise ValueError('incompatible proposal: source dev identity has changed')
+    original = json.loads((source_manifest.parent/'frozen-fit.json').read_text())
+    if digest(original) != digest(frozen):
+        raise ValueError('incompatible proposal: source dev choice has been replaced')
+    return frozen, source_manifest.parent
+
+
+def offline_report(path, split='dev', fit=False, frozen_proposal=None):
+    """Replay a frozen dev proposal against a compatible independent test run.
+
+    First test access locks its source dev run before reading test grades,
+    including attempts that later fail validation or have incomplete coverage.
     """
     import json
     from core.graded_pool import atomic_json, digest, COLUMNS
@@ -280,8 +313,17 @@ def offline_report(path, split='dev', fit=False):
         raise ValueError('grade report split must be dev or test')
     if fit and split == 'test':
         raise ValueError('cannot fit test grades')
+    if fit and frozen_proposal:
+        raise ValueError('cannot combine fitting with a frozen proposal')
     directory = path.with_suffix('.run')
-    manifest = json.loads((directory/'manifest.json').read_text())
+    fit_path, test_path = directory/'frozen-fit.json', directory/'test-report.json'
+    proposal_path = Path(frozen_proposal) if frozen_proposal else fit_path
+    if split == 'test' and not proposal_path.is_file():
+        raise ValueError('test reporting requires a frozen proposal; fit a separate dev run first and pass --frozen-proposal PATH')
+    if fit and (directory/'test-access.json').exists():
+        raise ValueError('test access already recorded; the frozen dev choice cannot be replaced')
+    manifest_path = directory/'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
     if manifest['status'] != 'complete':
         raise ValueError('pool export is incomplete; resume it before offline evaluation')
     identity = manifest['identity']
@@ -289,39 +331,47 @@ def offline_report(path, split='dev', fit=False):
         raise ValueError('manifest lacks baseline_params; export a new pool for faithful offline replay')
     baseline = identity['baseline_params']
     mode = identity['inference']['mode']
+    frozen = None
+    if not fit and proposal_path.exists():
+        frozen, source_directory = _load_frozen_proposal(proposal_path, identity)
+        if split == 'test':
+            # Durably lock both the source dev choice and target test run before
+            # reading even one held-out grade or calculating any test metric.
+            access = {'proposal_sha256': digest(frozen),
+                      'source_dev_identity_sha256': frozen['source_dev_identity_sha256']}
+            for lock_directory in dict.fromkeys([source_directory, directory]):
+                lock_path = lock_directory/'test-access.json'
+                if lock_path.exists():
+                    if json.loads(lock_path.read_text()) != access:
+                        raise ValueError('test access already bound to a different frozen proposal')
+                else:
+                    atomic_json(lock_path, access)
     snapshots = []
     for entry in identity['queries']:
-        s = json.loads((directory/(digest(entry['id'])+'.json')).read_text())
-        if not s.get('complete') or s['entry'] != entry:
+        item = json.loads((directory/(digest(entry['id'])+'.json')).read_text())
+        if not item.get('complete') or item['entry'] != entry:
             raise ValueError('incomplete or mismatched query snapshot; resume pool export')
-        snapshots.append(s)
-    # Validate row identities, but read grades only from the requested split.
-    # Held-out grades never enter fitting, gate calibration or selection.
-    grades = read_grades(path, snapshots, split=split)
-    selected_snapshots = [s for s in snapshots if s['entry']['split'] == split]
+        snapshots.append(item)
+    grades = read_grades(path, snapshots, split=split, reject_heldout_grades=fit)
+    selected_snapshots = [item for item in snapshots if item['entry']['split'] == split]
     if not selected_snapshots:
         raise ValueError(f'no {split} snapshots; export that split first')
     k = baseline['diversification']['top_n']
     report = dict(mode=mode, split=split, baseline=grade_report(selected_snapshots, grades, baseline, k))
-    fit_path, test_path = directory/'frozen-fit.json', directory/'test-report.json'
-    token = digest(identity)
     if fit:
-        if test_path.exists():
-            raise ValueError('test report already completed; frozen dev choices cannot be refitted')
+        compatibility = _proposal_compatibility(identity)
         result = fit_ranking_params(selected_snapshots, grades, baseline)
         report['fit'] = result
         if result['applied']:
             proposal = copy.deepcopy(result['selected_params'])
-            # Preserve the recorded baseline gate when dev evidence cannot
-            # calibrate this provider's raw-score scale.
             if result['gate']['calibrated']:
                 proposal['reranking']['min_score'] = result['gate']['threshold']
-            atomic_json(fit_path, dict(identity_sha256=token, mode=mode, params=proposal))
-    elif fit_path.exists():
-        frozen = json.loads(fit_path.read_text())
-        if frozen['identity_sha256'] != token or frozen['mode'] != mode:
-            raise ValueError('frozen fit belongs to a different manifest or mode')
+            atomic_json(fit_path, dict(source_dev_identity_sha256=digest(identity),
+                                      source_dev_manifest=str(manifest_path.resolve()),
+                                      compatibility=compatibility, params=proposal))
+    elif frozen:
         report['frozen_choice'] = True
+        report['source_dev_identity_sha256'] = frozen['source_dev_identity_sha256']
         report['selected'] = grade_report(selected_snapshots, grades, frozen['params'], k)
     else:
         report['frozen_choice'] = False
