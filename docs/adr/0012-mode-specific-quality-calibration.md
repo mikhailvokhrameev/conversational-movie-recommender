@@ -21,7 +21,11 @@ Freeze dev proposals before reading separate held-out test grades. Replay each
 mode's proposal and frozen baseline on identical mode-specific test snapshots.
 Require complete judged top-five comparisons, lower junk@5 and no reduction in
 nDCG@5; report paired query-bootstrap intervals, empty rates, coverage and sample
-size. Failed criteria retain the baseline. Unexpected extra empty answers or provider
+size. The offline test report computes deterministic paired selected-minus-baseline
+95% intervals for all six reported metrics, with per-metric eligible query counts;
+incomplete or skipped-query comparisons withhold intervals. This compares the
+final frozen proposal including its dev-selected gate; dev CV intervals cover
+ranking selection at the baseline gate only. Failed criteria retain the baseline. Unexpected extra empty answers or provider
 failures in user-run golden/interactive checks block that mode's acceptance.
 
 The [workflow](../ML.md#graded-saved-pool-workflow-quality-calibration-pending)

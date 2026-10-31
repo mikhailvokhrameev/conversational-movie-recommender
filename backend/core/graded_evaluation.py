@@ -143,6 +143,37 @@ def grade_report(snapshots: list[dict], grades: dict, params: dict, k: int) -> d
                 pool_bias='Metrics are conditional on saved candidate pools and human-judged union; not catalog-wide recall.')
 
 
+
+def paired_test_bootstrap(baseline, selected, samples):
+    """Paired query resampling of the final frozen test choice, never tuning."""
+    metrics = ('ndcg@5', 'junk@5', 'good@5', 'community_recall',
+               'empty_result_rate', 'judged_coverage')
+    base = {r['query_id']: r for r in baseline['per_query']}
+    chosen = {r['query_id']: r for r in selected['per_query']}
+    eligible = sorted(q for q in base.keys() & chosen.keys()
+                      if base[q]['ndcg@5'] is not None and chosen[q]['ndcg@5'] is not None)
+    complete = (baseline['complete_coverage'] and selected['complete_coverage']
+                and not baseline['skipped_queries'] and not selected['skipped_queries'])
+    result = dict(available=bool(eligible) and complete, seed=7, bootstrap_samples=samples,
+                  confidence=.95, query_count=len(eligible), total_query_count=baseline['overall']['query_count'],
+                  delta_direction='selected minus baseline',
+                  scope='Separate held-out test: frozen selected configuration including its dev-selected gate versus recorded baseline',
+                  metrics={})
+    if not result['available']:
+        result['reason'] = 'Complete judged comparison with at least one eligible paired query required; no test interval reported.'
+        return result
+    for metric in metrics:
+        ids = [q for q in eligible if base[q][metric] is not None and chosen[q][metric] is not None]
+        if not ids:
+            result['metrics'][metric] = dict(query_count=0, delta_mean=None, delta_95=None)
+            continue
+        delta = np.array([chosen[q][metric]-base[q][metric] for q in ids])
+        rng = np.random.default_rng(7)
+        means = np.mean(rng.choice(delta, (samples, len(delta))), axis=1)
+        result['metrics'][metric] = dict(query_count=len(ids), delta_mean=float(np.mean(delta)),
+                                         delta_95=np.quantile(means, [.025, .975]).tolist())
+    return result
+
 def grouped_folds(snapshots):
     ids = sorted({str(s['entry']['id']) for s in snapshots})
     if len(ids) < 5:
@@ -404,6 +435,9 @@ def offline_report(path, split='dev', fit=False, frozen_proposal=None):
             writer = csv.DictWriter(stream, fieldnames=COLUMNS, extrasaction='ignore')
             writer.writeheader(); writer.writerows(rows.values())
         report['missing_grades_csv'] = str(destination)
+    if split == 'test' and report['frozen_choice']:
+        report['paired_query_bootstrap'] = paired_test_bootstrap(
+            report['baseline'], report['selected'], baseline['evaluation']['grade_fit']['bootstrap_samples'])
     if split == 'test' and report['comparison_complete'] and report['frozen_choice']:
         if test_path.exists():
             previous = json.loads(test_path.read_text())

@@ -180,6 +180,9 @@ def test_independent_dev_test_proposal_and_freeze(tmp_path):
     proposal = dev.with_suffix('.run')/'frozen-fit.json'
     report = offline_report(test, 'test', frozen_proposal=proposal)
     assert report['frozen_choice'] and report['comparison_complete']
+    assert report['paired_query_bootstrap']['available']
+    assert report['paired_query_bootstrap']['metrics']['ndcg@5']['query_count'] == 1
+    assert offline_report(test, 'test', frozen_proposal=proposal) == report
     assert report['source_dev_identity_sha256']
     with pytest.raises(ValueError, match='test access'):
         offline_report(dev, 'dev', True)
@@ -233,6 +236,7 @@ def test_first_test_access_locks_even_incomplete_or_invalid_grades(tmp_path, mon
     else:
         report = offline_report(test, 'test', frozen_proposal=proposal)
         assert not report['comparison_complete']
+        assert not report['paired_query_bootstrap']['available']
     with pytest.raises(ValueError, match='test access'):
         offline_report(dev, 'dev', True)
 
@@ -305,3 +309,47 @@ def test_test_access_cannot_switch_to_another_dev_proposal(tmp_path, monkeypatch
     monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
     with pytest.raises(ValueError, match='different frozen proposal'):
         offline_report(test, 'test', frozen_proposal=other.with_suffix('.run')/'frozen-fit.json')
+
+
+
+def test_paired_test_bootstrap_pairs_query_ids_and_reports_metric_samples():
+    from core.graded_evaluation import paired_test_bootstrap
+    metrics = ('ndcg@5', 'junk@5', 'good@5', 'community_recall',
+               'empty_result_rate', 'judged_coverage')
+    def row(q, value):
+        return dict(query_id=q, **{metric: value for metric in metrics})
+    base = dict(per_query=[row('a', .1), row('b', .7)], complete_coverage=True,
+                skipped_queries=0, overall={'query_count': 2})
+    selected = copy.deepcopy(base)
+    selected['per_query'] = [row('b', .9), row('a', .3)]
+    base['per_query'][0]['community_recall'] = None
+    selected['per_query'][1]['community_recall'] = None
+    report = paired_test_bootstrap(base, selected, 500)
+    assert report == paired_test_bootstrap(base, selected, 500)
+    assert report['available'] and report['query_count'] == 2
+    assert report['seed'] == 7 and report['bootstrap_samples'] == 500
+    assert 'including its dev-selected gate' in report['scope']
+    for metric in metrics:
+        result = report['metrics'][metric]
+        assert result['query_count'] == (1 if metric == 'community_recall' else 2)
+        assert result['delta_mean'] == pytest.approx(.2)
+        assert result['delta_95'] == pytest.approx([.2, .2])
+    # Differing query effects must retain uncertainty, rather than just means.
+    selected['per_query'][0]['ndcg@5'] = .5
+    result = paired_test_bootstrap(base, selected, 500)['metrics']['ndcg@5']
+    assert result['delta_mean'] == pytest.approx(0.)
+    assert result['delta_95'] == pytest.approx([-.2, .2])
+
+
+@pytest.mark.parametrize('skipped', [False, True])
+def test_paired_test_bootstrap_withholds_intervals_for_incomplete_comparison(skipped):
+    from core.graded_evaluation import paired_test_bootstrap
+    base = dict(per_query=[{'query_id': 'q', 'ndcg@5': .5}],
+                complete_coverage=not skipped, skipped_queries=0, overall={'query_count': 2})
+    selected = copy.deepcopy(base)
+    selected['complete_coverage'] = skipped
+    selected['skipped_queries'] = int(skipped)
+    report = paired_test_bootstrap(base, selected, 500)
+    assert not report['available'] and report['metrics'] == {}
+    assert report['query_count'] == 1 and report['total_query_count'] == 2
+    assert 'no test interval' in report['reason']

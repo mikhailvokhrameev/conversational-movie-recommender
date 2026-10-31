@@ -719,6 +719,12 @@ for fitting. Dev fitting requires at least five eligible queries and records
 five-fold grouped query CV. Its bootstrap interval covers ranking selection at
 the baseline gate, not subsequent dev gate calibration. Gate calibration needs
 fully judged head evidence and remains separate for local BGE and cloud Voyage.
+Separate held-out test reports provide paired query-bootstrap 95% intervals for
+selected-minus-baseline nDCG@5, junk@5, good@5, community recall, empty rate and
+judged coverage, including the frozen dev-selected gate. Resampling uses seed 7
+and the recorded bootstrap sample count, with eligible paired query counts for
+each metric (community recall excludes queries without community references).
+Incomplete or skipped-query comparisons withhold intervals until fully judged.
 
 Fitting writes a proposal, never `params.yaml`. Current weights and gates remain
 unaccepted by this graded workflow: no real graded dev/test sample, fitted values
