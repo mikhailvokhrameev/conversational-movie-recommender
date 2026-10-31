@@ -207,6 +207,8 @@ class Command(BaseCommand):
     help = "Evaluate recommendation quality on the golden set"
 
     def add_arguments(self, parser):
+        parser.add_argument("--grade-report", type=str)
+        parser.add_argument("--fit", action="store_true")
         parser.add_argument("--queries", type=str)
         parser.add_argument("--pool-export", type=str)
         parser.add_argument("--limit-queries", type=int)
@@ -291,6 +293,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get("grade_report"):
+            return self._grade_report(options)
+        if options.get("fit"):
+            raise CommandError("--fit requires --grade-report")
         if options.get("pool_export"):
             return self._pool_export(options)
         if any(options.get(key) for key in ("queries", "limit_queries", "resume", "reuse_grades")):
@@ -310,6 +316,25 @@ class Command(BaseCommand):
                     self._write_record(options)
                     require_healthy()
                 raise
+
+    def _grade_report(self, options):
+        from core.graded_evaluation import offline_report
+        if options.get("split") == "all":
+            raise CommandError("--grade-report requires --split dev or test")
+        if options.get("fit") and options.get("split") == "test":
+            raise CommandError("--fit cannot inspect test grades; use --split dev")
+        incompatible = ("pool_export", "sweep", "gate_report", "label_export", "label_report",
+                        "queries", "limit_queries", "resume", "reuse_grades", "llm_judge", "weights")
+        if any(options.get(key) for key in incompatible):
+            raise CommandError("--grade-report cannot combine evaluation modes")
+        try:
+            report = offline_report(options["grade_report"], options.get("split") or "dev", options.get("fit", False))
+        except (ValueError, KeyError, OSError) as exc:
+            raise CommandError(str(exc)) from exc
+        destination = options.get("output")
+        if destination:
+            Path(destination).write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        self.stdout.write(json.dumps(report, indent=2, ensure_ascii=False))
 
     def _pool_export(self, options):
         from core.graded_pool import (
@@ -354,7 +379,8 @@ class Command(BaseCommand):
                         "query_file_sha256": _sha256(source), "split": split, "limit_queries": limit,
                         "queries": entries, "inference": inference_metadata(),
                         "catalog_sha256": catalog_hash.hexdigest(), "index": EmbeddingIndex.stored(),
-                        "pooling": settings.EVAL_POOL_EXPORT}
+                        "pooling": settings.EVAL_POOL_EXPORT,
+                        "baseline_params": settings.EFFECTIVE_PARAMS}
             store = RunStore(options["pool_export"], identity, options["resume"])
             legacy_paths = [Path(settings.BASE_DIR) / "eval_runs" / "labels.csv",
                             Path(settings.BASE_DIR).parent / "eval_runs" / "labels.csv"]

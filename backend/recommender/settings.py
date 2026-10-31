@@ -616,6 +616,17 @@ def _validate_pool_export(config):
             raise ValueError(f"params.yaml: evaluation.pool_export.{key} must be a valid weight")
 
 
+def _validate_grade_fit(config):
+    # Deliberately bounded research protocol, not an unrestricted parameter search.
+    if config.get("quality_weights") != [0.1, 0.2, 0.3]:
+        raise ValueError("params.yaml: evaluation.grade_fit.quality_weights must be [0.1, 0.2, 0.3]")
+    if config.get("quality_rrf_weights") != [0.0, 1.0]:
+        raise ValueError("params.yaml: evaluation.grade_fit.quality_rrf_weights must be [0.0, 1.0]")
+    if type(config.get("bootstrap_samples")) is not int or config["bootstrap_samples"] < 1:
+        raise ValueError("params.yaml: evaluation.grade_fit.bootstrap_samples must be a positive integer")
+
+
+_validate_grade_fit(_evaluation["grade_fit"])
 _validate_pool_export(_evaluation["pool_export"])
 EVAL_POOL_EXPORT = _evaluation["pool_export"]
 _validate_evaluation(_evaluation)

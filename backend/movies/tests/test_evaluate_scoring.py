@@ -833,3 +833,22 @@ class TestGitState:
         results = [MagicMock(stdout="abc123\n"), MagicMock(stdout=" M params.yaml\n")]
         with patch(f"{MODULE}.subprocess.run", side_effect=results):
             assert cmd._git_state() == {"commit": "abc123", "dirty": True}
+
+
+def test_grade_report_test_fit_rejected_before_any_inference(tmp_path):
+    with patch(f'{MODULE}.check_inference', side_effect=AssertionError('inference forbidden')):
+        with pytest.raises(CommandError, match='test'):
+            call_command('evaluate_scoring', '--grade-report', str(tmp_path/'absent.csv'), '--fit', '--split', 'test')
+
+
+def test_grade_report_offline_dispatch(tmp_path):
+    import socket
+    def blocked(*a, **kw):
+        raise AssertionError('network/DB forbidden')
+    out = StringIO()
+    with patch.object(socket.socket, 'connect', blocked), \
+         patch('django.db.backends.base.base.BaseDatabaseWrapper.cursor', blocked), \
+         patch('core.graded_evaluation.offline_report', return_value={'mode': 'recorded'}) as report:
+        call_command('evaluate_scoring', '--grade-report', 'pool.csv', '--split', 'dev', stdout=out)
+    report.assert_called_once_with('pool.csv', 'dev', False)
+    assert json.loads(out.getvalue())['mode'] == 'recorded'

@@ -147,7 +147,7 @@ def mmr_diversify(
     return selected
 
 
-def normalize_scores(values: list[float]) -> list[float]:
+def normalize_scores(values: list[float], neutral_score: float | None = None) -> list[float]:
     """Min-max normalize a signal's values to [0, 1] across the candidate set.
 
     A signal where every candidate scores the same carries no ranking
@@ -160,7 +160,7 @@ def normalize_scores(values: list[float]) -> list[float]:
     low, high = min(values), max(values)
     spread = high - low
     if spread < _MIN_SPREAD:
-        return [settings.NEUTRAL_SCORE] * len(values)
+        return [settings.NEUTRAL_SCORE if neutral_score is None else neutral_score] * len(values)
 
     return [(value - low) / spread for value in values]
 

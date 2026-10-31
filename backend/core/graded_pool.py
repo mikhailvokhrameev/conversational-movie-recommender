@@ -145,8 +145,11 @@ def capture_query(entry, prepared):
     started = time.monotonic()
     config = settings.EVAL_POOL_EXPORT
     variants = {}
-    for name, quality in [('configured', settings.RRF_WEIGHTS['quality']), ('quality_1', config['quality_rrf_weight'])]:
-        if prepared.intent.get('wants_obscure') and name == 'quality_1':
+    retrieval_variants = [('configured', settings.RRF_WEIGHTS['quality']), ('quality_1', config['quality_rrf_weight'])]
+    if settings.RRF_WEIGHTS['quality'] != 0:
+        retrieval_variants.append(('quality_0', 0.0))
+    for name, quality in retrieval_variants:
+        if prepared.intent.get('wants_obscure') and name != 'configured':
             continue
         weights = {**settings.RRF_WEIGHTS, 'quality': quality}
         variants[name] = generate_candidates(prepared.query_embedding, prepared.intent,

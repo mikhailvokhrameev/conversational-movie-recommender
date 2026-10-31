@@ -409,6 +409,10 @@ session:
   history_movie_description_chars: 200
 
 evaluation:
+  grade_fit:
+    quality_weights: [0.1, 0.2, 0.3]
+    quality_rrf_weights: [0.0, 1.0]
+    bootstrap_samples: 2000
   pool_export:
     depth: 10
     seed: 7
