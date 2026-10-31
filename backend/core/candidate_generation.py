@@ -64,6 +64,7 @@ def generate_candidates(
     limit: int | None = None,
     query_text: str = "",
     quality_channel: bool | None = None,
+    rrf_weights: dict | None = None,
 ) -> list[dict]:
     """Retrieve candidates via hard-filtered semantic + lexical (+ quality) search.
 
@@ -101,10 +102,11 @@ def generate_candidates(
     )
     lexical_ids = _lexical_ranked_ids(base_queryset, query_text, limit)
 
+    weights = settings.RRF_WEIGHTS if rrf_weights is None else rrf_weights
     if quality_channel is None:
-        quality_channel = settings.RRF_WEIGHTS["quality"] > 0 and not (
-            intent or {}
-        ).get("wants_obscure")
+        quality_channel = weights["quality"] > 0
+    if (intent or {}).get("wants_obscure"):
+        quality_channel = False
     quality_ids = (
         _quality_ranked_ids(
             base_queryset, query_embedding, limit, settings.QUALITY_CHANNEL_MIN_VOTE_COUNT
@@ -115,7 +117,7 @@ def generate_candidates(
 
     if lexical_ids or quality_ids:
         channels = {"semantic": semantic_ids, "lexical": lexical_ids, "quality": quality_ids}
-        fused = _rrf_fuse({name: ids for name, ids in channels.items() if ids})
+        fused = _rrf_fuse({name: ids for name, ids in channels.items() if ids}, weights=weights)
         ordered_ids = [movie_id for movie_id, _ in fused][:limit]
     else:
         ordered_ids = semantic_ids
@@ -133,7 +135,10 @@ def generate_candidates(
     }
 
     return [
-        _as_candidate_dict(movies_by_id[movie_id], lexical_rank_by_id.get(movie_id))
+        {**_as_candidate_dict(movies_by_id[movie_id], lexical_rank_by_id.get(movie_id)),
+         "channel_ranks": {name: ids.index(movie_id) if movie_id in ids else None
+                           for name, ids in {"semantic": semantic_ids, "lexical": lexical_ids, "quality": quality_ids}.items()},
+         "in_quality_channel": movie_id in quality_ids}
         for movie_id in ordered_ids
         if movie_id in movies_by_id
     ]

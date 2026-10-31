@@ -378,3 +378,26 @@ class TestQualityChannel:
 
         assert _quality_ranked_ids(base, EMBEDDING, 100, 1000) == [4, 5]
         base.filter.assert_called_once_with(vote_count__gte=1000)
+
+
+def test_override_activates_quality_and_preserves_defaults(settings):
+    settings.RRF_WEIGHTS = {'semantic': 1.0, 'lexical': 0.7, 'quality': 0.0}
+    patches, quality = _mocked_retrieval([1, 2], quality_ids=[9, 1])
+    ids = _run_generate(patches, limit=2, rrf_weights={**settings.RRF_WEIGHTS, 'quality': 1.0})
+    quality.assert_called_once()
+    assert ids == [1, 9]
+    assert settings.RRF_WEIGHTS['quality'] == 0.0
+
+
+def test_obscure_overrides_forced_quality_and_diagnostics(settings):
+    from contextlib import ExitStack
+    settings.RRF_WEIGHTS = {'semantic': 1.0, 'lexical': 0.7, 'quality': 0.0}
+    patches, quality = _mocked_retrieval([1, 2], lexical_ids=[2], quality_ids=[9])
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        result = generate_candidates(EMBEDDING, intent={'wants_obscure': True}, quality_channel=True,
+                                     rrf_weights={**settings.RRF_WEIGHTS, 'quality': 1.0})
+    quality.assert_not_called()
+    assert result[0]['channel_ranks'] == {'semantic': 1, 'lexical': 0, 'quality': None}
+    assert result[0]['in_quality_channel'] is False

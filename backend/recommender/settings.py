@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from pathlib import Path
@@ -602,6 +603,21 @@ def _validate_label_queries(label_queries: dict) -> None:
 
 
 _evaluation = PARAMS["evaluation"]
+def _validate_pool_export(config):
+    for key in ("depth", "rerank_batch_size", "seed"):
+        value = config[key]
+        if type(value) is not int or (key != "seed" and value < 1):
+            raise ValueError(f"params.yaml: evaluation.pool_export.{key} must be a valid integer")
+
+    for key in ("quality_rrf_weight", "quality_scoring_weight"):
+        value = config[key]
+        if (type(value) not in (int, float) or not math.isfinite(value)
+                or value < 0 or (key == "quality_scoring_weight" and value >= 1)):
+            raise ValueError(f"params.yaml: evaluation.pool_export.{key} must be a valid weight")
+
+
+_validate_pool_export(_evaluation["pool_export"])
+EVAL_POOL_EXPORT = _evaluation["pool_export"]
 _validate_evaluation(_evaluation)
 _validate_label_queries(_evaluation["label_queries"])
 EVAL_LABEL_QUERIES = _evaluation["label_queries"]

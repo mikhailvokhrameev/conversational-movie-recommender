@@ -409,6 +409,12 @@ session:
   history_movie_description_chars: 200
 
 evaluation:
+  pool_export:
+    depth: 10
+    seed: 7
+    rerank_batch_size: 50
+    quality_rrf_weight: 1.0
+    quality_scoring_weight: 0.3
   # LLM-as-judge (manage.py evaluate_scoring --llm-judge). Same model family as
   # the system it grades, so it is a secondary signal, not ground truth -- the
   # golden-set metrics are primary.

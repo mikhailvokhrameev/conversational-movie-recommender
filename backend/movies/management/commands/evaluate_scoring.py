@@ -207,6 +207,11 @@ class Command(BaseCommand):
     help = "Evaluate recommendation quality on the golden set"
 
     def add_arguments(self, parser):
+        parser.add_argument("--queries", type=str)
+        parser.add_argument("--pool-export", type=str)
+        parser.add_argument("--limit-queries", type=int)
+        parser.add_argument("--resume", action="store_true")
+        parser.add_argument("--reuse-grades", type=str)
         parser.add_argument(
             "--golden-set",
             type=str,
@@ -286,6 +291,10 @@ class Command(BaseCommand):
         )
 
     def handle(self, *args, **options):
+        if options.get("pool_export"):
+            return self._pool_export(options)
+        if any(options.get(key) for key in ("queries", "limit_queries", "resume", "reuse_grades")):
+            raise CommandError("pool options require --pool-export")
         # This branch must not assemble providers or require credentials/DB.
         if options["label_report"] is not None:
             return self._handle(*args, **options)
@@ -301,6 +310,112 @@ class Command(BaseCommand):
                     self._write_record(options)
                     require_healthy()
                 raise
+
+    def _pool_export(self, options):
+        from core.graded_pool import (
+            RunStore, SCHEMA_VERSION, RUBRIC_VERSION, COLUMNS, atomic_json,
+            capture_query, rows_from_snapshots, reuse_grades, read_grade_source, read_binary_source, json_value,
+        )
+        from movies.models import EmbeddingIndex
+        incompatible = [key for key in ("sweep", "gate_report", "label_export", "label_report",
+                                         "weights", "llm_judge", "golden_set", "output") if options.get(key)]
+        if incompatible or options["intent"] != "e2e" or options["k"] != DEFAULT_K:
+            raise CommandError("--pool-export requires e2e intent and cannot combine evaluation modes")
+        if not options.get("queries"):
+            raise CommandError("--pool-export requires --queries")
+        limit = options.get("limit_queries")
+        if limit is not None and limit < 1:
+            raise CommandError("--limit-queries must be positive")
+        source = Path(options["queries"])
+        split = options["split"] or "dev"
+        try:
+            entries = json.loads(source.read_text())
+            if not isinstance(entries, list):
+                raise ValueError("query file must be a list")
+            seen = set()
+            for entry in entries:
+                if (not isinstance(entry, dict) or not isinstance(entry.get("id"), str)
+                        or not entry["id"] or not isinstance(entry.get("query"), str)
+                        or not entry["query"] or entry.get("split") not in ("dev", "test")
+                        or entry["id"] in seen):
+                    raise ValueError("queries require unique id, exact query and dev/test split")
+                seen.add(entry["id"])
+            entries = [e for e in entries if split == "all" or e["split"] == split]
+            if limit is not None:
+                entries = entries[:limit]
+            if not entries:
+                raise ValueError("no selected queries")
+            # Hash the complete catalog rows, including embeddings: metadata edits
+            # and vector replacement both invalidate resumability.
+            catalog_hash = hashlib.sha256()
+            for row in Movie.objects.order_by("pk").values().iterator():
+                catalog_hash.update(json.dumps(row, sort_keys=True, default=json_value).encode())
+            identity = {"schema_version": SCHEMA_VERSION, "rubric_version": RUBRIC_VERSION,
+                        "query_file_sha256": _sha256(source), "split": split, "limit_queries": limit,
+                        "queries": entries, "inference": inference_metadata(),
+                        "catalog_sha256": catalog_hash.hexdigest(), "index": EmbeddingIndex.stored(),
+                        "pooling": settings.EVAL_POOL_EXPORT}
+            store = RunStore(options["pool_export"], identity, options["resume"])
+            legacy_paths = [Path(settings.BASE_DIR) / "eval_runs" / "labels.csv",
+                            Path(settings.BASE_DIR).parent / "eval_runs" / "labels.csv"]
+            legacy = next((path for path in legacy_paths if path.exists()), legacy_paths[0])
+            if legacy.exists() and not (store.directory / "binary_relevance.json").exists():
+                atomic_json(store.directory / "binary_relevance.json", read_binary_source(legacy))
+            sources = read_grade_source(options["reuse_grades"]) if options.get("reuse_grades") else []
+            if options.get("reuse_grades") and not sources:
+                with Path(options["reuse_grades"]).open(newline="") as stream:
+                    columns = next(csv.reader(stream), [])
+                if "label" in columns:
+                    evidence = read_binary_source(options["reuse_grades"])
+                    atomic_json(store.directory / "reused_binary_relevance.json", evidence)
+            if store.csv_path.exists():
+                sources += read_grade_source(store.csv_path)
+            # Detect source conflicts before making any provider calls.
+            reuse_grades([], sources)
+        except (OSError, ValueError, KeyError, TypeError) as error:
+            raise CommandError(str(error)) from error
+        self.stdout.write(f"Pool plan: {len(entries)} queries; up to {settings.CANDIDATE_COUNT} candidates "
+                          f"per retrieval variant (union upper bound {2 * settings.CANDIDATE_COUNT}); "
+                          f"settings={settings.EVAL_POOL_EXPORT}. "
+                          "Actual union size, runtime and provider usage are measured during the run; "
+                          "repeating an incomplete query may incur charges.")
+        snapshots = []
+        for entry in entries:
+            snapshot = store.load(entry["id"])
+            if snapshot is None:
+                with capture_failures() as failures:
+                    try:
+                        prepared = self._prepare({**entry, "relevant": []}, "e2e")
+                        require_healthy()
+                        if prepared.possible_parse_fallback:
+                            raise ValueError("possible intent fallback; query not published")
+                        snapshot = capture_query(entry, prepared)
+                        require_healthy()
+                        store.save(entry["id"], snapshot)
+                    except Exception as error:
+                        store.fail(entry["id"], failures or [{"category": type(error).__name__}])
+                        raise CommandError(f"Pool query {entry['id']} failed; snapshot not published") from error
+            snapshots.append(snapshot)
+            self.stdout.write(f"{entry['id']}: {len(snapshot['selected'])} pool rows; "
+                              f"candidates={snapshot.get('candidate_count')}, seconds={snapshot.get('duration_seconds')}; "
+                              f"community recall={snapshot['community_recall']}")
+        rows = reuse_grades(rows_from_snapshots(snapshots), sources)
+        temporary = store.csv_path.with_suffix(store.csv_path.suffix + ".tmp")
+        with temporary.open("w", newline="") as stream:
+            writer = csv.DictWriter(stream, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+        temporary.replace(store.csv_path)
+        # Context is assessor evidence, kept free from scores and membership.
+        atomic_json(store.directory / "assessment.json", {
+            "rubric_version": RUBRIC_VERSION,
+            "rubric": "0 irrelevant; 1 weak match; 2 good match; 3 excellent match",
+            "queries": [{"query_id": e["id"], "query": e["query"],
+                         "context": e.get("context", []), "history": e.get("history")} for e in entries],
+        })
+        store.manifest["status"] = "complete"
+        atomic_json(store.manifest_path, store.manifest)
+        self.stdout.write(f"Wrote {len(rows)} blinded rows to {store.csv_path}; judge with assessment.json context.")
 
     def _write_record(self, options):
         output = Path(options["output"]) if options["output"] else (
