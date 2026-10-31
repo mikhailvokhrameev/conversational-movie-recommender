@@ -153,7 +153,7 @@ def test_fit_missing_grades_and_gate_evidence():
 def write_run(tmp_path, name, split, grade='3', **overrides):
     import json
     from core.graded_pool import RunStore, COLUMNS
-    ss = [snapshot(str(i), split) for i in range(5 if split == 'dev' else 1)]
+    ss = [snapshot(str(i) if split == 'dev' else f'test-{i}', split) for i in range(5 if split == 'dev' else 1)]
     path = tmp_path / (name + '.csv')
     identity = {'inference': {'mode': 'local', 'components': {'reranking': {'model': 'bge'}}},
                 'baseline_params': config(), 'catalog_sha256': 'catalog', 'index': {'model': 'embed'},
@@ -353,3 +353,71 @@ def test_paired_test_bootstrap_withholds_intervals_for_incomplete_comparison(ski
     assert not report['available'] and report['metrics'] == {}
     assert report['query_count'] == 1 and report['total_query_count'] == 2
     assert 'no test interval' in report['reason']
+
+
+def test_split_drift_rejected_before_grades(tmp_path, monkeypatch):
+    import json
+    from core.graded_evaluation import offline_report
+    dev = write_run(tmp_path, 'dev', 'dev')
+    offline_report(dev, fit=True)
+    test = write_run(tmp_path, 'test', 'test')
+    manifest = test.with_suffix('.run')/'manifest.json'
+    data = json.loads(manifest.read_text())
+    data['identity']['queries'][0]['id'] = '0'
+    manifest.write_text(json.dumps(data))
+    monkeypatch.setattr('core.graded_evaluation.read_grades', Mock(side_effect=AssertionError('grades inspected')))
+    with pytest.raises(ValueError, match='overlap'):
+        offline_report(test, 'test', frozen_proposal=dev.with_suffix('.run')/'frozen-fit.json')
+    assert not (dev.with_suffix('.run')/'test-access.json').exists()
+
+
+def test_missing_worksheet_rerun_imports_and_preserves_grades(tmp_path):
+    import csv
+    from core.graded_evaluation import offline_report
+    path = write_run(tmp_path, 'dev', 'dev', grade='')
+    result = offline_report(path)
+    missing = path.with_suffix('.missing.csv')
+    rows = list(csv.DictReader(missing.open()))
+    rows[0]['grade'] = '3'
+    with missing.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0])
+        writer.writeheader(); writer.writerows(rows)
+    offline_report(path)
+    assert list(csv.DictReader(missing.open()))[0]['grade'] == '3'
+    assert all(not row['grade'] for row in csv.DictReader(path.open()))
+    rows = list(csv.DictReader(missing.open()))
+    for row in rows:
+        row['grade'] = row['grade'] or '2'
+    with missing.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0])
+        writer.writeheader(); writer.writerows(rows)
+    assert offline_report(path)['comparison_complete']
+    original = path.read_text().splitlines()
+    original[1] = original[1] + '1'
+    path.write_text('\n'.join(original)+'\n')
+    before = missing.read_bytes()
+    with pytest.raises(ValueError, match='conflicting.*worksheet'):
+        offline_report(path)
+    assert missing.read_bytes() == before
+
+
+@pytest.mark.parametrize('field,value,match', [
+    ('query', 'changed original request', 'identity mismatch'),
+    ('tmdb_id', '99999', 'unknown query/movie'),
+    ('grade', '4', 'grade must'),
+])
+def test_invalid_supplemental_worksheet_is_not_overwritten(tmp_path, field, value, match):
+    import csv
+    from core.graded_evaluation import offline_report
+    path = write_run(tmp_path, 'dev', 'dev', grade='')
+    offline_report(path)
+    worksheet = path.with_suffix('.missing.csv')
+    rows = list(csv.DictReader(worksheet.open()))
+    rows[0][field] = value
+    with worksheet.open('w', newline='') as stream:
+        writer = csv.DictWriter(stream, fieldnames=rows[0])
+        writer.writeheader(); writer.writerows(rows)
+    before = worksheet.read_bytes()
+    with pytest.raises(ValueError, match=match):
+        offline_report(path)
+    assert worksheet.read_bytes() == before

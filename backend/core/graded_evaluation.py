@@ -328,6 +328,13 @@ def _load_frozen_proposal(proposal_path, identity):
     original = json.loads((source_manifest.parent/'frozen-fit.json').read_text())
     if digest(original) != digest(frozen):
         raise ValueError('incompatible proposal: source dev choice has been replaced')
+    trained_ids = {str(entry['id']) for entry in source['identity']['queries']
+                   if entry['split'] == 'dev'}
+    heldout_ids = {str(entry['id']) for entry in identity['queries']
+                   if entry['split'] == 'test'}
+    overlap = trained_ids & heldout_ids
+    if overlap:
+        raise ValueError(f"source dev and target test query IDs overlap: {sorted(overlap)}; export a disjoint held-out split")
     return frozen, source_manifest.parent
 
 
@@ -384,6 +391,15 @@ def offline_report(path, split='dev', fit=False, frozen_proposal=None):
             raise ValueError('incomplete or mismatched query snapshot; resume pool export')
         snapshots.append(item)
     grades = read_grades(path, snapshots, split=split, reject_heldout_grades=fit)
+    # A worksheet belongs to this original run and is validated against its
+    # snapshots exactly like the primary CSV before any metric or rewrite.
+    worksheet = path.with_suffix('.missing.csv')
+    if worksheet.exists():
+        supplemental = read_grades(worksheet, snapshots, split=split, reject_heldout_grades=fit)
+        for key, value in supplemental.items():
+            if key in grades and grades[key] != value:
+                raise ValueError(f'conflicting grade between CSV and missing worksheet for {key}; reconcile both files')
+            grades[key] = value
     selected_snapshots = [item for item in snapshots if item['entry']['split'] == split]
     if not selected_snapshots:
         raise ValueError(f'no {split} snapshots; export that split first')
@@ -420,6 +436,9 @@ def offline_report(path, split='dev', fit=False, frozen_proposal=None):
         # Retain grades already entered and append new pairs without duplicates.
         with path.open(newline='') as stream:
             old = list(csv.DictReader(stream))
+        if worksheet.exists():
+            with worksheet.open(newline='') as stream:
+                old.extend(csv.DictReader(stream))
         rows = {}
         for row in old:
             key = (row['query_id'], row['tmdb_id'])
@@ -430,10 +449,12 @@ def offline_report(path, split='dev', fit=False, frozen_proposal=None):
         for key, grade in grades.items():
             if key in rows:
                 rows[key]['grade'] = str(grade)
-        destination = path.with_suffix('.missing.csv')
-        with destination.open('w', newline='') as stream:
+        destination = worksheet
+        temporary = destination.with_suffix('.csv.tmp')
+        with temporary.open('w', newline='') as stream:
             writer = csv.DictWriter(stream, fieldnames=COLUMNS, extrasaction='ignore')
             writer.writeheader(); writer.writerows(rows.values())
+        temporary.replace(destination)
         report['missing_grades_csv'] = str(destination)
     if split == 'test' and report['frozen_choice']:
         report['paired_query_bootstrap'] = paired_test_bootstrap(

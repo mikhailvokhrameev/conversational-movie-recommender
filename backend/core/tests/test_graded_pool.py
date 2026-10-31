@@ -211,8 +211,11 @@ def test_fallback_marks_run_failed(pool_command, tmp_path):
     from types import SimpleNamespace
     from django.core.management.base import CommandError
     run, prepare, capture, source = pool_command
-    prepare.side_effect = None
-    prepare.return_value = SimpleNamespace(possible_parse_fallback=True)
+    from core.inference_diagnostics import record_failure
+    def fallback(*args):
+        record_failure('llm', 'classify', ValueError('invalid provider response'))
+        return SimpleNamespace(possible_parse_fallback=True)
+    prepare.side_effect = fallback
     with pytest.raises(CommandError, match='failed'):
         run(tmp_path / 'pool.csv')
     capture.assert_not_called()
@@ -265,3 +268,26 @@ def test_single_item_head_replay_matches_production(monkeypatch, settings, blend
     assert top == expected == [{'id': 2, 'total': 0.8}]
     assert head == production
     assert 'rerank_score' not in top[0]
+
+
+@pytest.mark.parametrize('failed', [False, True])
+def test_default_shaped_success_and_recorded_failure(pool_command, tmp_path, failed):
+    from types import SimpleNamespace
+    from core.inference_diagnostics import record_failure
+    from django.core.management.base import CommandError
+    run, prepare, capture, _ = pool_command
+    def prepared(*args):
+        if failed:
+            record_failure('llm', 'classify', TimeoutError())
+        return SimpleNamespace(possible_parse_fallback=True)
+    prepare.side_effect = prepared
+    output = tmp_path/'pool.csv'
+    if failed:
+        with pytest.raises(CommandError, match='query.*failed'):
+            run(output)
+        capture.assert_not_called()
+        assert not output.exists()
+    else:
+        run(output)
+        assert output.is_file()
+        assert capture.call_count == 2

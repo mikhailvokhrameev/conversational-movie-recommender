@@ -415,8 +415,8 @@ class Command(BaseCommand):
                     try:
                         prepared = self._prepare({**entry, "relevant": []}, "e2e")
                         require_healthy()
-                        if prepared.possible_parse_fallback:
-                            raise ValueError("possible intent fallback; query not published")
+                        # A successful unfiltered intent may equal the fallback shape.
+                        # require_healthy checks explicit classifier failure diagnostics.
                         snapshot = capture_query(entry, prepared)
                         require_healthy()
                         store.save(entry["id"], snapshot)

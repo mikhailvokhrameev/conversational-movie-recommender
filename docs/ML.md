@@ -705,7 +705,9 @@ python manage.py evaluate_scoring --grade-report ../eval_runs/local-test.csv --s
 
 Keep each CSV and its adjacent `.run` directory together, and retain the source
 dev manifest at its recorded path. Test compatibility checks mode, provider/model
-metadata, catalog/index provenance and baseline settings. Do not apply proposed
+metadata, catalog/index provenance and baseline settings, and rejects any source
+dev query ID that appears in the target test split. Preserve stable query IDs
+when editing query files; separate dev and test CSV paths remain supported. Do not apply proposed
 parameters before capturing the test pool: replay compares baseline and proposal
 on that same frozen evidence. Test access locks further dev fitting even if
 grades are incomplete or invalid. Combined CSVs containing populated test grades
@@ -714,8 +716,16 @@ cannot be fitted. These local artifact locks are not tamper-resistant.
 Use `--reuse-grades PATH` during a second export to reuse matching query/movie
 grades (including across modes); grade only new pairs and review pool coverage.
 An export can be resumed with `--resume` and matching identity. Missing judgments
-are exported to `.missing.csv`; complete compared top-five judgments are required
-for fitting. Dev fitting requires at least five eligible queries and records
+are exported to `.missing.csv`. Grade that worksheet in place, then rerun the
+same command with the **original CSV** (for example `--grade-report
+../eval_runs/local-dev.csv --fit`). The report automatically imports the adjacent
+`local-dev.missing.csv`, validates it against the original run snapshots, and
+retains entered grades if further missing pairs are emitted. Keep both CSVs and
+the `.run` directory together. Conflicting nonblank grades between the two CSVs
+stop reporting without overwriting the worksheet; reconcile the conflicting
+values in both files and retry. To change an existing grade, update both copies.
+Do not pass `.missing.csv` directly as `--grade-report`: its snapshots belong to
+the original CSV. Complete compared top-five judgments are required for fitting. Dev fitting requires at least five eligible queries and records
 five-fold grouped query CV. Its bootstrap interval covers ranking selection at
 the baseline gate, not subsequent dev gate calibration. Gate calibration needs
 fully judged head evidence and remains separate for local BGE and cloud Voyage.
