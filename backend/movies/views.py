@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 
 from core.catalog_bounds import catalog_year_range
 from core.embedding_service import encode_query
+from core.entity_resolution import EntityResolutionEmbeddingError
 from core.llm_client import (
     CLARIFY_SYSTEM_PROMPT, CONVERSATIONAL_SYSTEM_PROMPT, NON_FILTER_FIELDS, MessageIntent,
     aclassify_and_parse, check_explanation_titles,
@@ -516,6 +517,10 @@ class ChatView(View):
                 intent = _route_past_catalog_year(intent, message, year_bounds)
             intent = _accepted_search_offer(intent, session.history, message) or intent
             classify_parse_ms = (time.perf_counter() - t0) * 1000
+        except EntityResolutionEmbeddingError:
+            return JsonResponse(
+                {"error": "Recommendation service is temporarily unavailable."}, status=503,
+            )
         except Exception:
             logger.exception("ChatView classification error")
             return JsonResponse({"error": "internal error"}, status=500)

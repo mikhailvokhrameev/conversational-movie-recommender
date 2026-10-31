@@ -1771,3 +1771,23 @@ class TestYesToTheNewestYearsOffer(_NoDbChat):
         settings.SESSION_REFUSAL_WORDS = ("meh",)
         assert _accepted_search_offer(MessageIntent(category="clarify"), self._history(), "meh") is None
         assert _accepted_search_offer(MessageIntent(category="clarify"), self._history(), "no") is not None
+
+
+@pytest.mark.asyncio
+async def test_fuzzy_resolution_embedding_failure_returns_neutral_503():
+    from core.entity_resolution import EntityResolver
+    from core.llm_client import RESOLVERS
+
+    resolver = EntityResolver('genres', lambda: ['Comedy'],
+                              {'match_threshold': 0.7, 'match_margin': 0.1})
+    request = AsyncRequestFactory().post('/api/chat/',
+        data=json.dumps({'message': 'a funny movie'}), content_type='application/json')
+    session = MagicMock(history=[])
+    with patch('movies.views._get_or_create_session', AsyncMock(return_value=session)), \
+         patch('core.llm_client._request_classify_and_parse', AsyncMock(return_value={
+             'category': 'new_search', 'genres': ['funny movies']})), \
+         patch.dict(RESOLVERS, {'genres': resolver}), \
+         patch('core.embedding_service.encode_texts', side_effect=RuntimeError('private embedder error')):
+        response = await ChatView.as_view()(request)
+    assert response.status_code == 503
+    assert json.loads(response.content) == {'error': 'Recommendation service is temporarily unavailable.'}

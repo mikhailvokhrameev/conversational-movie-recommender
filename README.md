@@ -12,7 +12,7 @@ Most movie recommendation systems are either keyword-based search (fragile, no u
 
 - **Semantic search** via a BGE-M3 embedder + pgvector exact cosine distance
 - **Lexical search** via a Postgres full-text channel over title/keywords, fused with the semantic channel by Reciprocal Rank Fusion -- catches named titles that embeddings miss
-- **Cross-encoder reranking** (bge-reranker-v2-m3) over the fused candidate pool
+- **Reranking** over the fused candidate pool (local BGE or cloud Voyage)
 - **Metadata matching** via LLM-powered intent parsing that extracts genres, mood, themes, negations, and hard filters (rating floor, release year, runtime, language, country) from natural language
 - **Session-based preference learning** via exponential moving average on the user's query embeddings
 
@@ -40,7 +40,7 @@ User message
   │     ├── Encode query (BGE-M3)
   │     ├── Candidate generation (hard filters, then semantic + lexical channels fused by RRF, top 100)
   │     ├── Hybrid scoring (semantic 0.35 + metadata 0.25 + session 0.25 + popularity 0.15)
-  │     ├── Cross-encoder reranking (bge-reranker-v2-m3, top 50)
+  │     ├── Reranking (local BGE or cloud Voyage, top 50)
   │     ├── MMR diversification (top 5)
   │     └── SSE stream: movie cards (instant) + explanation (token by token)
   │

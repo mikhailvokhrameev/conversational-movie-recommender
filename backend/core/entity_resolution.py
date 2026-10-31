@@ -29,10 +29,17 @@ from typing import Callable
 import numpy as np
 
 
+class EntityResolutionEmbeddingError(Exception):
+    """The embedder failed while resolving a catalog value."""
+
+
 def encode_texts(texts: list[str]) -> np.ndarray:
     """Load the embedding service only when resolution needs embeddings."""
     from core.embedding_service import encode_texts as encode
-    return encode(texts)
+    try:
+        return encode(texts)
+    except Exception as exc:
+        raise EntityResolutionEmbeddingError("Entity resolution embedding failed") from exc
 
 
 logger = logging.getLogger(__name__)

@@ -92,36 +92,34 @@ async def test_sse_comments_usage_split_lines_and_reasoning(monkeypatch, asynchr
 
 
 @pytest.mark.parametrize('asynchronous', [False, True])
-@pytest.mark.parametrize('first_content', [False, True])
+@pytest.mark.parametrize('prefix', [
+    sse(chunk('first')),
+    sse({'choices': [{'delta': {'reasoning': 'private'}}]}),
+    sse({'usage': {'prompt_tokens': 5}, 'choices': []}),
+    ': keepalive\n\n',
+    '',
+])
+@pytest.mark.parametrize('ending', ['error', 'incomplete'])
 @pytest.mark.asyncio
-async def test_stream_retry_never_replays_emitted_tokens(monkeypatch, asynchronous, first_content):
+async def test_started_stream_is_never_retried(monkeypatch, asynchronous, prefix, ending):
     calls = []
     def handler(request):
         calls.append(request)
-        if len(calls) == 1:
-            prefix = sse(chunk('first')) if first_content else ''
-            return httpx.Response(200, text=prefix + sse({'error': {'code': 503, 'message': 'test-secret'}}))
-        return httpx.Response(200, text=sse(chunk('retry'), '[DONE]'))
+        terminal = sse({'error': {'code': 503, 'message': 'test-secret'}}) if ending == 'error' else ''
+        return httpx.Response(200, text=prefix + terminal)
     transport = httpx.MockTransport(handler)
     original_client, original_async = httpx.Client, httpx.AsyncClient
     monkeypatch.setattr(httpx, 'Client', lambda **kw: original_client(transport=transport, **kw))
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: original_async(transport=transport, **kw))
     adapter = OpenRouterLLMAdapter()
-    tokens = []
-    if first_content:
-        with pytest.raises(InferenceError) as error:
-            if asynchronous:
-                async for token in adapter.astream(**kwargs()): tokens.append(token)
-            else:
-                for token in adapter.stream(**kwargs()): tokens.append(token)
-        assert 'test-secret' not in str(error.value)
-        assert error.value.__context__ is None
-        assert tokens == ['first']
-        assert len(calls) == 1
-    else:
-        tokens = [t async for t in adapter.astream(**kwargs())] if asynchronous else list(adapter.stream(**kwargs()))
-        assert tokens == ['retry']
-        assert len(calls) == 2
+    with pytest.raises(InferenceError) as error:
+        if asynchronous:
+            [token async for token in adapter.astream(**kwargs())]
+        else:
+            list(adapter.stream(**kwargs()))
+    assert len(calls) == 1
+    assert 'test-secret' not in str(error.value)
+    assert error.value.__context__ is None
 
 
 @pytest.mark.parametrize('provider', ['ollama', 'openrouter'])

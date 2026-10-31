@@ -339,7 +339,7 @@ class _SSEEvents:
 
 
 class OpenRouterLLMAdapter:
-    """OpenAI-compatible completions/SSE without retrying an emitted token."""
+    """OpenAI-compatible completions/SSE without retrying a started stream."""
 
     provider = "openrouter"
 
@@ -386,7 +386,7 @@ class OpenRouterLLMAdapter:
     def stream(self, messages, *, schema, kind, timeout, call_type):
         url, headers, policy = openrouter_client._request("chat/completions")
         payload = self._payload(messages, schema, kind, True)
-        emitted = False
+        started = False
         with httpx.Client(follow_redirects=False) as client:
             for attempt in range(policy["max_attempts"]):
                 response = None
@@ -397,6 +397,7 @@ class OpenRouterLLMAdapter:
                             code = response.status_code
                             error = InferenceError("stream", code, code == 429 or 500 <= code < 600)
                         else:
+                            started = True
                             events = _SSEEvents()
                             for line in response.iter_lines():
                                 event = events.feed(line)
@@ -407,21 +408,20 @@ class OpenRouterLLMAdapter:
                                         self._log(call_type, event)
                                     content = _content(event, streaming=True)
                                     if content:
-                                        emitted = True
                                         yield content
                             error = InferenceError("stream_incomplete", retryable=True)
                 except httpx.RequestError:
                     error = InferenceError("stream", retryable=True)
                 except InferenceError as failure:
                     error = failure
-                if emitted or not error.retryable or attempt + 1 >= policy["max_attempts"]:
+                if started or not error.retryable or attempt + 1 >= policy["max_attempts"]:
                     raise error
                 time.sleep(openrouter_client._delay(policy, attempt, response))
 
     async def astream(self, messages, *, schema, kind, timeout, call_type):
         url, headers, policy = openrouter_client._request("chat/completions")
         payload = self._payload(messages, schema, kind, True)
-        emitted = False
+        started = False
         async with httpx.AsyncClient(follow_redirects=False) as client:
             for attempt in range(policy["max_attempts"]):
                 response = None
@@ -432,6 +432,7 @@ class OpenRouterLLMAdapter:
                             code = response.status_code
                             error = InferenceError("stream", code, code == 429 or 500 <= code < 600)
                         else:
+                            started = True
                             events = _SSEEvents()
                             async for line in response.aiter_lines():
                                 event = events.feed(line)
@@ -442,14 +443,13 @@ class OpenRouterLLMAdapter:
                                         self._log(call_type, event)
                                     content = _content(event, streaming=True)
                                     if content:
-                                        emitted = True
                                         yield content
                             error = InferenceError("stream_incomplete", retryable=True)
                 except httpx.RequestError:
                     error = InferenceError("stream", retryable=True)
                 except InferenceError as failure:
                     error = failure
-                if emitted or not error.retryable or attempt + 1 >= policy["max_attempts"]:
+                if started or not error.retryable or attempt + 1 >= policy["max_attempts"]:
                     raise error
                 await asyncio.sleep(openrouter_client._delay(policy, attempt, response))
 
