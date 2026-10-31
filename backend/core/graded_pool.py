@@ -116,13 +116,22 @@ def replay(candidates, embedding, intent, raw_rerank, weights, pure=False):
     from core.scoring import score_candidates, normalize_scores, mmr_diversify
     from core.pipeline import apply_relevance_gate, exclude_candidates
     scored = score_candidates(candidates, embedding, intent, weights=weights)
-    head = sorted(scored, key=lambda c: c['total'], reverse=True)[:settings.RERANK_TOP_K]
-    norms = normalize_scores([raw_rerank[str(c['id'])] for c in head])
-    totals = normalize_scores([c['total'] for c in head])
-    weight = 1.0 if pure else settings.RERANK_WEIGHT
-    ranked = [{**c, 'total': weight * norms[i] + (1-weight) * totals[i],
-               'rerank_score': raw_rerank[str(c['id'])]} for i, c in enumerate(head)]
-    ranked.sort(key=lambda c: c['total'], reverse=True)
+    # Production returns the original scored pool when reranking is disabled,
+    # and a sorted but unscored head when fewer than two items reach reranking.
+    # In both cases absence of rerank_score also preserves the gate's bypass.
+    if not pure and not settings.RERANKER_ENABLED:
+        head = ranked = scored
+    else:
+        head = sorted(scored, key=lambda c: c['total'], reverse=True)[:settings.RERANK_TOP_K]
+        if not pure and len(head) < 2:
+            ranked = head
+        else:
+            norms = normalize_scores([raw_rerank[str(c['id'])] for c in head])
+            totals = normalize_scores([c['total'] for c in head])
+            weight = 1.0 if pure else settings.RERANK_WEIGHT
+            ranked = [{**c, 'total': weight * norms[i] + (1-weight) * totals[i],
+                       'rerank_score': raw_rerank[str(c['id'])]} for i, c in enumerate(head)]
+            ranked.sort(key=lambda c: c['total'], reverse=True)
     eligible = exclude_candidates(ranked, intent.get('reference_films'), None)
     return mmr_diversify(apply_relevance_gate(eligible, settings.RERANK_MIN_SCORE),
                          top_n=settings.EVAL_POOL_EXPORT['depth']), head

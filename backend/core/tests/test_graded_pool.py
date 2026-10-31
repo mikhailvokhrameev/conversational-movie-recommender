@@ -217,3 +217,51 @@ def test_fallback_marks_run_failed(pool_command, tmp_path):
         run(tmp_path / 'pool.csv')
     capture.assert_not_called()
     assert not (tmp_path / 'pool.csv').exists()
+
+
+@pytest.mark.parametrize('blend_weights', [
+    {'semantic': 0.6, 'metadata': 0.3, 'popularity': 0.1, 'quality': 0.0},
+    {'semantic': 0.4, 'metadata': 0.2, 'popularity': 0.1, 'quality': 0.3},
+])
+def test_disabled_reranker_replay_matches_production(monkeypatch, settings, blend_weights):
+    from core.graded_pool import replay
+    from core.pipeline import apply_relevance_gate
+    from core.reranking import rerank_candidates
+    from core.scoring import mmr_diversify
+    settings.RERANKER_ENABLED = False
+    settings.RERANK_TOP_K = 1
+    settings.RERANK_MIN_SCORE = 0.9
+    settings.EVAL_POOL_EXPORT = {'depth': 10}
+    scored = [{'id': 1, 'total': 0.2}, {'id': 2, 'total': 0.8}]
+    monkeypatch.setattr('core.scoring.score_candidates', lambda *a, **kw: scored)
+    production = rerank_candidates('query', scored)
+    expected = mmr_diversify(apply_relevance_gate(production, settings.RERANK_MIN_SCORE), top_n=10)
+    top, head = replay(scored, [], {}, {'1': 0.1, '2': 0.2}, blend_weights)
+    assert top == expected == scored
+    assert head == production
+    assert all('rerank_score' not in c for c in top)
+    experimental, experimental_head = replay(scored, [], {}, {'1': 0.1, '2': 0.2}, blend_weights, pure=True)
+    assert [c['id'] for c in experimental_head] == [2]
+    assert experimental == []  # Explicit pure reranker still scores and gates.
+
+
+@pytest.mark.parametrize('blend_weights', [
+    {'semantic': 0.6, 'metadata': 0.3, 'popularity': 0.1, 'quality': 0.0},
+    {'semantic': 0.4, 'metadata': 0.2, 'popularity': 0.1, 'quality': 0.3},
+])
+def test_single_item_head_replay_matches_production(monkeypatch, settings, blend_weights):
+    from core.graded_pool import replay
+    from core.pipeline import apply_relevance_gate
+    from core.reranking import rerank_candidates
+    settings.RERANKER_ENABLED = True
+    settings.RERANK_TOP_K = 1
+    settings.RERANK_MIN_SCORE = 0.9
+    settings.EVAL_POOL_EXPORT = {'depth': 10}
+    scored = [{'id': 1, 'total': 0.2}, {'id': 2, 'total': 0.8}]
+    monkeypatch.setattr('core.scoring.score_candidates', lambda *a, **kw: scored)
+    production = rerank_candidates('query', scored)
+    expected = apply_relevance_gate(production, settings.RERANK_MIN_SCORE)
+    top, head = replay(scored, [], {}, {'1': 0.1, '2': 0.2}, blend_weights)
+    assert top == expected == [{'id': 2, 'total': 0.8}]
+    assert head == production
+    assert 'rerank_score' not in top[0]
