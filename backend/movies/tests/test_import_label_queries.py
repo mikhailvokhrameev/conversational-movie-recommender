@@ -92,3 +92,20 @@ def test_missing_source_actionable(tmp_path):
     source.unlink()
     with pytest.raises(CommandError, match='--source file not found'):
         run(source,catalog,tmp_path/'out.json')
+
+
+@pytest.mark.parametrize('content', [
+    'wrong,headers\na,b\n',
+    'id,imdb_id\n1\n',
+    'id,imdb_id\n1,tt0000001,extra\n',
+    'id,imdb_id\n1,"unterminated\n',
+])
+def test_malformed_catalog_preserves_existing_output(tmp_path, content):
+    source, catalog = inputs(tmp_path)
+    catalog.write_text(content)
+    out = tmp_path / 'candidate.json'
+    out.write_text('[{"id":"t3_demo","split":"test"}]')
+    before = out.read_bytes()
+    with pytest.raises(CommandError, match='--catalog'):
+        run(source, catalog, out)
+    assert out.read_bytes() == before

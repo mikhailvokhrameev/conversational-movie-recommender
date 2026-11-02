@@ -42,7 +42,14 @@ def imdb_to_tmdb(
     keep (the quality filter), so recs are films the app can actually show."""
     mapping: dict[str, int] = {}
     with open(catalog_csv, newline="", encoding="utf-8") as handle:
-        for row in csv.DictReader(handle):
+        reader = csv.DictReader(handle, strict=True)
+        required = {"id", "imdb_id"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError("missing CSV columns: " + ", ".join(sorted(missing)))
+        for row in reader:
+            if None in row or any(value is None for value in row.values()):
+                raise ValueError(f"CSV row {reader.line_num} has missing or extra cells")
             imdb_id = (row.get("imdb_id") or "").strip()
             if not imdb_id:
                 continue
