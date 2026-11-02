@@ -389,7 +389,6 @@ def test_override_activates_quality_and_preserves_defaults(settings):
 
 
 def test_obscure_overrides_forced_quality_and_diagnostics(settings):
-    from contextlib import ExitStack
     settings.RRF_WEIGHTS = {'semantic': 1.0, 'lexical': 0.7, 'quality': 0.0}
     patches, quality = _mocked_retrieval([1, 2], lexical_ids=[2], quality_ids=[9])
     with ExitStack() as stack:
@@ -413,3 +412,28 @@ def test_obscure_reference_keeps_explicit_rating_filter(settings):
     patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
     assert _run_generate(patches, intent=intent, quality_channel=True) == [1, 2]
     quality.assert_not_called()
+
+
+@pytest.mark.django_db
+class TestQualityChannelPostgres:
+    """Real hard-filtered pgvector queries; user-run only."""
+
+    def test_empty_quality_subset_preserves_semantic_candidates(self, settings):
+        settings.QUALITY_CHANNEL_MIN_VOTE_COUNT = 1000
+        allowed = _make_movie(country=["RU"], vote_count=10)
+        _make_movie(country=["US"], vote_count=10000)
+        weights = {"semantic": 1.0, "lexical": 0.7, "quality": 1.0}
+        results = generate_candidates(
+            EMBEDDING, intent={"country_exclusions": ["US"]}, rrf_weights=weights,
+        )
+        assert [movie["id"] for movie in results] == [allowed.id]
+        assert results[0]["in_quality_channel"] is False
+        assert results[0]["channel_ranks"]["quality"] is None
+
+    def test_empty_hard_filtered_pool_returns_no_candidates(self, settings):
+        settings.QUALITY_CHANNEL_MIN_VOTE_COUNT = 1000
+        _make_movie(country=["US"], vote_count=10000)
+        assert generate_candidates(
+            EMBEDDING, intent={"country_exclusions": ["US"]},
+            rrf_weights={"semantic": 1.0, "lexical": 0.7, "quality": 1.0},
+        ) == []
