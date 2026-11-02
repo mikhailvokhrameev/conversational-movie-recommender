@@ -289,10 +289,15 @@ def _validate_quality_channel(retrieval: dict) -> None:
     one must fail here rather than at the first request. A negative weight
     would push well-known films down the fused ranking.
     """
-    weight = retrieval["rrf_weights"].get("quality")
-    if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
-        raise ValueError(f"params.yaml: retrieval.rrf_weights.quality must be a number >= 0 (got {weight!r}).")
-    floor = retrieval["quality_channel"]["min_vote_count"]
+    retrieval = retrieval if isinstance(retrieval, dict) else {}
+    weights = retrieval.get("rrf_weights")
+    weight = weights.get("quality") if isinstance(weights, dict) else None
+    if isinstance(weight, bool) or not isinstance(weight, (int, float)) or not math.isfinite(weight) or weight < 0:
+        raise ValueError(
+            f"params.yaml: retrieval.rrf_weights.quality must be a finite number >= 0 (got {weight!r})."
+        )
+    channel = retrieval.get("quality_channel")
+    floor = channel.get("min_vote_count") if isinstance(channel, dict) else None
     if isinstance(floor, bool) or not isinstance(floor, int) or floor < 0:
         raise ValueError(
             f"params.yaml: retrieval.quality_channel.min_vote_count must be an integer >= 0 (got {floor!r})."
@@ -316,7 +321,7 @@ def _validate_score_weights(weights: dict) -> None:
     if not isinstance(weights, dict) or not weights:
         raise ValueError(f"params.yaml: scoring.weights must map signal names to weights (got {weights!r}).")
     for name, value in weights.items():
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
             raise ValueError(
                 f"params.yaml: scoring.weights.{name} must be a number >= 0 (got {value!r})."
             )
@@ -340,14 +345,14 @@ def _validate_quality(quality: dict) -> None:
     It is the m of the weighted rating v / (v + m): zero would let a one-vote
     movie keep its own rating unshrunk, a negative value inverts the shrinkage.
     """
-    value = quality["prior_votes"]
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+    value = quality.get("prior_votes") if isinstance(quality, dict) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
         raise ValueError(f"params.yaml: scoring.quality.prior_votes must be a number > 0 (got {value!r}).")
 
 
 _scoring = PARAMS["scoring"]
 _validate_score_weights(_scoring["weights"])
-_validate_quality(_scoring["quality"])
+_validate_quality(_scoring.get("quality"))
 SCORE_WEIGHTS = _scoring["weights"]
 QUALITY_PRIOR_VOTES = _scoring["quality"]["prior_votes"]
 NEUTRAL_SCORE = _scoring["neutral_score"]

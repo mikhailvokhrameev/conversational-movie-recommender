@@ -401,3 +401,16 @@ def test_obscure_overrides_forced_quality_and_diagnostics(settings):
     quality.assert_not_called()
     assert result[0]['channel_ranks'] == {'semantic': 1, 'lexical': 0, 'quality': None}
     assert result[0]['in_quality_channel'] is False
+
+
+def test_obscure_reference_keeps_explicit_rating_filter(settings):
+    from core.candidate_generation import _apply_hard_filters
+    from django.db.models import Q
+
+    intent = {"wants_obscure": True, "reference_films": ["Alien"], "min_vote_average": 7.0}
+    base = MagicMock()
+    assert _apply_hard_filters(base, intent) is base.filter.return_value
+    base.filter.assert_called_once_with(Q(vote_average__gte=7.0) | Q(vote_average__isnull=True))
+    patches, quality = _mocked_retrieval([1, 2], quality_ids=[9])
+    assert _run_generate(patches, intent=intent, quality_channel=True) == [1, 2]
+    quality.assert_not_called()

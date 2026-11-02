@@ -828,7 +828,7 @@ class Command(BaseCommand):
     def _run_eval(self, prepared, k, weights, use_llm, apply_gate=True) -> dict:
         self.stdout.write(
             f"Weights: semantic={weights['semantic']}, metadata={weights['metadata']}, "
-            f"popularity={weights['popularity']}"
+            f"popularity={weights['popularity']}, quality={weights['quality']}"
         )
         result = self._evaluate(prepared, k, weights, use_llm, apply_gate)
 

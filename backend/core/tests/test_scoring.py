@@ -293,3 +293,19 @@ class TestEffectiveWeights:
             )
         assert max(plain, key=lambda r: r["total"])["id"] == 1
         assert max(obscure, key=lambda r: r["total"])["id"] == 2
+
+
+@pytest.mark.parametrize("rating", [0.0, None])
+def test_missing_rating_with_positive_votes_uses_catalog_mean(rating):
+    from core.scoring import _quality_score
+
+    assert _quality_score({"vote_average": rating, "vote_count": 1000}, 6.3) == pytest.approx(6.3)
+
+
+def test_obscure_preserves_reference_and_rating_constraints():
+    intent = {"wants_obscure": True, "reference_films": ["Alien"], "min_vote_average": 7.0}
+    weights = {"semantic": 0.4, "metadata": 0.3, "popularity": 0.1, "quality": 0.2}
+    assert effective_weights(weights, intent) == pytest.approx(
+        {"semantic": 0.5, "metadata": 0.375, "popularity": 0.125, "quality": 0.0}
+    )
+    assert intent == {"wants_obscure": True, "reference_films": ["Alien"], "min_vote_average": 7.0}

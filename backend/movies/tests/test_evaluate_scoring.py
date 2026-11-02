@@ -864,3 +864,10 @@ def test_grade_report_accepts_explicit_proposal_and_rejects_test_without_one(tmp
     with patch('core.graded_evaluation.read_grades', side_effect=AssertionError('grades inspected')):
         with pytest.raises(CommandError, match='frozen proposal'):
             call_command('evaluate_scoring', '--grade-report', str(tmp_path/'absent.csv'), '--split', 'test')
+
+
+def test_eval_logs_quality_weight():
+    command = cmd.Command(stdout=StringIO())
+    with patch.object(command, "_evaluate", return_value={"queries": [], "aggregate": {}, "counters": {}}), patch.object(command, "_write_counters"):
+        command._run_eval([], 5, {"semantic": 0.4, "metadata": 0.3, "popularity": 0.1, "quality": 0.2}, False)
+    assert "quality=0.2" in command.stdout.getvalue()

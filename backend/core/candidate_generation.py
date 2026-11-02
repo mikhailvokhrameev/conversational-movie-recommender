@@ -95,11 +95,7 @@ def generate_candidates(
         Movie.objects.filter(embedding__isnull=False), intent
     )
 
-    semantic_ids = list(
-        base_queryset.annotate(distance=CosineDistance("embedding", query_embedding))
-        .order_by("distance")
-        .values_list("id", flat=True)[:limit]
-    )
+    semantic_ids = _semantic_ranked_ids(base_queryset, query_embedding, limit)
     lexical_ids = _lexical_ranked_ids(base_queryset, query_text, limit)
 
     weights = settings.RRF_WEIGHTS if rrf_weights is None else rrf_weights
@@ -125,7 +121,11 @@ def generate_candidates(
     if not ordered_ids:
         return []
 
-    lexical_rank_by_id = {movie_id: rank for rank, movie_id in enumerate(lexical_ids)}
+    ranks = {
+        name: {movie_id: rank for rank, movie_id in enumerate(ids)}
+        for name, ids in {"semantic": semantic_ids, "lexical": lexical_ids, "quality": quality_ids}.items()
+    }
+    lexical_rank_by_id = ranks["lexical"]
 
     movies_by_id = {
         movie.id: movie
@@ -136,9 +136,8 @@ def generate_candidates(
 
     return [
         {**_as_candidate_dict(movies_by_id[movie_id], lexical_rank_by_id.get(movie_id)),
-         "channel_ranks": {name: ids.index(movie_id) if movie_id in ids else None
-                           for name, ids in {"semantic": semantic_ids, "lexical": lexical_ids, "quality": quality_ids}.items()},
-         "in_quality_channel": movie_id in quality_ids}
+         "channel_ranks": {name: by_id.get(movie_id) for name, by_id in ranks.items()},
+         "in_quality_channel": movie_id in ranks["quality"]}
         for movie_id in ordered_ids
         if movie_id in movies_by_id
     ]
@@ -248,9 +247,15 @@ def _quality_ranked_ids(
     `vote_count >= min_vote_count`, so the hard filters still apply. Empty when
     the filters leave no well-voted film; the caller then fuses without it.
     """
+    return _semantic_ranked_ids(
+        base_queryset.filter(vote_count__gte=min_vote_count), query_embedding, limit
+    )
+
+
+def _semantic_ranked_ids(base_queryset, query_embedding: list[float], limit: int) -> list[int]:
+    """Exact cosine ordering shared by the full and well-voted subsets."""
     return list(
-        base_queryset.filter(vote_count__gte=min_vote_count)
-        .annotate(distance=CosineDistance("embedding", query_embedding))
+        base_queryset.annotate(distance=CosineDistance("embedding", query_embedding))
         .order_by("distance")
         .values_list("id", flat=True)[:limit]
     )

@@ -203,7 +203,7 @@ def _quality_score(movie: dict, catalog_mean: float | None) -> float:
     if catalog_mean is None:
         return 0.0
     return weighted_rating(
-        movie.get("vote_average") or 0.0,
+        movie.get("vote_average") or catalog_mean,
         movie.get("vote_count") or 0,
         settings.QUALITY_PRIOR_VOTES,
         catalog_mean,

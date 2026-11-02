@@ -391,3 +391,27 @@ def test_settings_validates_placeholder_before_exporting_it(monkeypatch, explana
     monkeypatch.setattr(yaml, 'safe_load', lambda source: params)
     with pytest.raises(ValueError, match=r'llm\.explanation\.placeholder_max_chars'):
         runpy.run_path(module.__file__)
+
+
+@pytest.mark.parametrize("bad", [None, {}, {"prior_votes": None}, {"prior_votes": float("nan")}, {"prior_votes": float("inf")}])
+def test_invalid_or_missing_quality_has_actionable_error(bad):
+    with pytest.raises(ValueError, match=r"scoring\.quality\.prior_votes"):
+        _validate_quality(bad)
+
+
+@pytest.mark.parametrize("bad", [None, {}, {"rrf_weights": None}, {"rrf_weights": {}},
+    {"rrf_weights": {"quality": float("nan")}, "quality_channel": {"min_vote_count": 1}},
+    {"rrf_weights": {"quality": float("inf")}, "quality_channel": {"min_vote_count": 1}},
+    {"rrf_weights": {"quality": 1}, "quality_channel": None},
+    {"rrf_weights": {"quality": 1}, "quality_channel": {}},
+    {"rrf_weights": {"quality": 1}, "quality_channel": {"min_vote_count": True}}])
+def test_invalid_or_missing_quality_channel_has_actionable_error(bad):
+    from recommender.settings import _validate_quality_channel
+    with pytest.raises(ValueError, match=r"retrieval\.(rrf_weights\.quality|quality_channel\.min_vote_count)"):
+        _validate_quality_channel(bad)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf")])
+def test_score_weights_reject_nonfinite_quality(bad):
+    with pytest.raises(ValueError, match=r"scoring\.weights\.quality"):
+        _validate_score_weights({**GOOD_WEIGHTS, "quality": bad})
