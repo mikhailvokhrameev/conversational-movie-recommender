@@ -341,17 +341,22 @@ def test_paired_test_bootstrap_pairs_query_ids_and_reports_metric_samples():
     assert result['delta_95'] == pytest.approx([-.2, .2])
 
 
-@pytest.mark.parametrize('skipped', [False, True])
-def test_paired_test_bootstrap_withholds_intervals_for_incomplete_comparison(skipped):
+@pytest.mark.parametrize('case', ['incomplete', 'skipped', 'zero_eligible'])
+def test_paired_test_bootstrap_withholds_intervals_for_incomplete_comparison(case):
     from core.graded_evaluation import paired_test_bootstrap
     base = dict(per_query=[{'query_id': 'q', 'ndcg@5': .5}],
-                complete_coverage=not skipped, skipped_queries=0, overall={'query_count': 2})
+                complete_coverage=True, skipped_queries=0, overall={'query_count': 2})
     selected = copy.deepcopy(base)
-    selected['complete_coverage'] = skipped
-    selected['skipped_queries'] = int(skipped)
+    if case == 'incomplete':
+        selected['complete_coverage'] = False
+    elif case == 'skipped':
+        selected['skipped_queries'] = 1
+    else:
+        selected['per_query'][0]['ndcg@5'] = None
     report = paired_test_bootstrap(base, selected, 500)
     assert not report['available'] and report['metrics'] == {}
-    assert report['query_count'] == 1 and report['total_query_count'] == 2
+    assert report['query_count'] == (0 if case == 'zero_eligible' else 1)
+    assert report['total_query_count'] == 2
     assert 'no test interval' in report['reason']
 
 

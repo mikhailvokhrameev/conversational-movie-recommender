@@ -630,6 +630,11 @@ class TestResolveFields:
 
 
 class TestExtractIntent:
+    @pytest.mark.parametrize("parsed, expected", [({}, False), ({"wants_obscure": False}, False), ({"wants_obscure": True}, True)])
+    def test_sync_intent_preserves_obscure_request(self, parsed, expected):
+        with patch("core.llm_client._resolve_fields", return_value={}):
+            assert _extract_intent(parsed)["wants_obscure"] is expected
+
     def test_extracts_all_fields(self):
         parsed = {
             "genres": ["Comedy"],

@@ -1,6 +1,6 @@
 # Recommendation review finding inventory
 
-Audit baseline: `5a8715d` (2026-11-02). This is an inventory, not implementation or quality acceptance. Dispositions describe that baseline; Tasks 2–5 must reconcile their changes here. Static source/test inspection was used; no runtime tests, providers, network, model loads, startup or `.env` access occurred.
+Audit baseline: `5a8715d` (2026-11-02). This is an inventory, not implementation or quality acceptance. The tables preserve baseline evidence; the reconciliation below records final dispositions after Tasks 2–5. Static source/test inspection was used; no runtime tests, providers, network, model loads, startup or `.env` access occurred.
 
 Source shorthand: **L** = `.superpowers/sdd/2026-10-25-recommendation-quality/progress.md`; **B/BR** = `broad-review.md` / `broad-rereview.md` in that directory; **Q** = `query-review.md`; **R1–R7** = corresponding `task-N-report.md`; **V5/V6/V7/VB** = `task-5-review.md`, `task-6-review.md`, `task-7-review.md`, `task-bootstrap-review.md`; **VR6** = `task-6-rereview.md`. All accessible task reports/reviews/rereviews, the broad fix report, ledger, Q, original recommendation-quality plan and current fixes plan were examined. Historical reports describe superseded intermediate states; current code/tests take precedence.
 
@@ -94,3 +94,27 @@ Mojibake IDs (current): `t3_xb9zan`, `t3_xc1ans`, `t3_xdk0tc`, `t3_xeitl5`, `t3_
 | VR6 | Source-dev path retention, conservative attempted-access locking; artifact tamper/concurrent writers unsupported | Current workflow documents source retention and sequential local artifact assumptions; no requirement for adversarial tamper protection. | not a defect | T5 preserve limits |
 
 Preservation: starting tree contained only user-modified original plan and untracked source CSV/query JSON. This task creates this inventory and its report only. No existing plans, query records, grades, manifests or source datasets were edited. `git diff --check` validates this documentation; later task edits are independently owned.
+
+
+## Final reconciliation (2026-11-02)
+
+The baseline descriptions above are historical evidence, not claims that fixed code remains defective. Reports under `.superpowers/sdd/2026-11-02-recommendation-review-fixes/` provide exact changes and validation.
+
+| Findings | Final disposition / evidence |
+|---|---|
+| I-1, I-2 | Already fixed; Task 4 guarded retrieval coverage preserved override activation, obscure precedence and diagnostic membership. |
+| I-3, I-4, I-5; M16–M20 | Fixed by Task 3: writable candidate default/actionable input errors, seeker-echo exclusion, retained splits, explicit nested/upvote policy, one CSV limit setter, command tests and exact cardinality/split assertions. 41 focused tests passed. |
+| I-6 | Not a defect: proportional renormalization preserves ratios and necessarily changes other absolute weights; Task 4 combined-filter coverage passes. |
+| M01, M02, M04, M06, M09, M11, M21 | Fixed by Task 4: neutral absent ratings, quality logging, actionable finite config validation, shared cosine order, rank maps. 360 targeted passes/15 DB exclusions; settings follow-up 193 passes. |
+| M03, M07 | Fixed by Task 5: redundant mean patches removed, intentional unavailable-mean override retained; ExitStack imported once at module scope with existing mocked retrieval behavioral assertions preserved. |
+| M05, M10, M15 | Fixed by Task 5: four-signal API/core/ML descriptions, optional third retrieval channel and obscure-weight tradeoff documented; stale task reference removed. Historical three-signal tuning evidence remains explicitly historical. |
+| M12 | Fixed by Task 5: direct `_adds_to_offer` cases for false/default and explicit true, and synchronous `_extract_intent` true/false/absent cases. |
+| M20, M22 | Exact split counts/cardinality covered by Task 3; Task 5 independently isolates incomplete coverage, skipped query and zero-eligible bootstrap withholding. |
+| B01–B08 | Existing regression behavior preserved by complete permitted suite, including replay bypass/gate, dev/test binding and access locks, split drift and iterative worksheets. |
+| B09 | Fixed by Task 2: original-path reuse merges/validates adjacent worksheet with exact snapshot identity and file/line diagnostics; 170 focused tests passed. |
+| M08, M13, M14 and evidence-dependent concerns | Pending user-run PostgreSQL, real token/recall, provider batch, GPU/context/latency and human graded quality evidence. Exact procedures in `docs/infrastructure.md` user-only review checks. No mocked test is quality acceptance. |
+| Query encoding/entities/source membership | Task 3 prepared fingerprinted per-ID audit and candidate: 115 identities/splits retained, 36 encoding/five entity repairs, 32 community changes; source/catalog consistency established locally. Original JSON/CSVs untouched; candidate adoption and seven semantic-scope decisions await user review. |
+| Fourteen unidentified historical minors | Source unavailable. No individual finding invented or closed; original prose recovery remains outstanding. |
+| Original recommendation-quality Task 8 | Deferred until both modes have accepted human-quality/operational evidence; Voyage null gate remains uncalibrated. |
+
+Task 5 fresh verification: complete backend suite with socket connect/connect_ex/create_connection/getaddrinfo blocked before pytest: **1406 passed, 78 `django_db` tests deselected**. Targeted hygiene modules: **356 passed, 33 deselected**. Both effective profiles and weight sums are exercised by `test_effective_scoring_profiles_validate_and_cloud_override_is_isolated` in the full run. Real DB/API/GPU checks remain pending. No original plans, source datasets, labels, manifests or snapshots were changed. Tasks 1–4 were committed by the controller after worker sandbox restrictions; Task 5 is handed back uncommitted. No pushes.

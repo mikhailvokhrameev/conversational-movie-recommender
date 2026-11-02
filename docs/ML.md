@@ -196,7 +196,7 @@ are not comparable quantities, and normalizing them against each other would
 be inventing a relationship that does not exist. RRF fuses by *rank*
 (`weight / (60 + rank)`), which is scale-free by construction. Note the
 contrast with hybrid scoring below, which uses min-max normalization instead:
-there, all three signals rank the same pool and their magnitudes are
+there, all four signals rank the same pool and their magnitudes are
 meaningful, so discarding magnitude would lose real information.
 
 **Channel weights**: semantic 1.0, lexical 0.7. Semantic carries signal for
@@ -204,7 +204,7 @@ every query; lexical only when the user names something. The weighting means
 lexical loses ties rather than being suppressed.
 
 **Interaction with reranking**: fusion decides which candidates enter the
-pool, not the final order -- the three-signal scorer has no lexical term, so
+pool, not the final order -- the four-signal scorer has no lexical term, so
 a movie retrieved purely on an exact title match would enter the pool and
 then rank low. The cross-encoder reranker closes that gap: it reads the query
 and the movie text together, so a literal title match scores highly on
@@ -212,13 +212,14 @@ relevance regardless of what the embeddings thought.
 
 ## Hybrid Scoring
 
-Three signals combined via weighted sum, each min-max normalized across the
+Four signals combined via weighted sum, each min-max normalized across the
 candidate set first:
 
 | Signal | Default Weight | What it measures |
 |--------|---------------|------------------|
 | Semantic | 0.4667 | Cosine similarity between query and movie embeddings |
 | Metadata | 0.3333 | Genre overlap between LLM-extracted intent and movie genres |
+| Quality | 0.0 | Bayesian weighted rating shrunk toward the catalog mean; zero or missing ratings use that mean |
 | Popularity | 0.2 | TMDB's popularity metric (a scoring signal, not a hard filter -- it's unbounded and non-linear, unlike vote_average's bounded 0-10 scale) |
 
 The weights are the old ones with the `session` signal removed ([ADR 0010](adr/0010-drop-session-vector-contextual-query-text.md)):
@@ -242,10 +243,10 @@ collapses to a neutral 0.5 rather than being stretched across the full range
 by numerical noise. Pre-normalization values are retained per candidate under
 `raw_scores` for debugging and evaluation.
 
-This is deliberately a different technique from the RRF used to fuse the two
+This is deliberately a different technique from the RRF used to fuse the active
 retrieval channels above. Retrieval fuses incomparable scores across
 independent systems, where only rank is trustworthy. Scoring ranks one shared
-pool with three commensurable signals, where magnitude is real information
+pool with four commensurable signals, where magnitude is real information
 worth keeping.
 
 **Weight tuning**: Pre-swap grid search (old Okko catalog, old embedder,
@@ -808,3 +809,5 @@ Documented here for completeness. A production system would add:
 Origin changes trigger a deterministic read-only compatibility sample using the active embedder, which may contact real APIs and is user-only. A pass preserves original provenance and permits reads only; partial generation cannot mix origins. Canonical BAAI/bge-m3 stays separate from API baai/bge-m3; unknown API revision is null. Test full cloud generation on a separate database; never auto-rebuild the working catalog.
 
 Run the same dev dataset in each mode with separate run records. Records include mode, providers/models, effective-config SHA256 and failed-provider diagnostics. Compare intent errors, fallbacks, empty results, latency and user-labelled relevance. Existing evaluation flags and recommendation-quality tasks 5–8 remain unchanged. Voyage's gate remains null until user-label calibration; the LLM judge is circular evidence, never ground truth. Real API/GPU/memory/latency/quality validation is pending; see [infrastructure.md](infrastructure.md).
+
+Quality retrieval is an optional third RRF channel (default weight zero), ranked by Bayesian rating within the hard-filtered pool. `wants_obscure` disables quality retrieval and the quality scoring weight; remaining scoring weights are proportionally renormalized. This preserves their ratios, while increasing their absolute weights when quality originally had positive mass.

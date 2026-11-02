@@ -243,7 +243,7 @@ Returns a list of movie dicts with all metadata + embedding for downstream scori
 
 ### `scoring.py` -- Hybrid Reranking + MMR Diversification
 
-**Scoring** -- three signals, weighted sum:
+**Scoring** -- four signals, weighted sum:
 
 - **Semantic (0.4667)**: Cosine similarity between the query embedding and the movie's
   pre-computed embedding. Mapped from [-1, 1] to [0, 1] via `(sim + 1) / 2`.
@@ -253,6 +253,8 @@ Returns a list of movie dicts with all metadata + embedding for downstream scori
   hard filter, deliberately -- popularity is unbounded and non-linear, so there's
   no absolute threshold an LLM could reliably pick (unlike vote_average's bounded
   0-10 scale, which *is* a hard filter above).
+
+- **Quality (0.0)**: Bayesian weighted rating shrunk toward the catalog mean; zero or missing ratings use that mean.
 
 Signals are min-max normalized across the candidate set before the weighted
 sum, so the declared weights actually hold. Raw signals have very different
@@ -426,3 +428,5 @@ replays ranking, fitting and frozen test proposals without inference or DB acces
 See the [graded workflow](ML.md#graded-saved-pool-workflow-quality-calibration-pending)
 for separate dev/test artifacts, missing grades and test-access locks. This workflow
 does not establish accepted production settings or replace legacy evaluation flags.
+
+Quality retrieval is an optional third RRF channel (default weight zero), ranked by Bayesian rating within the hard-filtered pool. `wants_obscure` disables quality retrieval and the quality scoring weight; remaining scoring weights are proportionally renormalized. This preserves their ratios, while increasing their absolute weights when quality originally had positive mass.

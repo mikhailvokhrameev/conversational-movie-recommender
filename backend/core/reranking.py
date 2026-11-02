@@ -1,6 +1,6 @@
 """Cross-encoder reranking of the top scored candidates.
 
-Where the three-signal scorer compares a query *embedding* to a movie
+Where the four-signal scorer compares a query *embedding* to a movie
 *embedding* -- two vectors produced independently, never seeing each other --
 a cross-encoder reads the query and the movie text together in one forward
 pass and scores their relevance directly. That joint view is what lets it

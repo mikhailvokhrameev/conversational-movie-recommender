@@ -1,3 +1,4 @@
+from contextlib import ExitStack
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -296,8 +297,6 @@ def _mocked_retrieval(semantic_ids, lexical_ids=(), quality_ids=()):
 
 
 def _run_generate(patches, **kwargs):
-    from contextlib import ExitStack
-
     with ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)

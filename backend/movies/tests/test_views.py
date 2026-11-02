@@ -292,3 +292,14 @@ class TestSaveSessionHistoryEntry:
         await session.arefresh_from_db()
 
         assert session.history == [{"role": "user", "content": "q"}]
+
+
+@pytest.mark.parametrize("requested, offered, expected", [
+    (False, {}, False), (False, {"wants_obscure": True}, False),
+    (True, {}, True), (True, {"wants_obscure": True}, False),
+])
+def test_adds_to_offer_obscure_is_only_an_explicit_request(requested, offered, expected):
+    from core.llm_client import MessageIntent
+    from movies.views import _adds_to_offer
+    intent = MessageIntent(category="new_search", wants_obscure=requested)
+    assert _adds_to_offer(intent, offered) is expected

@@ -340,9 +340,9 @@ POST /api/chat/ {"message": "...", "session_id": "..."}
                  |
   encode_query(intent.semantic_query)        ← BGE-M3, ~0.3s
                  v
-  generate_candidates(embedding, intent)     ← hard filters, then semantic + lexical
+  generate_candidates(embedding, intent)     ← hard filters, then semantic + lexical + optional quality
                                                channels fused by RRF
-  score_candidates(candidates, ...)          ← semantic + metadata + session + popularity,
+  score_candidates(candidates, ...)          ← semantic + metadata + popularity + quality,
                                                each normalized across the set
   rerank_candidates(query, scored)           ← cross-encoder, on by default, top_k=50
   apply_relevance_gate(reranked, min_score)  ← drops rerank_score < min_score (0.005 as shipped)
@@ -425,8 +425,8 @@ these can be changed -- no environment variable overrides them.
 | `embedding.text.description_chars` / `max_keywords` | 500 / 10 | Truncation of the embedded movie text; part of the index provenance, changing needs `generate_embeddings --all` |
 | `retrieval.candidate_count` | `100` | Candidates per retrieval channel |
 | `retrieval.rrf_k` | `60` | RRF rank-smoothing constant |
-| `retrieval.rrf_weights.*` | 1.0 / 0.7 | Channel weights (semantic / lexical) |
-| `scoring.weights.*` | 0.4667 / 0.3333 / 0.2 | Signal weights (semantic / metadata / popularity). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
+| `retrieval.rrf_weights.*` | 1.0 / 0.7 / 0.0 | Channel weights (semantic / lexical / quality) |
+| `scoring.weights.*` | 0.4667 / 0.3333 / 0.2 / 0.0 | Signal weights (semantic / metadata / popularity / quality). Must be >= 0 and sum to 1.0; settings refuses to load otherwise |
 | `diversification.top_n` | `5` | Results returned when the user does not ask for a count |
 | `diversification.max_n` | `10` | Upper bound on a user-requested count (intent `result_count`, e.g. "top 10"); a larger request is clamped to it, and the reply says so. Minimum 1 (a request for 0 is asked about, not run) |
 | `diversification.lambda` | `0.7` | MMR relevance-vs-diversity tradeoff |

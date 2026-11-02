@@ -63,7 +63,7 @@ llm:
   # `docker compose logs backend | grep "call=classify_parse"` after the next
   # pull. 6144 stays.
   #
-  # wants_obscure (Task 3) adds one schema line plus the key on each of the 15
+  # wants_obscure adds one schema line plus the key on each of the 15
   # few-shot lines to the classify prompt: +493 characters (13987 -> 14480,
   # measured on the rendered template), ~123 tokens at ~4 chars/token. New
   # estimate: measured max 4629 + ~123 = ~4.75k (~5.4k in the possible heavy
@@ -204,7 +204,7 @@ retrieval:
   # Candidates pulled from each channel before fusion.
   candidate_count: 100
 
-  # Reciprocal Rank Fusion across the semantic and lexical channels. k=60 is
+  # Reciprocal Rank Fusion across the semantic, lexical and optional quality channels. k=60 is
   # the value from the original paper. Semantic outweighs lexical because it
   # carries signal for every query, while lexical only fires when the user
   # names something -- so lexical loses ties rather than being suppressed.

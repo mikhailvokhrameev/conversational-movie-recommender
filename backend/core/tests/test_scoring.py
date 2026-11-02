@@ -223,8 +223,7 @@ class TestQualitySignal:
             _rated(1, 5.0, 20000, [1.0, 0.0, 0.0]),
             _rated(2, 8.5, 20000, [1.0, 0.0, 0.0]),
         ]
-        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
-            result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
         by_id = {r["id"]: r for r in result}
         assert by_id[2]["quality"] == pytest.approx(1.0)
         assert by_id[1]["quality"] == pytest.approx(0.0)
@@ -235,8 +234,7 @@ class TestQualitySignal:
             _make_movie(embedding=[1.0, 0.0, 0.0], movie_id=1),
             _rated(2, 9.0, 20000, [1.0, 0.0, 0.0]),
         ]
-        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
-            result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
+        result = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=WEIGHTS)
         assert result[0]["raw_scores"]["quality"] == pytest.approx(6.3)
 
     def test_quality_weight_zero_keeps_order(self):
@@ -251,9 +249,8 @@ class TestQualitySignal:
             {**m, "vote_average": va, "vote_count": vc}
             for m, (va, vc) in zip(pool, [(4.0, 90000), (9.0, 90000), (5.0, 3), (9.5, 90000)])
         ]
-        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
-            before = score_candidates(pool, [1.0, 0.0, 0.0], {"genres": []})
-            after = score_candidates(rated, [1.0, 0.0, 0.0], {"genres": []})
+        before = score_candidates(pool, [1.0, 0.0, 0.0], {"genres": []})
+        after = score_candidates(rated, [1.0, 0.0, 0.0], {"genres": []})
         order = lambda rs: [r["id"] for r in sorted(rs, key=lambda r: -r["total"])]
         assert order(before) == order(after)
         assert [r["total"] for r in before] == pytest.approx([r["total"] for r in after])
@@ -286,11 +283,10 @@ class TestEffectiveWeights:
             _rated(2, 3.0, 20000, [1.0, 0.0, 0.0]),
         ]
         weights = {"semantic": 0.3, "metadata": 0.0, "popularity": 0.0, "quality": 0.7}
-        with patch("core.scoring.catalog_mean_rating", return_value=6.3):
-            plain = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=weights)
-            obscure = score_candidates(
-                candidates, [1.0, 0.0, 0.0], {"genres": [], "wants_obscure": True}, weights=weights
-            )
+        plain = score_candidates(candidates, [1.0, 0.0, 0.0], {"genres": []}, weights=weights)
+        obscure = score_candidates(
+            candidates, [1.0, 0.0, 0.0], {"genres": [], "wants_obscure": True}, weights=weights
+        )
         assert max(plain, key=lambda r: r["total"])["id"] == 1
         assert max(obscure, key=lambda r: r["total"])["id"] == 2
 
