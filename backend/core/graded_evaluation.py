@@ -64,11 +64,11 @@ def read_grades(path, snapshots, split=None, reject_heldout_grades=False, supple
     from core.graded_pool import validated_grade_rows
     entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
     grades = {}
-    for row in validated_grade_rows([path, *supplemental_paths], snapshots):
+    for location, row in validated_grade_rows([path, *supplemental_paths], snapshots, include_locations=True):
         entry = entries[row['query_id']]
         if split is not None and entry['split'] != split:
             if reject_heldout_grades and entry['split'] == 'test' and row['grade']:
-                raise ValueError('dev fitting cannot consume a CSV with held-out test grades; use separate runs')
+                raise ValueError(f'{location}: dev fitting cannot consume a CSV with held-out test grades; use separate runs')
             continue
         if row['grade']:
             grades[(row['query_id'], row['tmdb_id'])] = int(row['grade'])

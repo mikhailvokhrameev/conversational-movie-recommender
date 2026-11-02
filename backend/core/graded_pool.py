@@ -206,7 +206,8 @@ def rows_from_snapshots(snapshots):
     return rows
 
 
-def validated_grade_rows(paths, snapshots, required_columns=('query_id', 'tmdb_id', 'grade')):
+def validated_grade_rows(paths, snapshots, required_columns=('query_id', 'tmdb_id', 'grade'),
+                         include_locations=False):
     """Validate and merge assessor rows against their original saved candidate pool."""
     entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
     known = {(str(s['entry']['id']), str(c['tmdb_id']))
@@ -232,7 +233,8 @@ def validated_grade_rows(paths, snapshots, required_columns=('query_id', 'tmdb_i
                     if key in grades and grades[key] != value:
                         raise ValueError(f'{location}: conflicting duplicate grade in CSV or worksheet')
                     grades[key] = value
-                rows.append({**row, 'grade': value})
+                validated = {**row, 'grade': value}
+                rows.append((location, validated) if include_locations else validated)
     return rows
 
 
