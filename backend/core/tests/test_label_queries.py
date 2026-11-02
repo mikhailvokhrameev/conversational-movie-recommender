@@ -199,3 +199,25 @@ class TestImdbToTmdb:
         )
         out = imdb_to_tmdb(path, row_filter=lambda row: int(row["vote_count"]) >= 100)
         assert out == {"tt0000010": 10}
+
+
+def test_seeker_references_echoed_in_nested_replies_excluded():
+    rows = _thread('echo', LONG_OK, [_ids(1, 2, 3)], paths=2)
+    rows[0]['processed'] = repr(['USER', 'Already watched tt0000001'])
+    out = _select(rows, min_linked_recs=2)
+    assert out[0]['community_recs'] == [1002, 1003]
+    assert out == _select(list(reversed(rows)), min_linked_recs=2)
+
+
+def test_existing_split_identity_survives_count_changes():
+    existing = [{'id': 't3_p000', 'split': 'test'}, {'id': 't3_p001', 'split': 'dev'}]
+    out = _select(_pool(40), count=40, existing_splits={r['id']: r['split'] for r in existing})
+    assert {r['id']: r['split'] for r in out if r['id'] in {'t3_p000', 't3_p001'}} == {
+        't3_p000': 'test', 't3_p001': 'dev'}
+
+
+@pytest.mark.parametrize('count,share,expected', [(15, .33, 5), (12, .25, 3), (9, .5, 4)])
+def test_exact_requested_count_and_split(count, share, expected):
+    out = _select(_pool(40), count=count, test_share=share)
+    assert len(out) == count
+    assert sum(r['split'] == 'test' for r in out) == expected

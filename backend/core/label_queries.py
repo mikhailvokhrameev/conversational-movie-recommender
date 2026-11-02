@@ -94,9 +94,10 @@ def _group_threads(records: list[dict], imdb_map: dict[str, int]) -> dict[str, d
         conv_id = row.get("conv_id") or ""
         if not conv_id:
             continue
-        thread = threads.setdefault(_thread_id(conv_id), {"query": None, "found": []})
+        thread = threads.setdefault(_thread_id(conv_id), {"query": None, "found": [], "seeker_ids": set()})
         order = _int(row.get("turn_order"))
         if _is_true(row.get("is_seeker")):
+            thread["seeker_ids"].update(_IMDB_ID.findall(_turn_text(row.get("processed"))))
             if order == 0 and thread["query"] is None:
                 thread["query"] = _turn_text(row.get("raw"))
             continue
@@ -107,6 +108,8 @@ def _group_threads(records: list[dict], imdb_map: dict[str, int]) -> dict[str, d
     for thread in threads.values():
         recs: list[int] = []
         for _, _, _, imdb_id in sorted(thread.pop("found")):
+            if imdb_id in thread["seeker_ids"]:
+                continue
             tmdb_id = imdb_map.get(imdb_id)
             if tmdb_id is not None and tmdb_id not in recs:
                 recs.append(tmdb_id)
@@ -127,6 +130,7 @@ def select_queries(
     min_chars: int,
     max_chars: int,
     min_linked_recs: int,
+    existing_splits: dict[str, str] | None = None,
 ) -> list[dict]:
     """Pick up to `count` usable requests and split them dev/test.
 
@@ -149,10 +153,26 @@ def select_queries(
         {
             "id": thread_id,
             "query": thread["query"],
-            "split": "test" if index < n_test else "dev",
+            "split": (existing_splits or {}).get(
+                thread_id, "test" if index < n_test else "dev"
+            ),
             "community_recs": thread["recs"],
         }
         for index, (thread_id, thread) in enumerate(chosen)
     ]
     out.sort(key=lambda record: record["id"])
     return out
+
+
+def read_turns(path: Path) -> list[dict]:
+    """Read the downloaded turn CSV, rejecting silent wrong-format imports."""
+    required = {"conv_id", "turn_id", "turn_order", "is_seeker", "processed", "raw"}
+    with open(path, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle, strict=True)
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError("missing CSV columns: " + ", ".join(sorted(missing)))
+        rows = list(reader)
+        if any(None in row or any(row[key] is None for key in required) for row in rows):
+            raise ValueError("CSV row has missing or extra cells")
+        return rows

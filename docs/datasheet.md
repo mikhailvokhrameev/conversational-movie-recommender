@@ -177,20 +177,43 @@ is not committed.
   by IMDb ids (`tt0053779`), `raw` keeps the titles. The importer reads `conv_id`,
   `turn_id`, `turn_order`, `is_seeker`, `processed` and `raw`, and groups rows by
   thread, so the many paths of one thread yield one query.
-- **Assumption not stated on the card:** `processed`/`raw` cells look like
-  stringified `[role, text]` lists (seen in the dataset viewer's first rows); the
-  importer takes the last element, and also accepts a plain `ROLE: text`. The IMDb
-  ids are found with the pattern `tt` + 7 or more digits, wherever they sit in the
-  text. Check the first output records against the downloaded file.
+- **Verified local format:** the downloaded test CSV contains 155,183 turns in
+  5,952 threads. `processed`/`raw` cells are stringified `[role, text]` lists;
+  the importer takes the last element and also accepts a plain `ROLE: text`.
+  Missing headers/cells, invalid UTF-8 and malformed CSV fail with a file error.
+  IMDb ids use `tt` followed by 7 or more digits.
 - **Query and recs:** the query is the seeker's original post (`raw`, titles as
   written). `community_recs` are the TMDB ids of films the replies recommended,
   linked through the `imdb_id` column of the catalog CSV and limited to films the
   import keeps (`catalog.min_vote_count` etc.). They are a starting list for the
   grader, not labels: an upvoted reply can be wrong, and replies that name films
-  without a catalog match are lost.
+  without a catalog match are lost. All non-seeker turns, including nested replies,
+  are discovery inputs; upvotes do not filter or rank them. The local source has
+  19,439 non-seeker turns at depth >1 and 91,746 nonempty upvote cells, so these
+  are real input features, deliberately not inferred relevance labels. IMDb IDs
+  mentioned by the seeker anywhere in that thread are excluded even when echoed
+  by replies; unrelated recommendations in the same reply remain.
 - **Selection** (`evaluation.label_queries` in `params.yaml`): seeker post of
   30-600 characters, at least 3 distinct linked films, a seeded hash-ranked draw of
-  120 threads, 33% to the test split.
+  120 threads, 33% to the initial test split. Existing split identities are retained
+  by ID (existing output, then project `data/label_queries.json`, or `--existing`).
+  Count/share changes therefore need not produce the requested share after retention.
+  Re-import may still change selected membership; inspect the candidate by ID.
+- **Review export:** the default is project `eval_runs/label_queries.candidate.json`,
+  writable both on the host and at `/app/eval_runs/` in the container; `/app/data/`
+  is read-only. Paths supplied explicitly are relative to the command working
+  directory. From the repository root on the host:
+  `cd backend && uv run python manage.py import_label_queries --source "../Reddit Movie Large Test.csv" --catalog "../TMDB Movie Dataset v11.csv"`.
+  Container usage requires separately mounting the downloaded source/catalog,
+  then supplying their actual mounted absolute paths with `--source` and `--catalog`;
+  use `--out /app/eval_runs/label_queries.candidate.json`. Agents do not launch it.
+  Never replace the reviewed query file until its exact candidate diff is approved.
+- **2026-11-02 local audit:** all 115 retained queries match source text exactly,
+  IDs are unique, all existing community IDs pass catalog membership, and splits
+  remain 77 dev / 38 test. A separate candidate and per-ID audit live at
+  `eval_runs/query-review-2026-11-02/`; reversible encoding/entity repairs are
+  separated from community-list corrections. Seven ambiguous queries are retained
+  with review notes and no semantic rewrite or deletion.
 - **Known issues:** the card calls the text noisy and warns of toxic content; the
   data is Reddit English but not filtered for language or for being a request, so the
   user removes non-requests and non-English posts by hand before committing the file.
