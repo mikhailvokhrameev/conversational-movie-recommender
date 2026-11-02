@@ -1,6 +1,12 @@
 # Recommendation Quality Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. First action on execution: copy this file to `docs/superpowers/plans/2026-10-25-recommendation-quality.md` and commit it.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+## First: merge the inference modes into dev
+
+- [ ] In the existing `dev` worktree, merge `feat/local-openrouter-modes` into `dev`. Inspect the working trees and branch histories first, preserve existing work, and resolve conflicts without dropping either the completed quality tasks or the two-mode architecture.
+- [ ] Run the offline backend test suite with external networking blocked and HTTP adapters mocked. Inspect any failures before proceeding; do not make real API requests or start the application as an agent.
+- [ ] Continue all tasks below on `dev`; do not push. Tasks 1–4 are already implemented, but Task 4's user-reviewed `data/label_queries.json` must exist before the export.
 
 **Goal:** Recommend movies that are both relevant and good, not obscure low-rated filler, except when the user explicitly asks for niche or trashy films. All tuning must be learned from the user's own graded labels.
 
@@ -9,9 +15,9 @@
 2. A third retrieval channel puts well-known films into the candidate pool.
 3. One LLM-extracted flag (`wants_obscure`) turns both off.
 
-Weights are not hand-picked. They are fitted offline on CPU from graded labels collected with TREC-style pooling. The queries come from Reddit-Movie and are labelled by the user.
+Weights are fitted offline on CPU from user grades collected with pooling. The queries come from Reddit-Movie. Generate the initial candidate pool locally on the user's GPU when available; reuse the same grades for matching OpenRouter query/movie pairs. Run OpenRouter separately to obtain its own scores and label only additional candidates as needed.
 
-**Tech Stack:** Django, Postgres/pgvector, sentence-transformers (bge-m3, bge-reranker-v2-m3), Ollama qwen3:8b, numpy. No new dependencies.
+**Tech Stack:** Django, Postgres/pgvector, numpy, local Ollama and sentence-transformers, or OpenRouter adapters for LLM, embeddings and reranking. No new dependencies.
 
 **Spec:** no separate spec document. The source is the brainstorm in this session, 2026-10-25. Decisions:
 - quality before obscurity;
@@ -27,7 +33,7 @@ Weights are not hand-picked. They are fitted offline on CPU from graded labels c
 - 30% are rated below 6.0;
 - only 9% are "known and good" (≥1000 votes and ≥7.0).
 
-**Code:** no quality term in `core/scoring.py` (semantic 0.4667, metadata 0.3333, popularity 0.2). The reranker text in `core/reranking.py:158` is title, genres and overview only. The existing labels are "relevant yes/no", not "would recommend", so they cannot train quality.
+**Code at the start of Tasks 1–4:** no quality term in `core/scoring.py` (semantic 0.4667, metadata 0.3333, popularity 0.2). The existing 300 binary labels are relevance judgments, not graded "would recommend" judgments. Keep them as binary relevance evidence and as source material for optional manual regrading; never automatically convert a binary 1 into a quality grade.
 
 **Industry and papers:**
 - Two-stage retrieval → ranking is the standard architecture ([YouTube DNN](https://research.google/pubs/pub45530)).
@@ -39,9 +45,9 @@ Weights are not hand-picked. They are fitted offline on CPU from graded labels c
 - Extracting a structured preference slot from the query with an LLM is current industry practice ([Instacart](https://tech.instacart.com/building-the-intent-engine-how-instacart-is-revamping-query-understanding-with-llms-3ac8051ae7ac), [AACL 2025](https://underline.io/lecture/138086-hint-augmented-re-ranking-efficient-product-search-using-llm-based-query-decomposition)).
 - Query source: [Reddit-Movie](https://huggingface.co/datasets/ZhankuiHe/reddit_movie_large_v1) from [He et al. 2023](https://arxiv.org/pdf/2308.10053), IMDb-linked and research-use only. Fallback: ReDial, CC BY 4.0.
 
-## Hardware trade-off (GTX 1080 Ti, 11 GB, Pascal sm_61)
+## Historical hardware trade-off (GTX 1080 Ti, 11 GB, Pascal sm_61)
 
-The VRAM budget is already estimated at 11.3–11.8 GB of 11 GB (`params.yaml` header). Pascal has very slow fp16, so half precision buys nothing.
+The following table is historical reasoning for the earlier Qwen3 8B profile, not a measurement of the current two-mode configuration or a cloud latency estimate. Current local Qwen3.5 9B GPU fit remains unverified; follow `docs/infrastructure.md` after merging the inference-modes branch.
 
 | Option | GPU cost | Latency | Verdict |
 |---|---|---|---|
@@ -58,20 +64,25 @@ The VRAM budget is already estimated at 11.3–11.8 GB of 11 GB (`params.yaml` h
 - Every tunable value lives in `params.yaml`. No env vars, no literals in code (CLAUDE.md).
 - New weights ship at a value that leaves behaviour unchanged (`scoring.weights.quality: 0.0`, `retrieval.rrf_weights.quality: 0.0`) until Task 7 sets fitted values.
 - `scoring.weights` must still sum to 1.0 (`_validate_score_weights` in `backend/recommender/settings.py:257`).
-- Never change `embedding.*` or the embedding text: no re-embedding in this plan.
+- Preserve the merged branch's canonical embedding model, dimensions, text template and provenance; never rebuild embeddings as part of this plan. Respect its compatibility check and recovery instructions.
 - `wants_obscure: true` turns off the quality signal and the quality channel, nothing else. The quality signal is never inverted.
 - The LLM judge is not ground truth (CLAUDE.md). Only the user's grades count.
 - Grades: `0` would not recommend, `1` acceptable, `2` good pick, `3` great pick, judged against the query text.
-- Docker never runs on the dev Mac. GPU and DB steps are run by the user on the GPU box. Host tests: `cd backend && uv run pytest`.
+- Agents never perform real API calls, model downloads, app startup or real GPU checks; use mocked adapters and block external networking in tests. Only the user runs GPU, Docker startup, real API and compatibility checks. Do not read or edit `.env`.
+- Local launch: `docker compose up --build`. OpenRouter launch: `docker compose -f docker-compose.yml -f docker-compose.openrouter.yml up --build`; use the same prefix for `exec`. Switching modes and an existing index follow the merged `docs/infrastructure.md`, with no automatic rebuild. Host tests: `cd backend && uv run pytest`.
+- Initial export runs locally on GPU when available. The current machine has no GPU, so implementation and mocked verification can proceed now; the local export, grading and evidence-dependent tuning wait for the user's GPU run.
+- Keep user grades independent of mode and raw model scores. Fit or transfer scoring weights only after measurement; calibrate BGE and Voyage absolute relevance thresholds separately. No provider fallback, and no branching by mode inside the shared pipeline.
 - Commits: one per logical part, no Claude attribution, never push.
-- Nothing obsolete stays: whatever the graded evaluation replaces is deleted in Task 8 (code, tests, params keys, doc instructions, local artifacts with the user's yes). The golden set stays only as a behaviour check.
+- Preserve existing evaluation flags and datasets until the replacement is accepted for both modes. Task 8 removes only obsolete functionality after that point; the golden set remains a behaviour check.
 
 ## Review Focus
 1. A movie with `vote_count` 0 or `vote_average` 0.0 (model defaults) gets WR = C, a neutral value: no zero, no crash. Owned by Task 1.
 2. Hard filters leave the quality channel's subset empty (for example "1950s Korean documentaries"). Candidate generation falls back to the other channels without error. Owned by Task 2.
 3. `wants_obscure` together with `reference_films` or a `min_vote_average` filter: the flag only disables quality, and the explicit rating filter still applies. Owned by Task 3.
 4. An empty catalog makes `catalog_mean_rating()` return None. The quality signal collapses to `neutral_score` for the whole pool. Owned by Task 1.
-5. A graded CSV with a blank grade, a grade outside 0–3, or a query with fewer than 2 graded rows: rows are skipped and counted, and the error names the line for invalid values. Owned by Task 6.
+5. An invalid or conflicting graded row fails with its CSV line; blanks remain unjudged, not grade zero, and incomplete comparisons are reported rather than shipped. Owned by Task 6.
+6. An interrupted or failed provider call cannot produce a successful run; resume rejects changed query set, mode, config or catalog. Owned by Task 5.
+7. Local and cloud exports reuse matching human grades but never mix provider scores or gate thresholds. Owned by Tasks 5–7.
 
 ---
 
@@ -169,104 +180,113 @@ The VRAM budget is already estimated at 11.3–11.8 GB of 11 GB (`params.yaml` h
 - [ ] Step 5: commit `feat: build a label-query set from Reddit-Movie requests`.
 - [ ] Step 6 (user): run the command, delete unusable queries (non-requests, non-English), then commit `data/label_queries.json`.
 
-### Task 5: Pooled graded export (one GPU pass)
+### Task 5: Mode-aware pooled export and reusable human labels
+
+**Goal:** Produce the first labelling pool on the local GPU, then reuse its grades for the same query/movie pairs in the OpenRouter pool. Real GPU and OpenRouter runs are user-only.
 
 **Files:**
-- Modify: `backend/core/evaluation.py` (new `POOL_EXPORT_COLUMNS`, `pool_export_rows`)
-- Modify: `backend/movies/management/commands/evaluate_scoring.py`: new `--queries PATH` (a label-query file instead of the golden set; e2e intent only) and `--pool-export PATH`, mutually exclusive with the other modes, the same way `--label-export` is now
-- Modify: `backend/core/pipeline.py`: `generate_and_score(..., rerank_top_k: int | None = None, quality_channel: bool | None = None)`, passed through to `rerank_candidates` and `generate_candidates`; defaults unchanged
-- Test: `backend/core/tests/test_evaluation.py`, `backend/movies/tests/test_evaluate_scoring.py`
+- Create: `backend/core/graded_pool.py` for pooling, manifests, snapshots and grade reuse.
+- Modify: `backend/core/candidate_generation.py` for an explicit RRF override and channel diagnostics; preserve production defaults.
+- Modify: `backend/movies/management/commands/evaluate_scoring.py`, `params.yaml` and settings validation.
+- Test: new `backend/core/tests/test_graded_pool.py`, existing candidate-generation and management-command tests.
 
 **Interfaces:**
-- Consumes: `generate_candidates(..., quality_channel=True)` (Task 2), `raw_scores` incl. `quality` (Task 1), `intent["wants_obscure"]` (Task 3), and the label-query records (Task 4).
-- Produces: one row per (query, pooled movie) with these `POOL_EXPORT_COLUMNS`:
-  - query fields: `query_id, query, split, wants_obscure`;
-  - movie fields: `tmdb_id, title, year, overview, vote_average, vote_count, popularity`;
-  - scores: `rerank_score, semantic_raw, metadata_raw, popularity_raw, quality_raw, lexical_rank, in_quality_channel`;
-  - `community_rec` (0/1), `catalog_mean`, `pool_size`, and an empty `grade`.
-- Pooling: the union of the top `evaluation.pool_export.depth` (params, 10) under each ranker in `evaluation.pool_export.rankers`. The rankers are: shipped blend; blend with `quality` weight 0.3; pure `rerank_score`; WR among rows with `rerank_score >= min_score`. All `community_rec` films found anywhere in the reranked pool are added too. Rows are shuffled per query with `evaluation.pool_export.seed`, and the source ranker is hidden from the labeller (TREC practice).
-- The run summary prints pool recall of `community_recs`: the share found in the candidate pool, with and without the quality channel. This number says whether retrieval is the bottleneck.
-- Export reranks with `rerank_top_k=evaluation.pool_export.rerank_top_k` (params, 150). This is offline only: ~2 s per query on the 1080 Ti, about 4 minutes for 120 queries.
+- Add `generate_candidates(..., rrf_weights: dict | None = None)`; pass the override into RRF, and expose channel ranks/membership to export without changing the default production result.
+- Add `evaluate_scoring --queries PATH --pool-export PATH [--split dev|test|all] [--limit-queries N] [--resume] [--reuse-grades PATH]`. Default split is dev; a positive `--limit-queries` takes the first N selected queries in query-file order and is recorded in the manifest. Query files require end-to-end intent. Reject incompatible evaluation modes and prevent overwriting an existing export without `--resume`.
+- Export the labelling CSV with `query_id, query, split, tmdb_id, title, year, overview, grade`; use the exact original query and any conversation context when judging. Do not reveal model scores, pool membership or source ranks to the assessor.
+- Store a manifest and per-query snapshots beside each CSV under `<csv-stem>.run/`. The manifest records schema version, query-file hash, split, mode, provider/model/revision metadata, effective configuration hash, catalog/index fingerprint and pooling settings. Snapshots preserve parsed intent, rewritten query, full candidate sets and order for each retrieval variant, complete raw scoring features, catalog mean, raw reranker scores and candidate embeddings needed for MMR. Keep model scores scoped to their own run.
+- CSV grade identity is the same stable query ID **plus exact original query and context, split, TMDB ID and grading rubric version**. Copy an existing 0–3 grade only when all match; conflicting grades are an error, and unmatched pairs are left blank. Do not use rewritten query or inferred intent to match grades.
+- Import old `eval_runs/labels.csv` as a separate binary relevance source only. Its 300 labels cover 30 queries (139 positive, 161 negative); keep its source and context, do not silently convert `1` to a 0–3 quality grade, and allow the user to explicitly regrade a matching row. Preserve this source file.
 
-- [ ] Step 1: failing tests:
-  - `pool_export_rows` dedups the union, adds pool-only community recs, gives the same shuffle for the same seed, and leaves `grade` empty;
-  - argument validation rejects `--pool-export` with `--sweep`, and `--queries` with `--intent oracle`.
-- [ ] Step 2: FAIL. Step 3: implement. Step 4: PASS plus the full host suite.
-- [ ] Step 5: commit `feat: export a pooled, feature-rich candidate set for graded labelling`.
-- [ ] Step 6 (user, GPU box): `docker compose exec backend python manage.py evaluate_scoring --queries data/label_queries.json --pool-export eval_runs/pool.csv`, then grade every row 0–3 for the dev split first (roughly 120 × 20 rows; dev about 80 queries).
+**Pool and replay coverage:**
+- For each query, obtain production e2e intent and embedding using the selected adapters, then capture retrieval with the configured quality RRF weight and with quality weight `1.0`; retain all other RRF weights. The present configured quality weight is `0.0`. Merely forcing the quality channel on with zero fusion weight does not test its contribution.
+- For `wants_obscure`, disable quality retrieval and the quality scoring signal in every configuration. Preserve other explicit filters.
+- Take the union of both filtered candidate sets, rerank every member using the active adapter, and persist raw results. Use `evaluation.pool_export.rerank_batch_size: 50`; compute production min-max normalization on the selected head at replay, never per export batch. Add a test that mocked batching preserves candidate-score association and report that real-provider batch equivalence is subject to the user pilot.
+- Pool the top `evaluation.pool_export.depth: 10` from a small, fixed set: shipped blend, quality-weight `0.3` with remaining scoring weights renormalized, and pure reranker, for each applicable retrieval variant. Include community recommendations present in the retrieved union. Deduplicate and shuffle deterministically with `evaluation.pool_export.seed: 7`; report retrieval and rerank-head community recall per variant.
+- With a null gate, do not filter on raw reranker score. Local and OpenRouter reranker scores and thresholds must never be shared.
 
-### Task 6: Offline grade report and weight fitting (CPU, no DB)
+**Reliability and incremental run:**
+- Save successful snapshots atomically per query. Mark runs failed on provider failures or fallback; never publish a failed query as successful. `--resume` skips complete queries only when manifest identity matches; otherwise fail before inference. Repeating an incomplete query can incur API charges.
+- Show planned query count, candidate count and pooling settings before the run; do not pretend a reliable token price or exact cost is known in advance.
+- Start with a user-run local dev pilot of 5 requests to measure pool size, runtime and labelling burden. Use a separate pilot output; the full run processes the complete set and may reuse manually assigned pilot grades using `--reuse-grades`. Pilot snapshots are retained as evidence, but do not skip inference in the separate full run.
+
+**Steps:**
+- [ ] Write failing tests for RRF override, zero-weight channel, deduplication, seeded shuffle, obscure intent, grade reuse across modes, query/context/rubric mismatches, conflicting grades and old binary-label preservation.
+- [ ] Add tests for incomplete-query resume, changed manifest rejection, score alignment across batches and recorded provider failures; verify the targeted tests fail.
+- [ ] Implement the export, immutable run metadata and reusable grades; mock all adapters in tests and block network access.
+- [ ] Run `cd backend && uv run pytest core/tests/test_graded_pool.py core/tests/test_candidate_generation.py movies/tests/test_evaluate_scoring.py -q` and the full offline backend suite; expect PASS.
+- [ ] Commit `feat: export resumable mode-aware graded pools`.
+- [ ] User on GPU: prepare and review `data/label_queries.json`, run the 5-query local dev pilot, review its size, then export the full local dev pool. Preserve the pilot and full run records.
+- [ ] User grades the local pool on the 0–3 scale. Once cloud verification is desired, run the same query set in OpenRouter using `--reuse-grades` and grade only unmatched pairs.
+
+**User commands:** With the local stack started by the user, use:
+
+```bash
+docker compose exec backend python manage.py evaluate_scoring --queries data/label_queries.json --split dev --pool-export eval_runs/pool-local-dev.csv
+```
+
+For the pilot use `--limit-queries 5 --pool-export eval_runs/pool-local-pilot.csv`; if pilot rows were graded, pass `--reuse-grades eval_runs/pool-local-pilot.csv` to the full run. For cloud, use the explicit cloud Compose prefix from Global Constraints and the same command with `--pool-export eval_runs/pool-openrouter-dev.csv --reuse-grades eval_runs/pool-local-dev.csv`. Use `--resume` only for the same run. If the GPU is unavailable, implementation and mocked tests proceed; the initial local data collection waits.
+
+### Task 6: Offline grade report and modest CPU fitting
+
+**Goal:** Compare rankings against human grades without DB access, inference, GPU or API charges; avoid treating unjudged candidates as bad films or fitting more parameters than the data supports.
 
 **Files:**
-- Modify: `backend/core/evaluation.py`: `grade_report`, `replay_ranking`, `fit_ranking_params`
-- Modify: `backend/movies/management/commands/evaluate_scoring.py`: `--grade-report PATH [--fit]`, needing no DB or model, like `--label-report`
-- Modify: `params.yaml` new `evaluation.grade_fit` block: `folds: 5`, `top_k: 5`, `grid` (candidate values for each weight, `reranking.weight`, `scoring.quality.prior_votes`), `seed: 7`
-- Test: `backend/core/tests/test_evaluation.py`, `backend/movies/tests/test_evaluate_scoring.py`
+- Create: `backend/core/graded_evaluation.py` for replay, metrics, grouped cross-validation and fitting.
+- Modify: `backend/core/graded_pool.py`, `backend/movies/management/commands/evaluate_scoring.py`, `params.yaml` and settings validation.
+- Test: `backend/core/tests/test_graded_evaluation.py` and management-command tests.
 
 **Interfaces:**
-- Consumes: Task 5's CSV.
-- Produces: `replay_ranking(rows_for_query: list[dict], params: dict) -> list[dict]`. It recomputes WR from `vote_average`, `vote_count`, `catalog_mean` and `prior_votes`, min-max normalizes each signal over the query's rows the way `score_candidates` does, blends with min-max `rerank_score` at `reranking.weight`, applies `min_score`, and sorts. The orientation matches production, so fitted numbers transfer.
-- Produces: `grade_report(rows, params, k) -> dict` with:
-  - `ndcg_at_k` (graded gains `2^g - 1`);
-  - `junk_at_k` (share of grade 0 in the top-k);
-  - `good_at_k` (share ≥2);
-  - `community_recall_at_k`;
-  - all of the above split by `wants_obscure`;
-  - skipped-row counts;
-  - a gate table for `reranking.min_score`. For each threshold in `evaluation.grade_fit.gate_thresholds` (params, the same values as today's `GATE_REPORT_THRESHOLDS`) it reports kept share ≥1, relevant (grade ≥1) dropped, and queries emptied. This replaces `label_report`, which Task 8 deletes.
-- Produces: `fit_ranking_params(rows, grid, folds, seed, k) -> dict`. This is a grouped K-fold over query_id. Inner selection is an exhaustive grid when the grid has ≤ 5k combinations, otherwise coordinate ascent; weights are constrained to sum to 1. It returns the best params, the CV mean and standard deviation of `ndcg_at_k` and `junk_at_k`, the shipped-params baseline on the same folds, and a ready-to-paste `params.yaml` snippet.
+- `replay_ranking(snapshot: dict, params: dict, k: int) -> list[dict]`.
+- `grade_report(snapshots: list[dict], grades: dict, params: dict, k: int) -> dict`.
+- `fit_ranking_params(snapshots: list[dict], grades: dict, config: dict) -> dict`.
+- `evaluate_scoring --grade-report PATH [--fit] [--split dev|test]`: read the CSV and companion snapshots offline; take mode and baseline configuration from the manifest, not current `INFERENCE_MODE`. Reject `--fit --split test`.
 
-- [ ] Step 1: failing tests:
-  - `replay_ranking` with shipped params reproduces the export order on a fixture where the export order is known;
-  - `grade_report` on a hand-computed 2-query fixture gives exact nDCG@2 and junk@2;
-  - invalid grade "4" raises an error naming the CSV line, and a blank grade is skipped and counted;
-  - `fit_ranking_params` on a synthetic set where the grade is monotonic in `quality_raw` picks quality weight > 0, and no fold contains a query from another fold;
-  - `test_gate_table_from_grades`: on a 2-query fixture, threshold 0.5 gives the hand-computed dropped and emptied shares.
-- [ ] Step 2: FAIL. Step 3: implement with numpy only. Step 4: PASS.
-- [ ] Step 5: commit `feat: report and fit ranking weights from graded labels offline`.
+**Replay and metrics:**
+- For each retrieval variant, recompute WR using saved vote counts, ratings and catalog mean; normalize scoring signals across the **full corresponding candidate set**, compute effective weights including obscure handling, then select the production rerank head. Normalize scorer totals and raw rerank scores across that head, blend, apply reference exclusions and gate, and run production MMR on saved embeddings. Respect production tie handling and top-k. The label CSV alone is insufficient for replay.
+- Graded metrics: nDCG@5 with gain `2**grade - 1`, junk@5 (grade 0), good@5 (grade >= 2), community recall, empty-result rate and judged coverage. Report ordinary and obscure queries separately; report query counts for each.
+- Blanks stay unjudged. Error with CSV line for out-of-range grade, unknown pair or conflicting duplicate; skip and count queries with fewer than two grades. Never assign zero to an unjudged item.
+- Require all top-5 entries of compared configurations to have grades before reporting an acceptance comparison or applying a fit. Produce a deduplicated CSV of missing pairs for the user to grade, retaining existing grades. Report incomplete coverage explicitly and do not claim complete evaluation.
+- On dev, use deterministic grouped five-fold cross-validation by query ID and fixed seed `7`, without splitting one query between folds. Report baseline and selected-configuration mean/std, plus paired query-bootstrap 95% intervals with a fixed seed. If fewer than five eligible queries exist, fail with an actionable message.
+- Keep the candidate grid deliberately small: baseline and quality weights `0.1, 0.2, 0.3`, with the other scoring weights scaled proportionally; evaluate each with saved quality RRF variants `0.0` and `1.0`. Hold `prior_votes`, rerank blend weight, production top-k and MMR settings at the recorded baseline. Select by dev nDCG@5, break ties by lower junk@5 and then proximity to baseline; fit the final choice on dev only. Record pool bias and the number of configurations evaluated.
+- Separately calibrate the selected mode's absolute gate on dev grades only. Test `null` and observed raw scores; select the strictest threshold retaining at least one relevant graded film for every answerable query and dropping at most 5% of relevant graded films. Report coverage and require full judged comparison; otherwise leave gate uncalibrated. A calibrated BGE threshold does not apply to Voyage.
+- Use snapshots for paired baseline/fitted comparisons and freeze all choices before inspecting test grades. A completed test report is not a new tuning opportunity.
 
-### Task 7: Ship the fitted values and record the decision
+**Steps:**
+- [ ] Write failing tests for full-pool normalization, changing rerank head, MMR and exclusions, obscure intent and null gate; compare replay against actual pipeline output using mocked local and cloud adapters.
+- [ ] Add hand-calculated metric, CSV validation, grouped fold, unjudged top-5, no-network/no-DB and test-fit rejection cases. Verify FAIL.
+- [ ] Implement offline replay, report, fitting and gate table using numpy and existing shared scoring helpers.
+- [ ] Run `cd backend && uv run pytest core/tests/test_graded_evaluation.py movies/tests/test_evaluate_scoring.py -q` and the full offline backend suite; expect PASS.
+- [ ] Commit `feat: fit and report graded rankings offline`.
 
-**Files:**
-- Modify: `params.yaml`: fitted `scoring.weights.*`, `scoring.quality.prior_votes`, `retrieval.rrf_weights.quality`, `reranking.weight`, and `reranking.min_score` recalibrated from the grade gate table with the same rule as before (0% answerable queries emptied, ≤ ~5% grade ≥1 dropped), each with a comment naming the fit run (date, number of queries and grades, CV nDCG@5 and junk@5 against baseline)
-- Create: `docs/adr/0012-quality-prior-and-learned-weights.md` (context = the evidence above, decision, hardware trade-off table, consequences incl. "niche only via `wants_obscure`"); row in `docs/adr/README.md`
-- Modify: `docs/ML.md` (Hybrid Scoring table gets `quality`; new retrieval channel; Evaluation Results gets the fit numbers), `docs/core.md` pipeline diagram
-- Test: `backend/core/tests/test_reranking.py` / settings tests pin that shipped weights load and sum to 1
+### Task 7: Validate and apply settings separately for local and OpenRouter
 
-- [ ] Step 1 (user): `cd backend && python manage.py evaluate_scoring --grade-report ../eval_runs/pool.csv --fit` on dev grades, then paste the snippet.
-- [ ] Step 2: apply the snippet and write the docs; host tests PASS.
-- [ ] Step 3 (user, GPU box): grade the test-split rows, then run `--grade-report` with shipped params on test only. Ship if `junk_at_k` drops and `ndcg_at_k` does not drop against baseline on test. Rerun `evaluate_scoring --split all` and the classify `prompt_tokens` grep; `empty_results` must stay 0.
-- [ ] Step 4: commit `feat: ship quality weights fitted on graded labels` and `docs: record the quality prior in ADR 0012`.
+**Files:** `params.yaml`, `docs/ML.md`, `docs/core.md`, `docs/infrastructure.md`, `docs/adr/README.md`, a new quality-calibration ADR using the next available number, and settings/reranking tests.
 
-### Task 8: Delete what the new evaluation replaces
+**Execution and acceptance:**
+- [ ] User runs the dev report/fit on the graded local GPU snapshot. Review pool coverage and labelling burden; reuse the same query/movie grades for the OpenRouter dev export and label only new pairs.
+- [ ] Compare local-fitted scoring weights against the cloud baseline on the cloud dev snapshot. If shared weights perform adequately, retain them; use cloud-specific scoring overrides only if cloud dev evidence supports the change. Keep all tunables in `params.yaml` and cloud-specific overrides under `runtime_profiles.openrouter`.
+- [ ] Calibrate local BGE and cloud Voyage absolute relevance gates independently from each mode's own dev scores and human grades. Voyage's existing `min_score: null` remains uncalibrated until supported by cloud evidence.
+- [ ] Freeze each mode's selected settings before test grading. User exports both modes on the same held-out test queries and reuses matching grades; only additional pairs require grading. No test-based tuning.
+- [ ] Compare each mode's fitted configuration with its frozen baseline on the same mode-specific test snapshots. Require complete judged top-5, lower junk@5 and no reduction in nDCG@5; report query-bootstrap intervals, empty-result rate, label coverage and sample size. If the criteria fail, retain the baseline, document the result and do not claim acceptance.
+- [ ] User runs each available mode's golden behaviour check and representative search/refinement/follow-up checks. Unexpected additional empty answers versus baseline or provider failures block that mode's acceptance.
+- [ ] Validate YAML and both effective configurations; score weights sum to 1.0 and changing cloud overrides does not silently alter local settings. Run offline settings/reranking tests and the full backend suite.
+- [ ] Document the actual mode, catalog/index, models, dev/test sample sizes, grades, CV and test results, gate and limitations in the new ADR and current docs. A single assessor represents that person's judgments; offline improvements do not prove broad user satisfaction.
+- [ ] Commit accepted parameter changes and documentation in separate logical commits. If GPU is unavailable now, retain the unaccepted local state and do not fabricate results; cloud checks are run only by the user.
 
-Runs after Task 7, once the grade-based fit and gate are shipped. Golden set: keep it for behaviour (the user's choice). Delete its movie lists and the ranking metrics computed from them.
+**Cost and API scope:** Local GPU inference does not incur OpenRouter API charges; electricity and hardware costs still apply. OpenRouter pool export, preflight, interactive checks and an origin-compatibility probe may make paid calls; CPU replay, grading and report do not. An illustrative 2026-10-31 estimate for 20 normal requests returning five films each was about $0.01–0.03 using the then-current Qwen3.5-9B, BGE-M3 and Voyage rerank-3-lite rates; it excludes full-catalog embeddings and is not a quote for the deeper pool export. Check current prices and user-observed usage before projecting a batch: [Qwen](https://openrouter.ai/qwen/qwen3.5-9b), [BGE-M3](https://openrouter.ai/baai/bge-m3), [Voyage](https://openrouter.ai/voyageai/rerank-3-lite).
 
-**Delete:**
-- **Signals.** Any scorer signal whose fitted weight in Task 7 is 0, `popularity` included if so: the code in `core/scoring.py`, its `params.yaml` keys, its tests and docs. No dead zero-weight signal stays.
-- **`evaluate_scoring` modes and their code:**
-  - `--sweep` (`_run_sweep`, golden-list weight grid; replaced by `--grade-report --fit`);
-  - `--gate-report` (`gate_report`, `_write_gate_report`, `GATE_REPORT_*`);
-  - `--label-export` / `--label-report` (`label_export_rows`, `LABEL_EXPORT_COLUMNS`, `label_report`, `_write_label_export`, `_read_labelled_csv`, `_write_label_report`);
-  - `--llm-judge` (`judge_ndcg`, the judge call path, `params.yaml` `evaluation.judge_*`; circular by CLAUDE.md's own rule);
-  - `--k` if nothing else uses it.
-  - Delete their tests in `backend/core/tests/test_evaluation.py` and `backend/movies/tests/test_evaluate_scoring.py`. Keep `test_session_ablation_flag_is_gone`-style "flag is gone" tests only where the repo already uses that pattern, and add one per removed flag in the same style.
-- **Golden set ranking parts:**
-  - `precision_at_k`, `recall_at_k`, `ndcg_at_k` over golden lists in `core/evaluation.py`;
-  - the per-entry expected movie lists in `data/golden_set.json`, plus the reference resolution in `core/golden_set.py` that only serves them (`resolved_refs`, `unresolved_refs`, `unscorable`), if nothing else uses it.
-  - `evaluate_scoring --split ...` still reports `misclassified`, `expected_empty(_correct)`, `expected_ask(_correct)`, `empty_results`, `possible_parse_fallbacks` and `unsupported_constraints`.
-  - Update `docs/datasheet.md` and the golden-set note in `docs/ML.md` to say what the set is for now.
-- **Docs and commands:**
-  - CLAUDE.md "Commands": drop the sweep, gate-report, label-export and label-report lines and the stale `--session-ablation` line (the flag no longer exists); add `--pool-export` and `--grade-report --fit`. Drop the `--llm-judge` anti-pattern line once the flag is gone.
-  - `docs/ML.md`, `docs/infrastructure.md`, `docs/api.md`, ADR 0003/0007/0009: replace the instructions for removed modes. ADRs keep their history: add a "Superseded by ADR 0012" note instead of rewriting past decisions.
-- **Local artifacts** (user-approved, untracked): `eval_runs/labels.csv`, `before.json`, `after.json`, `after2.json`, `after3.json`, `eval-*.json`, `gate_report-*.json`, `label_export-*.json`, `session_ablation-*.json`, `entity_resolution_report.txt`, `pytest.txt`. Show the exact list to the user and delete only after a yes. Keep `eval_runs/pool.csv` (the graded labels) and the run records the new modes write.
+### Task 8: Remove superseded evaluation only after both modes are accepted
 
-**Keep:** `data/entity_probes.json` and `entity_resolution_report` (entity resolution is untouched), the `min_vote_average` hard filter, MMR, and the golden set queries and behaviour counters.
+Do not make cleanup a prerequisite for completing implementation or for collecting either mode's evidence. Keep old flags, golden ranking lists and shared signals until graded evaluation is accepted for **both** modes. A zero weight in one mode alone is not grounds to remove a signal used by the other or needed by fitting.
 
-- [ ] Step 1: grep proves each deleted symbol has no remaining caller (`grep -rn "<symbol>" backend docs CLAUDE.md params.yaml`). Paste the empty results into the report.
-- [ ] Step 2: delete code, tests, params keys and doc lines; add the "flag is gone" tests; host suite PASS with no new failures; `python -c "import yaml; yaml.safe_load(open('params.yaml'))"` loads and settings validation accepts it.
-- [ ] Step 3: commits, one per area: `refactor: remove the golden-list ranking metrics`, `refactor: remove the binary-label and golden-hit gate reports`, `refactor: remove the LLM judge`, `refactor: remove zero-weight scoring signals`, `docs: point commands and ADRs at the graded evaluation`.
-- [ ] Step 4 (user-confirmed): delete the listed `eval_runs/` files.
+- [ ] Verify accepted, traceable local and OpenRouter run records exist; otherwise mark cleanup deferred.
+- [ ] Identify actual callers, then remove only superseded `--sweep`, `--gate-report`, binary label export/report and `--llm-judge` paths and their obsolete tests/settings. Keep shared metric helpers used by graded evaluation.
+- [ ] Remove golden expected movie lists and their exclusive resolution code only if no remaining caller needs them. Keep golden queries and behaviour counters, entity probes and report, MMR and the explicit `min_vote_average` filter.
+- [ ] Remove a zero-weight signal only when neither accepted profile nor supported fitting depends on it.
+- [ ] Update `AGENTS.md`, `docs/ML.md`, `docs/infrastructure.md`, `docs/api.md` and the datasheet. Preserve ADR history by adding supersession notes rather than rewriting old decisions.
+- [ ] Add existing-style tests for removed flags; run backend suite offline, validate both profile settings and search for stale references. Commit by logical area.
+- [ ] Preserve existing binary labels, user grades, snapshots, manifests and run records. Show an exact list of any other untracked artifacts proposed for removal; delete those only after the user's explicit approval.
 
 ## Not in this plan (and why)
 - LLM listwise reranking, a bigger or fine-tuned reranker: see the hardware table. Revisit if `junk_at_k` on test stays above the user's bar after Task 7.

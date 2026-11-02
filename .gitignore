@@ -68,9 +68,11 @@ backend/eval_runs/
 frontend/dist/
 
 # Data files
-catalog_okko.parquet
+Reddit Movie Large Test.csv
 TMDB Movie Dataset v11.csv
-.gstack/
 
 # Frontend
 .impeccable/
+
+# docs
+docs/superpowers
