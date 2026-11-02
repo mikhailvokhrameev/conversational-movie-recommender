@@ -421,3 +421,19 @@ def test_invalid_supplemental_worksheet_is_not_overwritten(tmp_path, field, valu
     with pytest.raises(ValueError, match=match):
         offline_report(path)
     assert worksheet.read_bytes() == before
+
+
+@pytest.mark.parametrize('supplemental', [False, True])
+def test_heldout_grade_error_identifies_source_line(tmp_path, supplemental):
+    from core.graded_evaluation import read_grades
+    primary = tmp_path/'pool.csv'
+    worksheet = primary.with_suffix('.missing.csv')
+    header = 'query_id,tmdb_id,grade\n'
+    primary.write_text(header + 'q,1,\n' + ('test,2,3\n' if not supplemental else ''))
+    if supplemental:
+        worksheet.write_text(header + 'test,1,\n' + 'test,2,3\n')
+    with pytest.raises(ValueError, match='held-out test grades') as exc:
+        read_grades(primary, [snapshot(), snapshot('test', 'test')], split='dev',
+                    reject_heldout_grades=True,
+                    supplemental_paths=[worksheet] if supplemental else [])
+    assert f'{worksheet if supplemental else primary}: CSV line 3:' in str(exc.value)
