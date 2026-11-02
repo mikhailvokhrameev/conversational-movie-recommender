@@ -279,7 +279,6 @@ EMBEDDING_TEXT_MAX_KEYWORDS = _embedding["text"]["max_keywords"]
 _retrieval = PARAMS["retrieval"]
 CANDIDATE_COUNT = _retrieval["candidate_count"]
 RRF_K = _retrieval["rrf_k"]
-RRF_WEIGHTS = _retrieval["rrf_weights"]
 
 
 def _validate_quality_channel(retrieval: dict) -> None:
@@ -305,6 +304,7 @@ def _validate_quality_channel(retrieval: dict) -> None:
 
 
 _validate_quality_channel(_retrieval)
+RRF_WEIGHTS = _retrieval["rrf_weights"]
 QUALITY_CHANNEL_MIN_VOTE_COUNT = _retrieval["quality_channel"]["min_vote_count"]
 LEXICAL_SEARCH_CONFIG = _retrieval["lexical"]["text_search_config"]
 LEXICAL_MIN_TERM_LENGTH = _retrieval["lexical"]["min_term_length"]

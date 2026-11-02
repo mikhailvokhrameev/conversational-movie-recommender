@@ -415,3 +415,18 @@ def test_invalid_or_missing_quality_channel_has_actionable_error(bad):
 def test_score_weights_reject_nonfinite_quality(bad):
     with pytest.raises(ValueError, match=r"scoring\.weights\.quality"):
         _validate_score_weights({**GOOD_WEIGHTS, "quality": bad})
+
+
+def test_settings_validates_missing_rrf_weights_before_export(monkeypatch):
+    from copy import deepcopy
+    import runpy
+    import yaml
+    from django.conf import settings
+    import recommender.settings as module
+
+    params = deepcopy(settings.PARAMS)
+    del params["retrieval"]["rrf_weights"]
+    monkeypatch.setenv("INFERENCE_MODE", "local")
+    monkeypatch.setattr(yaml, "safe_load", lambda source: params)
+    with pytest.raises(ValueError, match=r"retrieval\.rrf_weights\.quality"):
+        runpy.run_path(module.__file__)
