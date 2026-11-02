@@ -36,9 +36,8 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-# Linux only: the cu121 index has no macOS wheels, so host dev on a Mac falls
-# back to the same torch version from PyPI (CPU/MPS).
-torch = { index = "pytorch-cu121", marker = "sys_platform == 'linux'" }
+# CUDA wheels target Linux x86-64. ARM64 and host development use PyPI.
+torch = { index = "pytorch-cu121", marker = "sys_platform == 'linux' and platform_machine == 'x86_64'" }
 
 [[tool.uv.index]]
 name = "pytorch-cu121"
