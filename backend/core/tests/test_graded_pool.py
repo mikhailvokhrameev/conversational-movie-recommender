@@ -13,6 +13,8 @@ def offline(monkeypatch):
         raise AssertionError('external networking forbidden')
     monkeypatch.setattr(socket, 'create_connection', blocked)
     monkeypatch.setattr(socket.socket, 'connect', blocked)
+    monkeypatch.setattr('django.db.backends.base.base.BaseDatabaseWrapper.cursor', blocked)
+    monkeypatch.setattr('requests.sessions.Session.request', blocked)
 
 
 def test_deduplicate_and_seed():
@@ -167,7 +169,7 @@ def test_command_cross_mode_reuse_does_not_skip_inference(pool_command, tmp_path
     run(pilot, limit_queries=1)
     rows = list(csv.DictReader(pilot.open()))
     rows[0]['grade'] = '3'
-    with pilot.open('w', newline='') as stream:
+    with pilot.with_suffix('.missing.csv').open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
@@ -291,3 +293,87 @@ def test_default_shaped_success_and_recorded_failure(pool_command, tmp_path, fai
         run(output)
         assert output.is_file()
         assert capture.call_count == 2
+
+
+@pytest.fixture
+def grade_source(tmp_path):
+    from core.graded_pool import atomic_json, digest, COLUMNS
+    path = tmp_path/'pilot.csv'
+    entry = dict(id='q', query='exact', split='dev', context=['prior'])
+    run = RunStore(path, dict(queries=[entry], rubric_version=1))
+    run.save('q', dict(complete=True, entry=entry, variants={'configured': [dict(tmdb_id=1), dict(tmdb_id=2)]}))
+    row = dict(query_id='q', query='exact', split='dev', tmdb_id='1', title='one', year='', overview='', grade='')
+    def write(destination, rows):
+        with destination.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=COLUMNS)
+            writer.writeheader(); writer.writerows(rows)
+    write(path, [row])
+    return path, row, write
+
+
+def test_supplemental_reuse_equal_duplicates_and_blanks(grade_source):
+    from core.graded_pool import read_grade_source
+    path, row, write = grade_source
+    worksheet = path.with_suffix('.missing.csv')
+    write(worksheet, [dict(row, grade='3'), dict(row, grade='3'), dict(row, tmdb_id='2')])
+    before = (path.read_bytes(), worksheet.read_bytes())
+    source = read_grade_source(path)
+    target = dict(row, context=['prior'], history=None, rubric_version=1)
+    assert reuse_grades([target], source)[0]['grade'] == '3'
+    for field, value in [('query', 'other'), ('context', []), ('split', 'test'), ('rubric_version', 2)]:
+        assert reuse_grades([dict(target, **{field: value})], source)[0]['grade'] == ''
+    assert before == (path.read_bytes(), worksheet.read_bytes())
+
+
+@pytest.mark.parametrize('change,error', [({'grade': '4'}, 'grade must'), ({'tmdb_id': '99'}, 'unknown query/movie'),
+    ({'query': 'changed'}, 'identity mismatch'), ({'split': 'test'}, 'identity mismatch')])
+def test_invalid_supplemental_source(grade_source, change, error):
+    from core.graded_pool import read_grade_source
+    path, row, write = grade_source
+    worksheet = path.with_suffix('.missing.csv')
+    write(worksheet, [dict(row, **change)])
+    with pytest.raises(ValueError, match=error) as exc:
+        read_grade_source(path)
+    assert str(worksheet) in str(exc.value) and 'line 2' in str(exc.value)
+
+
+def test_supplemental_conflict_has_source_line(grade_source):
+    from core.graded_pool import read_grade_source
+    path, row, write = grade_source
+    write(path, [dict(row, grade='1')])
+    worksheet = path.with_suffix('.missing.csv')
+    write(worksheet, [dict(row, grade='3')])
+    with pytest.raises(ValueError, match='conflicting') as exc:
+        read_grade_source(path)
+    assert str(worksheet) in str(exc.value) and 'line 2' in str(exc.value)
+
+
+def test_modified_snapshot_context_rejected(grade_source):
+    import json
+    from core.graded_pool import read_grade_source, digest
+    path, row, write = grade_source
+    snapshot = path.with_suffix('.run')/(digest('q')+'.json')
+    item = json.loads(snapshot.read_text())
+    item['entry']['context'] = ['changed']
+    snapshot.write_text(json.dumps(item))
+    with pytest.raises(ValueError, match='snapshot'):
+        read_grade_source(path)
+
+
+
+def test_command_conflicting_worksheet_rejected_before_inference(pool_command, tmp_path):
+    from django.core.management.base import CommandError
+    run, prepare, capture, _ = pool_command
+    pilot = tmp_path/'pilot.csv'
+    run(pilot, limit_queries=1)
+    rows = list(csv.DictReader(pilot.open()))
+    rows[0]['grade'] = '1'
+    for destination, grade in [(pilot, '1'), (pilot.with_suffix('.missing.csv'), '3')]:
+        rows[0]['grade'] = grade
+        with destination.open('w', newline='') as stream:
+            writer = csv.DictWriter(stream, fieldnames=rows[0])
+            writer.writeheader(); writer.writerows(rows)
+    prepare.reset_mock(); capture.reset_mock()
+    with pytest.raises(CommandError, match='conflicting'):
+        run(tmp_path/'full.csv', reuse_grades=str(pilot))
+    prepare.assert_not_called(); capture.assert_not_called()

@@ -714,7 +714,14 @@ grades are incomplete or invalid. Combined CSVs containing populated test grades
 cannot be fitted. These local artifact locks are not tamper-resistant.
 
 Use `--reuse-grades PATH` during a second export to reuse matching query/movie
-grades (including across modes); grade only new pairs and review pool coverage.
+grades (including across modes and pilot-to-full exports); grade only new pairs
+and review pool coverage. Pass the **original CSV** path: reuse automatically
+reads its adjacent `<stem>.missing.csv` too, validating both files against the
+original manifest and query snapshots before inference. Only identical query,
+context/history, split, rubric and movie identities transfer. Equal duplicate
+grades and blanks are accepted; invalid grades, unknown pairs and conflicting
+nonblank grades fail with the source filename and line. Reuse never rewrites
+either source CSV. Legacy binary labels remain binary evidence only.
 An export can be resumed with `--resume` and matching identity. Missing judgments
 are exported to `.missing.csv`. Grade that worksheet in place, then rerun the
 same command with the **original CSV** (for example `--grade-report

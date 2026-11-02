@@ -206,24 +206,60 @@ def rows_from_snapshots(snapshots):
     return rows
 
 
+def validated_grade_rows(paths, snapshots, required_columns=('query_id', 'tmdb_id', 'grade')):
+    """Validate and merge assessor rows against their original saved candidate pool."""
+    entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
+    known = {(str(s['entry']['id']), str(c['tmdb_id']))
+             for s in snapshots for cs in s['variants'].values() for c in cs}
+    rows, grades = [], {}
+    for path in map(Path, paths):
+        with path.open(newline='') as stream:
+            reader = csv.DictReader(stream)
+            if not set(required_columns) <= set(reader.fieldnames or []):
+                raise ValueError(f'{path}: grade CSV requires {", ".join(required_columns)}')
+            for line, row in enumerate(reader, 2):
+                location = f'{path}: CSV line {line}'
+                key = (row['query_id'], row['tmdb_id'])
+                if key not in known:
+                    raise ValueError(f'{location}: unknown query/movie pair')
+                entry = entries[key[0]]
+                if any(field in row and row[field] != entry[field] for field in ('query', 'split')):
+                    raise ValueError(f'{location}: query identity mismatch')
+                value = (row['grade'] or '').strip()
+                if value not in ('', '0', '1', '2', '3'):
+                    raise ValueError(f'{location}: grade must be blank or 0–3')
+                if value:
+                    if key in grades and grades[key] != value:
+                        raise ValueError(f'{location}: conflicting duplicate grade in CSV or worksheet')
+                    grades[key] = value
+                rows.append({**row, 'grade': value})
+    return rows
+
+
 def read_grade_source(path):
     path = Path(path)
     with path.open(newline='') as stream:
         columns = csv.DictReader(stream).fieldnames or []
     if 'label' in columns and 'grade' not in columns:
         return []
-    manifest = json.loads(path.with_suffix('.run').joinpath('manifest.json').read_text())
-    entries = {str(e['id']): e for e in manifest['identity']['queries']}
-    with path.open(newline='') as stream:
-        reader = csv.DictReader(stream)
-        if not set(COLUMNS) <= set(reader.fieldnames or []):
-            raise ValueError('grade source must be a graded pool CSV')
-        rows = list(reader)
+    directory = path.with_suffix('.run')
+    manifest = json.loads((directory/'manifest.json').read_text())
+    snapshots = []
+    for entry in manifest['identity']['queries']:
+        snapshot = json.loads((directory/(digest(entry['id'])+'.json')).read_text())
+        if not snapshot.get('complete') or snapshot['entry'] != entry:
+            raise ValueError(f'{path}: incomplete or mismatched query snapshot')
+        snapshots.append(snapshot)
+    paths = [path]
+    worksheet = path.with_suffix('.missing.csv')
+    if worksheet.exists():
+        paths.append(worksheet)
+    rows = validated_grade_rows(paths, snapshots, COLUMNS)
+    entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
     for row in rows:
-        entry = entries.get(row['query_id'])
-        if entry is None or row['query'] != entry['query'] or row['split'] != entry['split']:
-            raise ValueError('grade source query identity mismatch')
-        row.update(context=entry.get('context', []), history=entry.get('history'), rubric_version=manifest['identity']['rubric_version'])
+        entry = entries[row['query_id']]
+        row.update(context=entry.get('context', []), history=entry.get('history'),
+                   rubric_version=manifest['identity']['rubric_version'])
     return rows
 
 

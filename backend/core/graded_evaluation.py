@@ -60,34 +60,18 @@ def replay_ranking(snapshot: dict, params: dict, k: int) -> list[dict]:
     return mmr_diversify(gated, top_n=k, lambda_param=params['diversification']['lambda'])
 
 
-def read_grades(path, snapshots, split=None, reject_heldout_grades=False):
-    known = {(str(s['entry']['id']), str(c['tmdb_id']))
-             for s in snapshots for cs in s['variants'].values() for c in cs}
+def read_grades(path, snapshots, split=None, reject_heldout_grades=False, supplemental_paths=()):
+    from core.graded_pool import validated_grade_rows
+    entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
     grades = {}
-    with Path(path).open(newline='') as stream:
-        reader = csv.DictReader(stream)
-        if not {'query_id', 'tmdb_id', 'grade'} <= set(reader.fieldnames or []):
-            raise ValueError('grade CSV requires query_id, tmdb_id, grade')
-        entries = {str(s['entry']['id']): s['entry'] for s in snapshots}
-        for line, row in enumerate(reader, 2):
-            key = (row['query_id'], row['tmdb_id'])
-            if key not in known:
-                raise ValueError(f'CSV line {line}: unknown query/movie pair')
-            entry = entries[key[0]]
-            if any(field in row and row[field] != entry[field] for field in ('query', 'split')):
-                raise ValueError(f'CSV line {line}: query identity mismatch')
-            if split is not None and entry['split'] != split:
-                if reject_heldout_grades and entry['split'] == 'test' and row['grade'].strip():
-                    raise ValueError(f'CSV line {line}: dev fitting cannot consume a CSV with held-out test grades; use separate runs')
-                continue
-            value = row['grade'].strip()
-            if value == '':
-                continue
-            if value not in ('0', '1', '2', '3'):
-                raise ValueError(f'CSV line {line}: grade must be blank or 0–3')
-            if key in grades and grades[key] != int(value):
-                raise ValueError(f'CSV line {line}: conflicting duplicate grade')
-            grades[key] = int(value)
+    for row in validated_grade_rows([path, *supplemental_paths], snapshots):
+        entry = entries[row['query_id']]
+        if split is not None and entry['split'] != split:
+            if reject_heldout_grades and entry['split'] == 'test' and row['grade']:
+                raise ValueError('dev fitting cannot consume a CSV with held-out test grades; use separate runs')
+            continue
+        if row['grade']:
+            grades[(row['query_id'], row['tmdb_id'])] = int(row['grade'])
     return grades
 
 
@@ -390,16 +374,9 @@ def offline_report(path, split='dev', fit=False, frozen_proposal=None):
         if not item.get('complete') or item['entry'] != entry:
             raise ValueError('incomplete or mismatched query snapshot; resume pool export')
         snapshots.append(item)
-    grades = read_grades(path, snapshots, split=split, reject_heldout_grades=fit)
-    # A worksheet belongs to this original run and is validated against its
-    # snapshots exactly like the primary CSV before any metric or rewrite.
     worksheet = path.with_suffix('.missing.csv')
-    if worksheet.exists():
-        supplemental = read_grades(worksheet, snapshots, split=split, reject_heldout_grades=fit)
-        for key, value in supplemental.items():
-            if key in grades and grades[key] != value:
-                raise ValueError(f'conflicting grade between CSV and missing worksheet for {key}; reconcile both files')
-            grades[key] = value
+    grades = read_grades(path, snapshots, split=split, reject_heldout_grades=fit,
+                         supplemental_paths=[worksheet] if worksheet.exists() else [])
     selected_snapshots = [item for item in snapshots if item['entry']['split'] == split]
     if not selected_snapshots:
         raise ValueError(f'no {split} snapshots; export that split first')
