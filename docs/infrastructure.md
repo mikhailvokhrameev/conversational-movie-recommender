@@ -12,7 +12,7 @@ Both modes use Django/uvicorn, PostgreSQL 16/pgvector and React/Vite with the sa
 
 `params.yaml` is the single source of truth for models, revisions, dimensions, timeouts, retries, limits and scoring weights. `runtime_profiles.openrouter` overlays the shared settings. The canonical embedding identity remains `BAAI/bge-m3`, dimensions 1024; API model ID is separate and unknown API revision is null. Cloud reranking starts at top_k 50, weight 0.5, min_score null: these are uncalibrated starting values.
 
-Environment variables are secrets/wiring only: `DB_PASSWORD`, `SECRET_KEY`, `DEBUG`, `INFERENCE_MODE` (local/openrouter), `OPENROUTER_API_KEY`, `PARAMS_PATH`. See `.env.example`; users manage their own `.env`. Compose selects the mode in its launch files, so changing only `.env` does not switch a Compose deployment. `PARAMS_PATH` defaults to `/app/params.yaml` in Compose and must point to an accessible file (mount a custom file explicitly if needed). Host management commands use `DATABASE_URL` for database wiring; Compose builds that URL for its own DB. `ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are literal Compose settings.
+Environment variables are secrets/wiring only: `DB_PASSWORD`, `SECRET_KEY`, `DEBUG`, `INFERENCE_MODE` (local/openrouter), `OPENROUTER_API_KEY`, `TMDB_API_KEY`, `PARAMS_PATH`. See `.env.example`; users manage their own `.env`. Compose selects the mode in its launch files, so changing only `.env` does not switch a Compose deployment. `PARAMS_PATH` defaults to `/app/params.yaml` in Compose and must point to an accessible file (mount a custom file explicitly if needed). Host management commands use `DATABASE_URL` for database wiring; Compose builds that URL for its own DB. `ALLOWED_HOSTS` and `CORS_ALLOWED_ORIGINS` are literal Compose settings.
 
 ## User launch and switching commands
 
@@ -38,9 +38,48 @@ docker compose -f docker-compose.yml -f docker-compose.openrouter.yml down
 docker compose up --build
 ```
 
-Backend startup is `migrate -> import_catalog --skip-existing -> check_embedding_index -> uvicorn`. Embedding generation is always explicit, never automatic. An empty index warns; startup never silently rebuilds it. Backend waits for healthy DB in both modes and healthy Ollama only locally. Ollama health requires the exact `llm.model` to be present; its startup grace period is 900s.
+Backend startup is `migrate -> import_catalog --skip-existing -> check_embedding_index -> sync_tmdb_catalog -> uvicorn`. Migrations, CSV import and embedding-index checks remain blocking. The TMDB update is best effort: missing key, API/preparation failure, or even an unexpected command failure allows serving the existing catalog. Startup never rebuilds the old index; an empty index needs explicit initial embedding preparation. Successful TMDB additions include newly generated embeddings. Backend waits for healthy DB in both modes and healthy Ollama only locally. Ollama health requires the exact `llm.model` to be present; its startup grace period is 900s.
 
 Host ports: frontend 3000, backend 8000, PostgreSQL **5433** (internal 5432), local-only Ollama 11434. `pgdata`, `ollama_data` and `model_cache` persist across `down`; eval records persist under `./eval_runs`. Published DB/Ollama ports assume a trusted local machine; restrict exposure before deploying elsewhere.
+
+## TMDB catalog update (user only)
+
+Place the catalog CSV at `data/TMDB Movie Dataset v11.csv` and the optional evaluation
+source at `data/Reddit Movie Large Test.csv`; both appear under `/app/data/` read-only.
+The reviewed evaluation queries are `data/label_queries.json`, not a catalog input.
+Obtain a TMDB v3 API key through your TMDB account API settings and set
+`TMDB_API_KEY` yourself in `.env` using `.env.example`. Check TMDB's current terms,
+licensing and attribution obligations yourself before using or distributing data.
+Agents do not retrieve keys, contact TMDB or run these operations.
+
+Both inference modes run the same sync on every backend startup. It traverses Discover
+from 2024-01-01 through today's UTC date, then fetches English details/keywords. Every
+run repeats that interval, so films previously below 20 votes can qualify later.
+Only new IDs meeting the released/non-adult, description, poster and vote-count
+filters are added; existing rows are unchanged. Discover may miss films (including
+undated/unindexed films or changes during traversal); this is no completeness guarantee.
+The API does not supply an atomic catalog snapshot.
+
+Traversal and embeddings finish before atomic publication. Failed pagination,
+invalid vectors or failed publication leave no partial new catalog. Missing key or
+update failure produces a safe warning and retries on the next startup; the user can
+also run `docker compose exec backend python manage.py sync_tmdb_catalog` with the
+current mode's Compose prefix. Fix configuration/provider or index readiness first.
+Sync adds startup delay and can incur cloud embedding costs; limits/timeouts/retries
+live in `params.yaml`, while credentials remain environment wiring.
+
+For an imported old catalog without ready vectors/provenance, first follow the
+explicit embedding workflow below in its original inference mode. Sync skips when
+that preparation is missing. A successful read-only origin compatibility check
+still does not authorize partial generation from a different origin: sync skips
+rather than mixing vectors. Restore the original mode, or use a separately approved
+catalog rebuild; no automatic full regeneration occurs.
+
+Before enabling updates on the working catalog, the user must use a separate test
+DB/project to check the first 2024 backfill, repeated run, vote threshold crossing,
+local/cloud behavior, TMDB outage and recovery. Record time, cost, observed coverage
+and terms compliance. Separately read-check the existing index without rebuilding it.
+Live API, PostgreSQL and GPU acceptance remain pending until user evidence exists.
 
 ## Embedding lifecycle and recovery
 
@@ -98,6 +137,7 @@ Run inside the backend container: `docker compose exec backend python manage.py 
 | Command | Purpose |
 |---------|---------|
 | `import_catalog --skip-existing` | Load the TMDB CSV into PostgreSQL (idempotent), then rebuild search vectors |
+| `sync_tmdb_catalog` | Best-effort startup/manual addition of eligible new TMDB films since 2024, with embeddings; failures preserve the existing catalog |
 | `generate_embeddings` | Embed movies that have no embedding (batch size from params.yaml) and record the index provenance; refuses under a config mismatch |
 | `generate_embeddings --all` | Re-embed every movie and refresh the provenance record (required after changing the embedding model or `embedding.text.*`) |
 | `generate_embeddings --adopt` | Record the current config for an index built before provenance tracking, without re-embedding |

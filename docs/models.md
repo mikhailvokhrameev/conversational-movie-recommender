@@ -36,7 +36,7 @@ Represents a movie from the TMDB catalog.
 `movies.search_index.refresh_search_vectors()` rebuilds it in a single UPDATE
 after import; `import_catalog` calls it automatically.
 
-**Data source**: `TMDB Movie Dataset v11.csv`, filtered at import time to
+**Data source**: `data/TMDB Movie Dataset v11.csv`, filtered at import time to
 `status=Released`, non-adult, has overview, has poster, `vote_count >= 20`
 (~50K rows imported from ~1.49M raw). Loaded via `manage.py import_catalog`.
 Embeddings generated via `manage.py generate_embeddings`, which also records

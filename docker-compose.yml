@@ -25,10 +25,10 @@ services:
       DJANGO_SETTINGS_MODULE: recommender.settings
       SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-key-do-not-use-in-prod}
       DEBUG: ${DEBUG:-0}
+      TMDB_API_KEY: ${TMDB_API_KEY:-}
       ALLOWED_HOSTS: localhost,127.0.0.1,backend
       CORS_ALLOWED_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
     volumes:
-      - ./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro
       - ./data:/app/data:ro
       - ./params.yaml:/app/params.yaml:ro
       # evaluate_scoring writes run records to eval_runs/ under the working
@@ -45,6 +45,7 @@ services:
         python manage.py migrate --noinput &&
         python manage.py import_catalog --skip-existing &&
         python manage.py check_embedding_index &&
+        (python manage.py sync_tmdb_catalog || echo 'TMDB sync command failed; retry at next startup. Serving existing catalog.') &&
         uvicorn recommender.asgi:application --host 0.0.0.0 --port 8000
       "
 

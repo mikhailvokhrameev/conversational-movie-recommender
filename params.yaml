@@ -556,3 +556,13 @@ openrouter:
     max_attempts: 3
     initial_delay: 0.5
     max_delay: 5.0
+
+# Discover traverses dated search results; it does not guarantee a full catalog.
+tmdb:
+  base_url: https://api.themoviedb.org/3
+  timeout_seconds: 20
+  max_retries: 3
+  retry_backoff_seconds: 1
+  max_pages: 500
+  # TMDB Discover returns at most 20 records per page; not an API query knob.
+  page_size: 20

@@ -63,6 +63,18 @@ User message
 
 ## How to run
 
+Place the local catalog at `data/TMDB Movie Dataset v11.csv` before starting. The optional evaluation source belongs at `data/Reddit Movie Large Test.csv`. Both CSVs are ignored by Git; the backend mounts `data/` read-only. Host commands default to the same catalog, and `CATALOG_CSV_PATH` can override it. See the [catalog datasheet](docs/datasheet.md).
+
+Optional catalog updates: obtain a TMDB v3 API key and set `TMDB_API_KEY` yourself
+in `.env` (see `.env.example`). Each startup attempts to add eligible new films
+released since 2024, including embeddings. Missing keys or update failures preserve
+the existing catalog and allow startup; migrations/import/index checks remain blocking.
+An old unprepared index needs explicit initial embedding generation first. Updates
+can delay startup and incur cloud embedding costs. Discover may miss films; coverage
+is not guaranteed. The user must review TMDB terms and validate backfill, reruns,
+threshold crossing and outage recovery on a separate test DB before using the working
+catalog. See [TMDB operations](docs/infrastructure.md#tmdb-catalog-update-user-only).
+
 **Requirements:** Docker and Docker Compose; NVIDIA GPU for local mode, or an OpenRouter API key for cloud mode. Real hardware/API acceptance remains pending; see [deployment and manual acceptance](docs/infrastructure.md).
 
 ```bash

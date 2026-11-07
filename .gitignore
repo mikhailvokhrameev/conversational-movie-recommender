@@ -68,8 +68,8 @@ backend/eval_runs/
 frontend/dist/
 
 # Data files
-Reddit Movie Large Test.csv
-TMDB Movie Dataset v11.csv
+/data/Reddit Movie Large Test.csv
+/data/TMDB Movie Dataset v11.csv
 
 # Frontend
 .impeccable/

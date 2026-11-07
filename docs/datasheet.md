@@ -12,8 +12,8 @@ curated keywords, enough popularity/rating metadata to rank on, and a poster
 per title for the UI. It was built to be searched in natural language, so the
 text fields matter more than the numeric ones. It replaced an earlier ~18K-title
 catalog from a different (Russian-language) source; the product is English now.
-Nothing here was collected for this project: the data is a third-party export of
-TMDB.
+The base catalog is a third-party TMDB export. Optional startup synchronization
+adds newly eligible TMDB API discoveries released since 2024.
 
 ## Composition
 
@@ -46,9 +46,9 @@ not source data.
 
 ## Collection and source
 
-The file is `TMDB Movie Dataset v11.csv` at the repo root (about 660 MB). It is
+The file is `data/TMDB Movie Dataset v11.csv` under the repo root (about 660 MB). It is
 mounted read-only into the backend by `docker-compose.yml`
-(`./TMDB Movie Dataset v11.csv:/app/TMDB Movie Dataset v11.csv:ro`), and
+(`./data:/app/data:ro`, catalog at `/app/data/TMDB Movie Dataset v11.csv`), and
 `settings.CATALOG_CSV_PATH` points at it. It is git-ignored, not stored in the
 repository.
 
@@ -86,11 +86,11 @@ the description and up to 10 keywords, and records provenance
   Italian, Spanish, Japanese and German follow far behind. Descriptions are English
   (`overview`), so non-English titles are retrieved through English summaries.
 - **Recency.** About 46% of the filtered rows are from 2010 or later (*measured*).
-- **Coverage ends 2023-09-30.** The CSV's `vote_count` snapshot froze around September
+- **Base CSV coverage ends 2023-09-30.** The CSV's `vote_count` snapshot froze around September
   2023, so films released from 2024 on have `vote_count` of at most 2 and fail
   `catalog.min_vote_count` (20). Lowering the threshold does not bring them back: only one
-  2024 film reaches 5 votes (*measured*). The recommender therefore cannot offer films
-  after that date. A "newest" request is counted back from the catalog's newest year
+  2024 film reaches 5 votes (*measured*). Without a successful TMDB synchronization the base catalog therefore cannot offer films
+  after that date. Optional API additions extend observed coverage, without any completeness guarantee. A "newest" request is counted back from the catalog's newest year
   (`intent.recent_years`, 2), and a year past the end gets a no-match reply that states
   where the catalog ends (`_no_match_message`, `core/catalog_bounds.py`).
 - **TMDB's genre taxonomy.** Only 19 coarse genres, assigned by TMDB contributors, with
@@ -132,10 +132,16 @@ check the terms of the export and of TMDB's API terms of use.
 
 ## Maintenance
 
-- Owner: the repository maintainer. There is no update schedule; the catalog is a
-  snapshot of the CSV and does not follow TMDB.
-- Coverage past 2023-09-30 needs a fresh CSV with a current `vote_count` snapshot; an old
-  one cannot be fixed by lowering `catalog.min_vote_count`.
+- Owner: the repository maintainer. With a user-supplied `TMDB_API_KEY`, each backend
+  startup attempts an additive TMDB Discover sync from 2024 through the UTC date.
+  It repeats the interval to reconsider films crossing the 20-vote floor; existing
+  rows are never refreshed. Discover may omit films and is not an atomic snapshot.
+- API additions require released, non-adult films with English descriptions, posters
+  and at least 20 votes, and publish together with embeddings/search vectors.
+  Failures or an unprepared/incompatible embedding index skip updates and preserve
+  the existing catalog; see [operations and user acceptance](infrastructure.md#tmdb-catalog-update-user-only).
+- The CSV snapshot cannot be repaired by lowering its vote threshold. A current CSV
+  remains an alternative input, subject to its own source/licence checks.
 - To refresh: replace the CSV, run `import_catalog` (`--skip-existing` adds new
   titles but does not update existing rows) and `generate_embeddings`. Changing
   the import filter changes the catalog size and the popularity distribution, so
@@ -203,10 +209,11 @@ is not committed.
   writable both on the host and at `/app/eval_runs/` in the container; `/app/data/`
   is read-only. Paths supplied explicitly are relative to the command working
   directory. From the repository root on the host:
-  `cd backend && uv run python manage.py import_label_queries --source "../Reddit Movie Large Test.csv" --catalog "../TMDB Movie Dataset v11.csv"`.
-  Container usage requires separately mounting the downloaded source/catalog,
-  then supplying their actual mounted absolute paths with `--source` and `--catalog`;
-  use `--out /app/eval_runs/label_queries.candidate.json`. Agents do not launch it.
+  `cd backend && uv run python manage.py import_label_queries --source "../data/Reddit Movie Large Test.csv" --catalog "../data/TMDB Movie Dataset v11.csv"`.
+  In the container both CSVs are available through the existing read-only data mount;
+  use `--source "/app/data/Reddit Movie Large Test.csv"` and
+  `--catalog "/app/data/TMDB Movie Dataset v11.csv"`, with
+  `--out /app/eval_runs/label_queries.candidate.json`. Agents do not launch it.
   Never replace the reviewed query file until its exact candidate diff is approved.
 - **2026-11-02 local audit:** all 115 retained queries match source text exactly,
   IDs are unique, all existing community IDs pass catalog membership, and splits

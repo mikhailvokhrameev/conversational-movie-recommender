@@ -674,8 +674,10 @@ MIN_VOTE_COUNT = _catalog["min_vote_count"]
 TMDB_POSTER_BASE_URL = _catalog["poster_base_url"]
 TMDB_POSTER_SIZE = _catalog["poster_size"]
 
+# The source checkout nests the backend; Docker copies it directly to /app.
+_DATA_ROOT = BASE_DIR.parent if BASE_DIR.name == "backend" else BASE_DIR
 CATALOG_CSV_PATH = os.environ.get(
-    "CATALOG_CSV_PATH", str(BASE_DIR / "TMDB Movie Dataset v11.csv")
+    "CATALOG_CSV_PATH", str(_DATA_ROOT / "data" / "TMDB Movie Dataset v11.csv")
 )
 
 def _validate_logging_level(logging_params) -> None:
@@ -708,3 +710,10 @@ LOGGING = {
         "movies": {"handlers": ["console"], "level": LOG_LEVEL, "propagate": True},
     },
 }
+
+# Catalog synchronization is explicit; loading settings never makes requests.
+from movies.tmdb_client import validate_tmdb_config
+
+TMDB_PARAMS = PARAMS.get('tmdb')
+validate_tmdb_config(TMDB_PARAMS)
+TMDB_API_KEY = os.environ.get('TMDB_API_KEY', '')

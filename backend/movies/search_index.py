@@ -37,17 +37,26 @@ _SEARCH_VECTOR_EXPR = """
 """
 
 
-def refresh_search_vectors(only_missing: bool = False) -> int:
+def refresh_search_vectors(only_missing: bool = False, *, movie_ids: list[int] | None = None) -> int:
     """Recompute search_vector for catalog rows. Returns rows updated.
 
     Set only_missing=True after an incremental import to touch just the new
     rows; leave it False to rebuild everything (e.g. after changing the
-    vector definition above).
+    vector definition above). Pass movie_ids to target only newly inserted rows;
+    an empty ID list deliberately updates nothing.
     """
     sql = f"UPDATE movies_movie SET search_vector = {_SEARCH_VECTOR_EXPR}"
+    clauses, params = [], []
     if only_missing:
-        sql += " WHERE search_vector IS NULL"
+        clauses.append("search_vector IS NULL")
+    if movie_ids is not None:
+        if not movie_ids:
+            return 0
+        clauses.append("id = ANY(%s)")
+        params.append(movie_ids)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
 
     with connection.cursor() as cursor:
-        cursor.execute(sql)
+        cursor.execute(sql, params)
         return cursor.rowcount
